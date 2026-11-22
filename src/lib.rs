@@ -1,4 +1,5 @@
 pub mod app;
+pub mod gist;
 pub mod history;
 pub mod migration;
 pub mod model;

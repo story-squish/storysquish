@@ -52,6 +52,8 @@ sudo apt-get install libxcb-render0-dev libxcb-shape0-dev \
 - Undo/redo across all board edits
 - Autosave after every change, rolling backups, and pick-up of changes synced
   in from other devices (see [Files](#files))
+- Optional backup to a secret GitHub Gist, with every version restorable
+  (see [GitHub Gist backup](#github-gist-backup))
 - Import/export the board as JSON; export an outline or the manuscript as
   Markdown (archived scenes are left out; outline scenes keep their board
   numbers)
@@ -82,6 +84,7 @@ has focus, so they keep their usual meaning while typing.
 | Board    | The path given on the command line, else the one chosen in Settings, else `board.json` in the platform data dir (below) |
 | Backups  | `<board>-backups/` next to the board file, e.g. `board-backups/` |
 | Settings | `$XDG_CONFIG_HOME/storysquish/settings.json`, falling back to `~/.config/storysquish/settings.json` on every platform |
+| GitHub token | `github-token` next to `settings.json`, readable only by you |
 
 Platform data dir:
 
@@ -109,6 +112,31 @@ Data and config left by the app's earlier names (`story-planner`,
 `novel-planner`) are moved over on first launch, unless a `storysquish`
 directory already exists.
 
+## GitHub Gist backup
+
+Off until you connect a token. In **Settings → GitHub Gist**, paste a
+[fine-grained token](https://github.com/settings/personal-access-tokens/new)
+with the account permission *Gists: read and write* (or a classic token with
+the `gist` scope) and click **Connect**.
+
+- **Back up now** pushes the board as `storysquish-board.json`. The first push
+  creates a secret gist; later ones add revisions to it.
+- **Back up automatically** pushes at most every five minutes while the board
+  changes, and once more when you quit (the desktop app) or leave the page
+  (the web version).
+- **Restore from gist…** lists the last 30 revisions; restoring can be undone.
+- To back up to the same gist from another device or browser, paste its id or
+  URL into the gist field there. Clear the field to start a new gist next time.
+- **Disconnect** forgets the token; the gist stays on GitHub.
+
+The gist follows the app, not the board file: after **Open…** a different
+board, the next push adds it as a revision of the same gist. Secret gists are
+unlisted, not private: anyone with the URL can read them.
+
+The desktop app keeps the token in a separate `github-token` file (mode
+`0600`) so `settings.json` can be synced or shared safely. The web version
+keeps it in the browser's `localStorage`.
+
 ## Development
 
 ```sh
@@ -130,7 +158,8 @@ drive the app headlessly with `egui_kittest`.
 | [`app`](src/app.rs)                      | egui UI, shortcuts, dialogs                      |
 | [`history`](src/history.rs)              | Snapshot-based undo/redo                         |
 | [`storage`](src/storage.rs)              | Board load/save, atomic writes, backups, export names |
-| [`settings`](src/settings.rs)            | Color scheme and board location persistence      |
+| [`settings`](src/settings.rs)            | Color scheme, board location and gist persistence |
+| [`gist`](src/gist.rs)                    | GitHub Gist client, token file, background requests |
 | [`outline`](src/outline.rs)              | Markdown outline and manuscript export           |
 | [`theme`](src/theme.rs)                  | Color schemes and palettes                       |
 | [`migration`](src/migration.rs)          | Move data from pre-rename directories            |

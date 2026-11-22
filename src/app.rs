@@ -7,6 +7,7 @@ use eframe::egui::{
     Margin, Modifiers, RichText, Sense, Stroke, TextEdit, Ui, Vec2,
 };
 
+use crate::gist::{self, Revision};
 use crate::history::History;
 use crate::model::{Act, Board, Character, Id, Location, Scene, Status};
 use crate::settings::{self, Settings};
@@ -17,6 +18,8 @@ const SAVE_DEBOUNCE: Duration = Duration::from_millis(400);
 const DISK_POLL: Duration = Duration::from_secs(2);
 const BACKUP_INTERVAL: Duration = Duration::from_mins(30);
 const BACKUPS_KEPT: usize = 30;
+const GIST_BACKUP_INTERVAL: Duration = Duration::from_mins(5);
+const GIST_POLL: Duration = Duration::from_millis(100);
 const NODE_RADIUS: f32 = 26.0;
 /// Short of the midpoint, so the labels of A→B and B→A land apart.
 const EDGE_LABEL_POSITION: f32 = 0.4;
@@ -96,6 +99,44 @@ enum BoardFileAction {
     RestoreBackup,
 }
 
+#[derive(Clone, Copy)]
+enum GistAction {
+    Connect,
+    Disconnect,
+    SetGistId,
+    BackUpNow,
+    Restore,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GistTask {
+    ManualPush,
+    AutoPush,
+    ListRevisions,
+    Fetch,
+}
+
+#[derive(Default)]
+struct GistState {
+    token: Option<String>,
+    token_draft: String,
+    gist_id_draft: String,
+    gist_id_invalid: bool,
+    in_flight: Option<(GistTask, gist::Pending)>,
+    board_changed: bool,
+    last_attempt: Option<Instant>,
+    last_success: Option<Instant>,
+    last_pushed_json: Option<String>,
+    error: Option<String>,
+    restore: Option<GistRestore>,
+}
+
+#[derive(Default)]
+struct GistRestore {
+    revisions: Option<Vec<Revision>>,
+    error: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct DraggedScene(usize);
 
@@ -126,6 +167,7 @@ pub struct PlannerApp {
     settings: Settings,
     settings_path: PathBuf,
     settings_dialog: Option<SettingsDialog>,
+    gist: GistState,
     colors: Palette,
 }
 
@@ -149,6 +191,18 @@ impl PlannerApp {
                 Some(format!("Could not read settings, using defaults: {e:#}")),
             ),
         };
+        let (token, token_alert) = match gist::load_token(&gist::token_path(&settings_path)) {
+            Ok(token) => (token, None),
+            Err(e) => (
+                None,
+                Some(format!("Could not read the GitHub token: {e:#}")),
+            ),
+        };
+        let gist = GistState {
+            token,
+            gist_id_draft: settings.gist_id.clone().unwrap_or_default(),
+            ..GistState::default()
+        };
         let colors = settings.color_scheme.palette();
         apply_theme(&cc.egui_ctx, colors);
         Self {
@@ -166,7 +220,7 @@ impl PlannerApp {
             last_backup: None,
             save_state: SaveState::Saved,
             confirm: None,
-            alert: startup_alert.or(settings_alert),
+            alert: startup_alert.or(settings_alert).or(token_alert),
             focus_scene_title: false,
             focus_search: false,
             query: String::new(),
@@ -178,6 +232,7 @@ impl PlannerApp {
             settings,
             settings_path,
             settings_dialog: None,
+            gist,
             colors,
         }
     }
@@ -196,6 +251,10 @@ impl PlannerApp {
 
     pub fn board_path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn settings(&self) -> &Settings {
+        &self.settings
     }
 
     fn set_color_scheme(&mut self, ctx: &egui::Context, scheme: ColorScheme) {
@@ -228,6 +287,7 @@ impl PlannerApp {
     }
 
     fn save_now(&mut self) {
+        self.gist.board_changed = true;
         self.history.commit(&self.board);
         if let Err(reason) = self.keep_copy_of_external_edit() {
             self.save_state = SaveState::Failed(reason);
@@ -316,6 +376,7 @@ impl PlannerApp {
             self.board = board;
             self.history.commit(&self.board);
             self.save_state = SaveState::Reloaded;
+            self.gist.board_changed = true;
         }
     }
 
@@ -345,7 +406,10 @@ impl PlannerApp {
     }
 
     fn dialog_open(&self) -> bool {
-        self.alert.is_some() || self.confirm.is_some() || self.settings_dialog.is_some()
+        self.alert.is_some()
+            || self.confirm.is_some()
+            || self.settings_dialog.is_some()
+            || self.gist.restore.is_some()
     }
 
     /// Undo, Escape and Delete mean something different inside a text field,
@@ -463,18 +527,20 @@ impl PlannerApp {
         }
     }
 
-    /// Undoable: the current board stays in history.
     fn replace_board_from(&mut self, path: &Path) {
         match storage::load(path) {
-            Ok(board) => {
-                self.board = board;
-                self.selected = None;
-                self.save_now();
-                if self.save_state == SaveState::Saved {
-                    self.save_state = SaveState::Imported;
-                }
-            }
+            Ok(board) => self.replace_board(board),
             Err(e) => self.alert = Some(format!("Could not import: {e:#}")),
+        }
+    }
+
+    /// Undoable: the current board stays in history.
+    fn replace_board(&mut self, board: Board) {
+        self.board = board;
+        self.selected = None;
+        self.save_now();
+        if self.save_state == SaveState::Saved {
+            self.save_state = SaveState::Imported;
         }
     }
 
@@ -534,6 +600,14 @@ impl PlannerApp {
         self.save_state = SaveState::Saved;
         self.last_backup = None;
         self.settings.board_path = Some(self.path.clone());
+        self.save_settings_reporting_errors();
+    }
+
+    fn token_path(&self) -> PathBuf {
+        gist::token_path(&self.settings_path)
+    }
+
+    fn save_settings_reporting_errors(&mut self) {
         let save_error = settings::save(&self.settings_path, &self.settings)
             .err()
             .map(|e| format!("Could not save settings: {e:#}"));
@@ -541,6 +615,416 @@ impl PlannerApp {
             dialog.save_error = save_error;
         } else if let Some(error) = save_error {
             self.alert = Some(error);
+        }
+    }
+
+    fn connect_github(&mut self) {
+        let token = self.gist.token_draft.trim().to_owned();
+        if token.is_empty() {
+            return;
+        }
+        match gist::save_token(&self.token_path(), &token) {
+            Ok(()) => {
+                self.gist.token = Some(token);
+                self.gist.token_draft.clear();
+                self.gist.error = None;
+            }
+            Err(e) => self.gist.error = Some(format!("Could not save the token: {e:#}")),
+        }
+    }
+
+    /// Forgets the token but keeps the gist id, so reconnecting resumes
+    /// backing up to the same gist.
+    fn disconnect_github(&mut self) {
+        match gist::delete_token(&self.token_path()) {
+            Ok(()) => {
+                self.gist.token = None;
+                self.gist.in_flight = None;
+                self.gist.error = None;
+                self.gist.last_success = None;
+            }
+            Err(e) => self.gist.error = Some(format!("Could not remove the token: {e:#}")),
+        }
+    }
+
+    fn apply_gist_id_draft(&mut self) {
+        let draft = self.gist.gist_id_draft.trim();
+        let gist_id = if draft.is_empty() {
+            None
+        } else if let Some(id) = gist::parse_gist_id(draft) {
+            Some(id)
+        } else {
+            self.gist.gist_id_invalid = true;
+            return;
+        };
+        self.gist.gist_id_invalid = false;
+        if gist_id != self.settings.gist_id {
+            self.settings.gist_id = gist_id;
+            self.gist.last_pushed_json = None;
+            self.save_settings_reporting_errors();
+        }
+    }
+
+    fn set_gist_auto_backup(&mut self, enabled: bool) {
+        self.settings.gist_auto_backup = enabled;
+        self.save_settings_reporting_errors();
+    }
+
+    fn start_gist_job(&mut self, task: GistTask, job: gist::Job) {
+        let Some(token) = &self.gist.token else {
+            return;
+        };
+        if self.gist.in_flight.is_some() {
+            return;
+        }
+        let pending = gist::Pending::start(gist::Client::new(token), job);
+        self.gist.in_flight = Some((task, pending));
+    }
+
+    fn push_job(&self) -> gist::Job {
+        gist::Job::Push {
+            gist_id: self.settings.gist_id.clone(),
+            title: self.board.title.clone(),
+            board_json: serde_json::to_string_pretty(&self.board).unwrap_or_default(),
+        }
+    }
+
+    fn back_up_to_gist(&mut self, task: GistTask) {
+        self.gist.last_attempt = Some(Instant::now());
+        self.gist.board_changed = false;
+        let job = self.push_job();
+        self.start_gist_job(task, job);
+    }
+
+    /// Pushes at most once per interval and only after the board changed,
+    /// so a long writing session leaves a revision every few minutes rather
+    /// than one per keystroke.
+    fn back_up_to_gist_if_due(&mut self, ctx: &egui::Context) {
+        if !self.settings.gist_auto_backup
+            || self.gist.token.is_none()
+            || self.gist.in_flight.is_some()
+            || !self.gist.board_changed
+            || matches!(self.save_state, SaveState::Pending(_))
+        {
+            return;
+        }
+        if let Some(at) = self.gist.last_attempt {
+            let elapsed = at.elapsed();
+            if elapsed < GIST_BACKUP_INTERVAL {
+                ctx.request_repaint_after(GIST_BACKUP_INTERVAL.saturating_sub(elapsed));
+                return;
+            }
+        }
+        if let gist::Job::Push { board_json, .. } = self.push_job()
+            && self.gist.last_pushed_json.as_ref() == Some(&board_json)
+        {
+            self.gist.board_changed = false;
+            return;
+        }
+        self.back_up_to_gist(GistTask::AutoPush);
+    }
+
+    fn open_gist_restore(&mut self) {
+        let Some(gist_id) = self.settings.gist_id.clone() else {
+            return;
+        };
+        self.gist.restore = Some(GistRestore::default());
+        self.start_gist_job(
+            GistTask::ListRevisions,
+            gist::Job::ListRevisions { gist_id },
+        );
+    }
+
+    fn restore_gist_revision(&mut self, version: String) {
+        let Some(gist_id) = self.settings.gist_id.clone() else {
+            return;
+        };
+        self.start_gist_job(GistTask::Fetch, gist::Job::Fetch { gist_id, version });
+    }
+
+    fn receive_gist_reply(&mut self, ctx: &egui::Context) {
+        let Some((task, pending)) = &self.gist.in_flight else {
+            return;
+        };
+        let task = *task;
+        let Some(reply) = pending.poll() else {
+            ctx.request_repaint_after(GIST_POLL);
+            return;
+        };
+        self.gist.in_flight = None;
+        self.handle_gist_reply(task, reply);
+    }
+
+    fn handle_gist_reply(&mut self, task: GistTask, reply: gist::Reply) {
+        match reply {
+            gist::Reply::Pushed { pushed, board_json } => {
+                self.gist.last_pushed_json = Some(board_json);
+                self.gist.last_success = Some(Instant::now());
+                self.gist.error = None;
+                if self.settings.gist_id.as_deref() != Some(pushed.gist_id.as_str()) {
+                    self.gist.gist_id_draft.clone_from(&pushed.gist_id);
+                    self.settings.gist_id = Some(pushed.gist_id);
+                    self.save_settings_reporting_errors();
+                }
+            }
+            gist::Reply::Revisions(revisions) => {
+                if let Some(restore) = &mut self.gist.restore {
+                    restore.revisions = Some(revisions);
+                }
+            }
+            gist::Reply::Fetched(json) => match serde_json::from_str::<Board>(&json) {
+                Ok(board) => {
+                    self.gist.restore = None;
+                    self.settings_dialog = None;
+                    self.replace_board(board);
+                }
+                Err(e) => {
+                    if let Some(restore) = &mut self.gist.restore {
+                        restore.error = Some(format!("That version is not a valid board: {e}"));
+                    }
+                }
+            },
+            gist::Reply::Failed(reason) => {
+                let message = format!("GitHub backup failed: {reason}");
+                match task {
+                    GistTask::ListRevisions | GistTask::Fetch => {
+                        if let Some(restore) = &mut self.gist.restore {
+                            restore.error = Some(message);
+                        }
+                    }
+                    GistTask::AutoPush if self.gist.error.is_none() => {
+                        self.alert = Some(format!(
+                            "{message}\n\nEdits are still saved locally. Check Settings → \
+                             GitHub Gist."
+                        ));
+                        self.gist.error = Some(message);
+                    }
+                    GistTask::AutoPush | GistTask::ManualPush => self.gist.error = Some(message),
+                }
+            }
+        }
+    }
+
+    /// Blocks shutdown on one last push so the gist ends the session with
+    /// the final state rather than one up to five minutes old.
+    fn back_up_to_gist_before_exit(&mut self) {
+        if let Some((task, pending)) = self.gist.in_flight.take() {
+            let reply = pending.wait();
+            self.handle_gist_reply(task, reply);
+        }
+        if !self.settings.gist_auto_backup || !self.gist.board_changed {
+            return;
+        }
+        let Some(token) = &self.gist.token else {
+            return;
+        };
+        let job = self.push_job();
+        if let gist::Job::Push { board_json, .. } = &job
+            && self.gist.last_pushed_json.as_ref() == Some(board_json)
+        {
+            return;
+        }
+        let reply = gist::run(&gist::Client::new(token), job);
+        self.handle_gist_reply(GistTask::ManualPush, reply);
+    }
+
+    fn gist_section(&mut self, ui: &mut Ui) -> Option<GistAction> {
+        let section_label = field_label(ui, self.colors, "GitHub Gist");
+        let action = if self.gist.token.is_some() {
+            self.gist_controls(ui, section_label)
+        } else {
+            self.gist_connect_form(ui, section_label)
+        };
+        let (status, color) = self.gist_status();
+        if !status.is_empty() {
+            ui.label(RichText::new(status).small().color(color));
+        }
+        action
+    }
+
+    fn gist_connect_form(&mut self, ui: &mut Ui, label: egui::Id) -> Option<GistAction> {
+        ui.label(
+            RichText::new(
+                "Optionally back up the board to a secret gist on your GitHub account, with \
+                 every version kept in its history. Create a fine-grained token with the \
+                 account permission Gists: read and write (or a classic token with the gist \
+                 scope) and paste it here.",
+            )
+            .small()
+            .color(self.colors.muted),
+        );
+        let mut action = None;
+        ui.horizontal(|ui| {
+            let field = ui
+                .add(
+                    TextEdit::singleline(&mut self.gist.token_draft)
+                        .password(true)
+                        .hint_text("GitHub token")
+                        .desired_width(240.0),
+                )
+                .labelled_by(label);
+            let submitted = field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+            if ui.button("Connect").clicked() || submitted {
+                action = Some(GistAction::Connect);
+            }
+        });
+        action
+    }
+
+    fn gist_controls(&mut self, ui: &mut Ui, label: egui::Id) -> Option<GistAction> {
+        let mut action = None;
+        let busy = self.gist.in_flight.is_some();
+        ui.horizontal(|ui| {
+            let id_field = ui
+                .add(
+                    TextEdit::singleline(&mut self.gist.gist_id_draft)
+                        .hint_text("Gist id or URL; empty creates one")
+                        .desired_width(240.0),
+                )
+                .labelled_by(label);
+            if id_field.changed() {
+                action = Some(GistAction::SetGistId);
+            }
+            if let Some(id) = &self.settings.gist_id {
+                ui.hyperlink_to("Open", format!("https://gist.github.com/{id}"));
+            }
+        });
+        if self.gist.gist_id_invalid {
+            ui.label(
+                RichText::new("Not a gist id or URL")
+                    .small()
+                    .color(self.colors.danger),
+            );
+        }
+        let mut auto = self.settings.gist_auto_backup;
+        if ui
+            .checkbox(&mut auto, "Back up automatically")
+            .on_hover_text("At most every five minutes while you edit, and when you quit")
+            .changed()
+        {
+            self.set_gist_auto_backup(auto);
+        }
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(!busy, egui::Button::new("Back up now"))
+                .clicked()
+            {
+                action = Some(GistAction::BackUpNow);
+            }
+            if ui
+                .add_enabled(
+                    !busy && self.settings.gist_id.is_some(),
+                    egui::Button::new("Restore from gist…"),
+                )
+                .clicked()
+            {
+                action = Some(GistAction::Restore);
+            }
+            if ui
+                .button("Disconnect")
+                .on_hover_text("Forget the token; the gist itself stays on GitHub")
+                .clicked()
+            {
+                action = Some(GistAction::Disconnect);
+            }
+        });
+        action
+    }
+
+    fn gist_status(&self) -> (String, Color32) {
+        let muted = self.colors.muted;
+        if let Some(error) = &self.gist.error {
+            return (error.clone(), self.colors.danger);
+        }
+        if self.gist.token.is_none() {
+            return (String::new(), muted);
+        }
+        let status = if self.gist.in_flight.is_some() {
+            "Talking to GitHub…".to_owned()
+        } else if let Some(at) = self.gist.last_success {
+            format!("Backed up {}", elapsed_description(at.elapsed()))
+        } else if self.settings.gist_id.is_none() {
+            "The first backup creates a secret gist.".to_owned()
+        } else {
+            "Not backed up in this session yet.".to_owned()
+        };
+        (status, muted)
+    }
+
+    fn handle_gist_action(&mut self, action: GistAction) {
+        match action {
+            GistAction::Connect => self.connect_github(),
+            GistAction::Disconnect => self.disconnect_github(),
+            GistAction::SetGistId => self.apply_gist_id_draft(),
+            GistAction::BackUpNow => self.back_up_to_gist(GistTask::ManualPush),
+            GistAction::Restore => self.open_gist_restore(),
+        }
+    }
+
+    fn gist_restore_dialog(&mut self, ctx: &egui::Context) {
+        let Some(restore) = &self.gist.restore else {
+            return;
+        };
+        let colors = self.colors;
+        let busy = self.gist.in_flight.is_some();
+        let mut chosen = None;
+        let mut close = false;
+        let modal = egui::Modal::new(egui::Id::unique("gist_restore")).show(ctx, |ui| {
+            ui.set_width(380.0);
+            ui.heading("Restore from gist");
+            if let Some(error) = &restore.error {
+                ui.label(RichText::new(error).small().color(colors.danger));
+            }
+            match &restore.revisions {
+                None if busy => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Loading versions…");
+                    });
+                }
+                None => {}
+                Some(revisions) if revisions.is_empty() => {
+                    ui.label("This gist has no versions yet.");
+                }
+                Some(revisions) => {
+                    ui.label(
+                        RichText::new("Newest first. Restoring can be undone.")
+                            .small()
+                            .color(colors.muted),
+                    );
+                    egui::ScrollArea::vertical()
+                        .max_height(320.0)
+                        .show(ui, |ui| {
+                            for revision in revisions {
+                                let label = format!(
+                                    "{}  ·  {}",
+                                    display_timestamp(&revision.committed_at),
+                                    short_version(&revision.version)
+                                );
+                                if ui.add_enabled(!busy, egui::Button::new(label)).clicked() {
+                                    chosen = Some(revision.version.clone());
+                                }
+                            }
+                        });
+                    if busy {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label("Downloading…");
+                        });
+                    }
+                }
+            }
+            ui.add_space(8.0);
+            close = ui.button("Cancel").clicked();
+        });
+        if let Some(version) = chosen {
+            if let Some(restore) = &mut self.gist.restore {
+                restore.error = None;
+            }
+            self.restore_gist_revision(version);
+        }
+        if close || modal.should_close() {
+            self.gist.restore = None;
         }
     }
 
@@ -1744,6 +2228,20 @@ impl PlannerApp {
         }
     }
 
+    /// True when "Restore backup…" was clicked.
+    fn backups_section(&self, ui: &mut Ui) -> bool {
+        let backups_label = field_label(ui, self.colors, "Backups");
+        ui.label(
+            RichText::new(format!(
+                "The last {BACKUPS_KEPT} copies are kept in {}",
+                storage::backups_dir(&self.path).display()
+            ))
+            .small(),
+        )
+        .labelled_by(backups_label);
+        ui.button("Restore backup…").clicked()
+    }
+
     fn settings_dialog(&mut self, ctx: &egui::Context) {
         let Some(dialog) = &self.settings_dialog else {
             return;
@@ -1753,6 +2251,7 @@ impl PlannerApp {
         let mut chosen = self.settings.color_scheme;
         let mut close = false;
         let mut board_file_action = None;
+        let mut gist_action = None;
         let modal = egui::Modal::new(egui::Id::unique("settings")).show(ctx, |ui| {
             ui.set_width(360.0);
             ui.heading("Settings");
@@ -1805,18 +2304,11 @@ impl PlannerApp {
                 .color(colors.muted),
             );
 
-            let backups_label = field_label(ui, colors, "Backups");
-            ui.label(
-                RichText::new(format!(
-                    "The last {BACKUPS_KEPT} copies are kept in {}",
-                    storage::backups_dir(&self.path).display()
-                ))
-                .small(),
-            )
-            .labelled_by(backups_label);
-            if ui.button("Restore backup…").clicked() {
+            if self.backups_section(ui) {
                 board_file_action = Some(BoardFileAction::RestoreBackup);
             }
+
+            gist_action = self.gist_section(ui);
 
             ui.add_space(6.0);
             match &save_error {
@@ -1845,7 +2337,10 @@ impl PlannerApp {
             Some(BoardFileAction::RestoreBackup) => self.restore_backup(),
             None => {}
         }
-        if close || modal.should_close() {
+        if let Some(action) = gist_action {
+            self.handle_gist_action(action);
+        }
+        if (close || modal.should_close()) && self.gist.restore.is_none() {
             self.settings_dialog = None;
         }
     }
@@ -1924,6 +2419,8 @@ impl eframe::App for PlannerApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.flush_if_due(ctx);
         self.reload_if_changed_elsewhere(ctx);
+        self.receive_gist_reply(ctx);
+        self.back_up_to_gist_if_due(ctx);
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
@@ -1981,6 +2478,7 @@ impl eframe::App for PlannerApp {
             });
 
         self.settings_dialog(&ctx);
+        self.gist_restore_dialog(&ctx);
         self.dialogs(&ctx);
         self.sync_window_title(&ctx);
     }
@@ -1989,6 +2487,7 @@ impl eframe::App for PlannerApp {
         if matches!(self.save_state, SaveState::Pending(_)) {
             self.save_now();
         }
+        self.back_up_to_gist_before_exit();
     }
 }
 
@@ -2461,6 +2960,26 @@ fn window_title(novel_title: &str, save_failed: bool) -> String {
     format!("{novel_title} — StorySquish{suffix}")
 }
 
+fn elapsed_description(elapsed: Duration) -> String {
+    match elapsed.as_secs() / 60 {
+        0 => "just now".to_owned(),
+        1 => "a minute ago".to_owned(),
+        minutes => format!("{minutes} minutes ago"),
+    }
+}
+
+/// GitHub's `2026-11-22T09:41:07Z` as `2026-11-22 09:41 UTC`.
+fn display_timestamp(iso: &str) -> String {
+    match (iso.get(..10), iso.get(11..16)) {
+        (Some(date), Some(time)) if iso.ends_with('Z') => format!("{date} {time} UTC"),
+        _ => iso.to_owned(),
+    }
+}
+
+fn short_version(version: &str) -> &str {
+    version.get(..7).unwrap_or(version)
+}
+
 fn scene_number(index: usize) -> String {
     format!("SCENE {:02}", index + 1)
 }
@@ -2513,6 +3032,30 @@ mod tests {
         assert_eq!(format_count(999), "999");
         assert_eq!(format_count(1_000), "1,000");
         assert_eq!(format_count(1_234_567), "1,234,567");
+    }
+
+    #[test]
+    fn gist_timestamps_and_versions_are_shortened() {
+        assert_eq!(
+            display_timestamp("2026-11-22T09:41:07Z"),
+            "2026-11-22 09:41 UTC"
+        );
+        assert_eq!(display_timestamp("yesterday"), "yesterday");
+        assert_eq!(
+            short_version("57a7f021a713b1c5a6a199b54cc514735d2d462f"),
+            "57a7f02"
+        );
+        assert_eq!(short_version("abc"), "abc");
+    }
+
+    #[test]
+    fn backup_age_reads_naturally() {
+        assert_eq!(elapsed_description(Duration::from_secs(20)), "just now");
+        assert_eq!(elapsed_description(Duration::from_secs(90)), "a minute ago");
+        assert_eq!(
+            elapsed_description(Duration::from_mins(12)),
+            "12 minutes ago"
+        );
     }
 
     #[test]

@@ -73,6 +73,7 @@
   button.warn{background:#e8b04a;color:#2b2118;border-color:transparent}
   .backup-list{display:flex;flex-direction:column;gap:2px;max-height:50vh;overflow:auto;margin-bottom:12px}
   .backup-list button{text-align:left}
+  .modal input.gist-input{flex:1;min-width:0}
   #inspector{width:340px;flex:none;background:var(--inspector);border-left:1px solid var(--line);padding:16px;overflow:auto}
   #stats{background:var(--inspector);border-top:1px solid var(--line);padding:12px}
   h2{margin:0 0 6px;font-size:16px}
@@ -337,6 +338,12 @@ const BACKUP_INTERVAL_MS = 30 * 60 * 1000;
 const BACKUPS_KEPT = 30;
 const BACKUP_NUDGE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
 const FILE_KEY = "storysquish.file";
+const TOKEN_KEY = "storysquish.github-token";
+const GITHUB_API = "https://api.github.com";
+const GIST_FILE = "storysquish-board.json";
+const GIST_BACKUP_INTERVAL_MS = 5 * 60 * 1000;
+const GIST_CHECK_MS = 30 * 1000;
+const GIST_REVISIONS_LISTED = 30;
 const DB_NAME = "storysquish";
 const FILE_ACCESS = "showOpenFilePicker" in window;
 const UNDO_LIMIT = 100;
@@ -805,7 +812,7 @@ function loadBoard() {
 }
 
 function loadSettings() {
-  const defaults = {colorScheme: DEFAULT_SCHEME, lastExportAt: 0};
+  const defaults = {colorScheme: DEFAULT_SCHEME, lastExportAt: 0, gistId: null, gistAutoBackup: false};
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
     if (raw === null) return {settings: defaults, alert: null};
@@ -815,15 +822,23 @@ function loadSettings() {
     if (!COLOR_SCHEMES.some(s => s.key === scheme)) throw new Error(`unknown color scheme ${JSON.stringify(scheme)}`);
     const lastExportAt = data["last-export"] ?? 0;
     if (!Number.isFinite(lastExportAt)) throw new Error("last-export must be a timestamp");
-    return {settings: {colorScheme: scheme, lastExportAt}, alert: null};
+    const gistId = data["gist-id"] ?? null;
+    if (gistId !== null && parseGistId(gistId) !== gistId) throw new Error("gist-id must be a gist id");
+    const gistAutoBackup = data["gist-auto-backup"] ?? false;
+    if (typeof gistAutoBackup !== "boolean") throw new Error("gist-auto-backup must be true or false");
+    return {settings: {colorScheme: scheme, lastExportAt, gistId, gistAutoBackup}, alert: null};
   } catch (e) {
     return {settings: defaults, alert: `Could not read settings, using defaults: ${e.message}`};
   }
 }
 
 function persistSettings() {
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify(
-    {"color-scheme": settings.colorScheme, "last-export": settings.lastExportAt}, null, 2));
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+    "color-scheme": settings.colorScheme,
+    "last-export": settings.lastExportAt,
+    ...(settings.gistId ? {"gist-id": settings.gistId} : {}),
+    "gist-auto-backup": settings.gistAutoBackup,
+  }, null, 2));
 }
 
 /* ---------- IndexedDB: backups and the linked file handle ---------- */
@@ -901,6 +916,10 @@ let persistRequested = false;
 // {handle, name, connected, lastModified}; null when the board only lives here.
 let linkedFile = null;
 let fileWrites = Promise.resolve();
+const gist = {
+  token: readToken(), busy: false, error: null, idInvalid: false,
+  boardChanged: false, lastAttemptAt: 0, lastSuccessAt: 0, lastPushedJson: null,
+};
 
 function isSelected(kind, id) {
   return selected?.kind === kind && selected.id === id;
@@ -922,15 +941,19 @@ function applyTheme(p) {
   style.colorScheme = p.dark ? "dark" : "light";
 }
 
-function setColorScheme(key) {
-  settings.colorScheme = key;
-  applyTheme(schemeByKey(key));
+function saveSettingsReportingErrors() {
   try {
     persistSettings();
     settingsSaveError = null;
   } catch (e) {
     settingsSaveError = `Could not save settings: ${e.message}`;
   }
+}
+
+function setColorScheme(key) {
+  settings.colorScheme = key;
+  applyTheme(schemeByKey(key));
+  saveSettingsReportingErrors();
 }
 
 /* ---------- saving ---------- */
@@ -949,6 +972,7 @@ function saveNow() {
     saveState = {kind: "failed", reason: e.message};
   }
   writeToLinkedFile(json);
+  gist.boardChanged = true;
   render();
 }
 
@@ -1007,6 +1031,7 @@ async function writeBoardFile(target, json) {
 function replaceBoard(loaded, kind) {
   history.commit(board);
   board = loaded;
+  gist.boardChanged = true;
   history.commit(board);
   try { localStorage.setItem(BOARD_KEY, serializeBoard(board)); } catch { /* next save retries */ }
   saveState = {kind};
@@ -1755,7 +1780,8 @@ function settingsDialog() {
       }
       const status = hint(settingsSaveError ?? "Saved in this browser's storage.");
       if (settingsSaveError) status.style.color = "var(--danger)";
-      box.append(heading, label, list, status, ...boardFileSection(), ...backupSection(), button("Close", "", closeModal));
+      box.append(heading, label, list, status, ...boardFileSection(), ...backupSection(), ...gistSection(),
+        button("Close", "", closeModal));
       box.style.maxWidth = "420px";
     },
   });
@@ -1860,6 +1886,287 @@ async function restoreBackupDialog() {
         list, button("Cancel", "", closeModal));
     },
   });
+}
+
+/* ---------- GitHub Gist backup ---------- */
+
+function readToken() {
+  try { return localStorage.getItem(TOKEN_KEY) || null; } catch { return null; }
+}
+
+// Accepts a bare id or any gist URL, e.g. one copied from the address bar.
+function parseGistId(input) {
+  const segment = String(input).trim().replace(/\/+$/, "").split("/").pop() ?? "";
+  const id = segment.split(/[#?]/)[0];
+  return /^[0-9a-fA-F]+$/.test(id) ? id : null;
+}
+
+function gistDescription(title) {
+  const trimmed = title.trim();
+  return trimmed ? `StorySquish board: ${trimmed}` : "StorySquish board";
+}
+
+function describeGithubFailure(status, detail) {
+  const hint = {
+    401: "the token is invalid or expired",
+    403: "the token lacks the Gist permission, or the rate limit was hit",
+    404: "the gist does not exist or belongs to another account",
+  }[status] ?? "GitHub refused the request";
+  return detail ? `${hint} (HTTP ${status}: ${detail})` : `${hint} (HTTP ${status})`;
+}
+
+async function github(path, {method = "GET", body} = {}) {
+  let response;
+  try {
+    response = await fetch(`${GITHUB_API}${path}`, {
+      method,
+      headers: {
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        Authorization: `Bearer ${gist.token}`,
+        ...(body ? {"Content-Type": "application/json"} : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch (e) {
+    throw new Error(`contacting GitHub: ${e.message}`);
+  }
+  const text = await response.text();
+  if (!response.ok) {
+    let detail = "";
+    try { detail = JSON.parse(text).message ?? ""; } catch { /* not JSON */ }
+    throw new Error(describeGithubFailure(response.status, detail));
+  }
+  try { return JSON.parse(text); } catch { throw new Error("GitHub sent an unexpected response"); }
+}
+
+async function runGistJob(job) {
+  gist.busy = true;
+  drawModal();
+  try {
+    return await job();
+  } finally {
+    gist.busy = false;
+    drawModal();
+  }
+}
+
+// Creates a secret gist on the first push, then adds revisions to it.
+async function backUpToGist(kind) {
+  if (!gist.token || gist.busy) return;
+  gist.lastAttemptAt = Date.now();
+  gist.boardChanged = false;
+  const json = serializeBoard(board);
+  const body = {description: gistDescription(board.title), public: false, files: {[GIST_FILE]: {content: json}}};
+  try {
+    const result = await runGistJob(() => settings.gistId
+      ? github(`/gists/${settings.gistId}`, {method: "PATCH", body})
+      : github("/gists", {method: "POST", body}));
+    gist.lastPushedJson = json;
+    gist.lastSuccessAt = Date.now();
+    gist.error = null;
+    if (result.id !== settings.gistId) {
+      settings.gistId = result.id;
+      saveSettingsReportingErrors();
+    }
+  } catch (e) {
+    const message = `GitHub backup failed: ${e.message}`;
+    if (kind === "auto" && !gist.error) {
+      alertDialog(`${message}\n\nEdits are still saved in this browser. Check Settings → GitHub Gist.`);
+    }
+    gist.error = message;
+  }
+  drawModal();
+}
+
+// At most once per interval and only after the board changed, so a long
+// writing session leaves a revision every few minutes, not one per keystroke.
+function backUpToGistIfDue({ignoreInterval = false} = {}) {
+  if (!settings.gistAutoBackup || !gist.token || gist.busy || !gist.boardChanged) return;
+  if (saveState.kind === "pending") return;
+  if (!ignoreInterval && Date.now() - gist.lastAttemptAt < GIST_BACKUP_INTERVAL_MS) return;
+  if (serializeBoard(board) === gist.lastPushedJson) { gist.boardChanged = false; return; }
+  backUpToGist("auto");
+}
+
+async function gistBoardAt(version) {
+  const result = await github(`/gists/${settings.gistId}/${version}`);
+  const file = result.files?.[GIST_FILE];
+  if (!file) throw new Error(`this gist revision has no ${GIST_FILE}`);
+  if (!file.truncated && typeof file.content === "string") return file.content;
+  // The API inlines at most 1 MB; larger boards come from the raw URL,
+  // which embeds the secret gist's id and needs no token.
+  const response = await fetch(file.raw_url);
+  if (!response.ok) throw new Error(`downloading the board from GitHub failed (HTTP ${response.status})`);
+  return response.text();
+}
+
+function connectGithub(token) {
+  const trimmed = token.trim();
+  if (!trimmed) return;
+  try {
+    localStorage.setItem(TOKEN_KEY, trimmed);
+    gist.token = trimmed;
+    gist.error = null;
+  } catch (e) {
+    gist.error = `Could not save the token: ${e.message}`;
+  }
+}
+
+// Forgets the token but keeps the gist id, so reconnecting resumes backing
+// up to the same gist.
+function disconnectGithub() {
+  try { localStorage.removeItem(TOKEN_KEY); } catch { /* best effort */ }
+  gist.token = null;
+  gist.error = null;
+  gist.lastSuccessAt = 0;
+}
+
+function setGistId(input) {
+  const trimmed = input.trim();
+  const id = trimmed ? parseGistId(trimmed) : null;
+  gist.idInvalid = trimmed !== "" && id === null;
+  if (gist.idInvalid || id === settings.gistId) return;
+  settings.gistId = id;
+  gist.lastPushedJson = null;
+  saveSettingsReportingErrors();
+}
+
+function minutesAgo(at) {
+  const minutes = Math.floor((Date.now() - at) / 60000);
+  return minutes === 0 ? "just now" : minutes === 1 ? "a minute ago" : `${minutes} minutes ago`;
+}
+
+function gistStatus() {
+  if (gist.error) return {text: gist.error, danger: true};
+  if (!gist.token) return null;
+  if (gist.busy) return {text: "Talking to GitHub…"};
+  if (gist.lastSuccessAt) return {text: `Backed up ${minutesAgo(gist.lastSuccessAt)}`};
+  if (!settings.gistId) return {text: "The first backup creates a secret gist."};
+  return {text: "Not backed up in this visit yet."};
+}
+
+function gistSection() {
+  const label = fieldLabel("GitHub Gist");
+  const parts = [label];
+  if (!gist.token) {
+    parts.push(hint("Optionally back up the board to a secret gist on your GitHub account, with every " +
+      "version kept in its history. Create a fine-grained token with the account permission Gists: read " +
+      "and write (or a classic token with the gist scope) and paste it here. It is kept in this " +
+      "browser's storage."));
+    const input = document.createElement("input");
+    input.type = "password";
+    input.className = "gist-input";
+    input.placeholder = "GitHub token";
+    input.setAttribute("aria-label", "GitHub token");
+    const connect = () => { connectGithub(input.value); drawModal(); };
+    input.addEventListener("keydown", e => { if (e.key === "Enter") connect(); });
+    parts.push(row(input, button("Connect", "", connect)));
+  } else {
+    const input = document.createElement("input");
+    input.className = "gist-input";
+    input.placeholder = "Gist id or URL; empty creates one";
+    input.setAttribute("aria-label", "Gist id or URL");
+    input.value = settings.gistId ?? "";
+    input.addEventListener("change", () => { setGistId(input.value); drawModal(); });
+    const idRow = row(input);
+    if (settings.gistId) {
+      const link = document.createElement("a");
+      link.href = `https://gist.github.com/${settings.gistId}`;
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.textContent = "Open";
+      idRow.append(link);
+    }
+    parts.push(idRow);
+    if (gist.idInvalid) {
+      const invalid = hint("Not a gist id or URL");
+      invalid.style.color = "var(--danger)";
+      parts.push(invalid);
+    }
+    const auto = document.createElement("label");
+    auto.className = "toggle";
+    auto.title = "At most every five minutes while you edit, and when you leave the page";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = settings.gistAutoBackup;
+    checkbox.addEventListener("change", () => {
+      settings.gistAutoBackup = checkbox.checked;
+      saveSettingsReportingErrors();
+    });
+    auto.append(checkbox, " Back up automatically");
+    const backUp = button("Back up now", "", () => backUpToGist("manual"));
+    const restore = button("Restore from gist…", "", restoreGistDialog);
+    backUp.disabled = gist.busy;
+    restore.disabled = gist.busy || !settings.gistId;
+    const disconnect = button("Disconnect", "", () => { disconnectGithub(); drawModal(); });
+    disconnect.title = "Forget the token; the gist itself stays on GitHub";
+    parts.push(row(auto), row(backUp, restore, disconnect));
+  }
+  const status = gistStatus();
+  if (status) {
+    const line = hint(status.text);
+    if (status.danger) line.style.color = "var(--danger)";
+    parts.push(line);
+  }
+  return parts;
+}
+
+async function restoreGistDialog() {
+  const state = {revisions: null, error: null};
+  openModal({
+    draw(box) {
+      const heading = document.createElement("h2");
+      heading.textContent = "Restore from gist";
+      box.append(heading);
+      if (state.error) {
+        const error = hint(state.error);
+        error.style.color = "var(--danger)";
+        box.append(error);
+      }
+      if (state.revisions === null) {
+        if (!state.error) box.append(hint("Loading versions…"));
+      } else if (!state.revisions.length) {
+        box.append(hint("This gist has no versions yet."));
+      } else {
+        box.append(hint(gist.busy ? "Downloading…" : "Newest first. Restoring can be undone."));
+        const list = document.createElement("div");
+        list.className = "backup-list";
+        for (const revision of state.revisions) {
+          const when = new Date(revision.committed_at).toLocaleString();
+          const choose = button(`${when} · ${revision.version.slice(0, 7)}`, "", async () => {
+            state.error = null;
+            let restored;
+            try {
+              restored = parseBoard(await runGistJob(() => gistBoardAt(revision.version)));
+            } catch (e) {
+              state.error = `GitHub backup failed: ${e.message}`;
+              drawModal();
+              return;
+            }
+            modalStack.length = 0;
+            drawModal();
+            history.commit(board);
+            board = restored;
+            selected = null;
+            saveNow();
+            if (saveState.kind === "saved") { saveState = {kind: "imported"}; render(); }
+          });
+          choose.disabled = gist.busy;
+          list.append(choose);
+        }
+        box.append(list);
+      }
+      box.append(button("Cancel", "", closeModal));
+    },
+  });
+  try {
+    state.revisions = await runGistJob(() =>
+      github(`/gists/${settings.gistId}/commits?per_page=${GIST_REVISIONS_LISTED}`));
+  } catch (e) {
+    state.error = `GitHub backup failed: ${e.message}`;
+  }
+  drawModal();
 }
 
 /* ---------- wiring ---------- */
@@ -2147,6 +2454,10 @@ window.addEventListener("storage", e => {
 const pollQuietly = () => pollLinkedFile().catch(() => {});
 setInterval(pollQuietly, FILE_POLL_MS);
 window.addEventListener("focus", pollQuietly);
+setInterval(backUpToGistIfDue, GIST_CHECK_MS);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) backUpToGistIfDue({ignoreInterval: true});
+});
 
 applyTheme(schemeByKey(settings.colorScheme));
 render();
