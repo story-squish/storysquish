@@ -18,6 +18,8 @@ const DISK_POLL: Duration = Duration::from_secs(2);
 const BACKUP_INTERVAL: Duration = Duration::from_mins(30);
 const BACKUPS_KEPT: usize = 30;
 const NODE_RADIUS: f32 = 26.0;
+/// Short of the midpoint, so the labels of A→B and B→A land apart.
+const EDGE_LABEL_POSITION: f32 = 0.4;
 const CARD_WIDTH: f32 = 220.0;
 const CARD_MARGIN: i8 = 12;
 /// Content width plus both inner margins and the widest (selected) stroke.
@@ -2145,7 +2147,7 @@ fn draw_relationship_edge(
         colors.ink,
     );
     let label_rect = egui::Rect::from_center_size(
-        start.lerp(tip, 0.5) + side * 1.5,
+        start.lerp(tip, EDGE_LABEL_POSITION) + side * 1.5,
         galley.size() + Vec2::new(8.0, 4.0),
     );
     painter.rect_filled(label_rect, 3.0, colors.board);

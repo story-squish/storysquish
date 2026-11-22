@@ -33,7 +33,46 @@
   main{flex:1;display:flex;min-height:0}
   #sidebar{width:250px;flex:none;background:var(--sidebar);border-right:1px solid var(--line);padding:16px;overflow:auto}
   #center{flex:1;display:flex;flex-direction:column;min-width:0}
-  #board{flex:1;overflow:auto;padding:22px}
+  #tabs{display:flex;gap:4px;padding:12px 22px 0;flex-wrap:wrap}
+  .tab{background:transparent;border-color:transparent}
+  .tab.active{background:var(--card);border-color:var(--line);font-weight:700}
+  .view{flex:1;overflow:auto;padding:16px 22px 22px;min-height:0}
+  #write:not([hidden]){display:flex;flex-direction:column}
+  #writeEditor:not([hidden]){flex:1;display:flex;flex-direction:column;gap:6px;min-height:0}
+  #writeEditor .row{margin:0}
+  #wHeading{font-weight:700}
+  #wSummary{font-style:italic}
+  #prose{flex:1;min-height:320px;font:16px/1.6 Georgia,"Times New Roman",serif;padding:14px;background:var(--card);resize:none}
+  .link{background:none;border:0;padding:2px 0;color:var(--accent);text-decoration:underline;display:block;text-align:left}
+  .day-heading{font-size:12px;font-weight:700;letter-spacing:.5px;color:var(--muted);margin:12px 0 4px}
+  .trow{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;background:var(--card);border:1px solid var(--line);border-radius:4px;padding:6px 10px;margin-bottom:4px;cursor:pointer;max-width:720px}
+  .trow.selected{border:2px solid var(--accent);padding:5px 9px}
+  #graph{padding:0;overflow:hidden}
+  #graph .graph-hint{padding:16px 22px 0}
+  #graph svg{display:block;width:100%;height:100%}
+  #graph .node{cursor:pointer}
+  #graph .node circle{fill:var(--card);stroke:var(--line)}
+  #graph .node text{fill:var(--ink)}
+  #graph .node:is(:hover,:focus,.selected) circle{fill:var(--accent)}
+  #graph .node:is(:hover,:focus,.selected) .initials{fill:var(--on-accent)}
+  #graph .node:focus{outline:none}
+  #graph .edge{stroke:var(--muted);stroke-width:1.5;fill:none}
+  #graph .edge-label{fill:var(--ink);font-size:12px;paint-order:stroke;stroke:var(--board);stroke-width:5px;stroke-linejoin:round}
+  .footnote{font-size:11px;color:var(--muted);margin-top:6px}
+  .day-field{display:flex;gap:6px;align-items:center}
+  .day-field input[type=checkbox]{width:auto;margin:0}
+  .rel-row{display:flex;gap:6px;align-items:center;margin-top:4px}
+  .rel-row > span{white-space:nowrap}
+  .rel-row input{flex:1;min-width:0}
+  .rel-row select{width:110px;flex:none}
+  details.menu{position:relative}
+  details.menu > summary{list-style:none;cursor:pointer;border:1px solid var(--line);border-radius:6px;padding:6px 12px;font-size:13px;background:var(--card);color:var(--ink)}
+  details.menu > summary::-webkit-details-marker{display:none}
+  .menu-items{position:absolute;right:0;top:calc(100% + 4px);z-index:5;display:flex;flex-direction:column;gap:2px;background:var(--inspector);border:1px solid var(--line);border-radius:6px;padding:4px;box-shadow:0 6px 16px #0003;min-width:190px}
+  .menu-items button{text-align:left;border-color:transparent;background:transparent}
+  button.warn{background:#e8b04a;color:#2b2118;border-color:transparent}
+  .backup-list{display:flex;flex-direction:column;gap:2px;max-height:50vh;overflow:auto;margin-bottom:12px}
+  .backup-list button{text-align:left}
   #inspector{width:340px;flex:none;background:var(--inspector);border-left:1px solid var(--line);padding:16px;overflow:auto}
   #stats{background:var(--inspector);border-top:1px solid var(--line);padding:12px}
   h2{margin:0 0 6px;font-size:16px}
@@ -86,7 +125,8 @@
   @media (max-width:760px){
     main{flex-direction:column;overflow:auto}
     #sidebar,#inspector{width:auto;border:0;overflow:visible}
-    #board{overflow:visible;padding:16px}
+    .view{overflow:visible;padding:16px}
+    #graph{height:70vh}
     #bookTitle{width:100%}
   }
 </style>
@@ -99,8 +139,16 @@
   <button id="settingsBtn">Settings</button>
   <span class="grow"></span>
   <span class="save-state" id="saveState">saved</span>
-  <button id="outlineBtn" title="Export a Markdown outline">Outline</button>
-  <button id="exportBtn">Export</button>
+  <button class="warn" id="reconnectBtn" hidden>Reconnect file</button>
+  <button class="warn" id="backupNudge" hidden title="This board only lives in this browser. Download a copy, or link a file in Settings.">Back up</button>
+  <details class="menu" id="exportMenu">
+    <summary>Export</summary>
+    <div class="menu-items">
+      <button data-export="board">Board (JSON)</button>
+      <button data-export="outline">Outline (Markdown)</button>
+      <button data-export="manuscript" title="The prose of every scene, for a word processor">Manuscript (Markdown)</button>
+    </div>
+  </details>
   <button id="importBtn">Import</button>
   <button id="resetBtn">Reset</button>
   <button id="undoBtn">Undo</button>
@@ -113,7 +161,7 @@
   <aside id="sidebar">
     <div class="section">
       <h2>Filter</h2>
-      <input id="search" placeholder="Search title, summary, act, POV" aria-label="Search">
+      <input id="search" placeholder="Search scenes, prose, POV, location" aria-label="Search">
       <label class="field-label" for="filterStatus">Status</label>
       <select id="filterStatus"></select>
       <label class="field-label" for="filterAct">Act</label>
@@ -131,10 +179,37 @@
       <input id="newChar" placeholder="New character name" aria-label="New character name">
       <div class="hint">Type a name + Enter to add.</div>
     </div>
+    <div class="section">
+      <h2>Locations</h2>
+      <div id="locList"></div>
+      <input id="newLoc" placeholder="New location name" aria-label="New location name">
+    </div>
   </aside>
 
   <div id="center">
-    <section id="board"></section>
+    <nav id="tabs" role="tablist">
+      <button class="tab" role="tab" data-view="board">Board</button>
+      <button class="tab" role="tab" data-view="write">Write</button>
+      <button class="tab" role="tab" data-view="timeline">Timeline</button>
+      <button class="tab" role="tab" data-view="graph">Relationships</button>
+    </nav>
+    <section id="board" class="view"></section>
+    <section id="write" class="view" hidden>
+      <div id="writePicker"></div>
+      <div id="writeEditor">
+        <div class="row">
+          <button id="wPrev">Previous</button>
+          <span id="wHeading"></span>
+          <button id="wNext">Next</button>
+          <span class="grow" style="flex:1"></span>
+          <span class="hint" id="wWords"></span>
+        </div>
+        <div class="hint" id="wSummary"></div>
+        <textarea id="prose" aria-labelledby="wHeading" placeholder="Start writing…"></textarea>
+      </div>
+    </section>
+    <section id="timeline" class="view" hidden></section>
+    <section id="graph" class="view" hidden></section>
     <section id="stats" hidden>
       <h2>Statistics</h2>
       <table class="stats-table"><tbody id="statsBody"></tbody></table>
@@ -164,6 +239,23 @@
       </div>
       <label class="field-label" for="sAct">Act</label>
       <select id="sAct"></select>
+      <div class="cols">
+        <div>
+          <label class="field-label" for="sLocation">Location</label>
+          <select id="sLocation"></select>
+        </div>
+        <div>
+          <label class="field-label" for="sDated">Story day</label>
+          <div class="day-field">
+            <input type="checkbox" id="sDated" title="Place this scene on the timeline">
+            <input type="number" id="sDay" step="1" aria-label="Story day">
+          </div>
+        </div>
+      </div>
+      <div class="row">
+        <span class="hint" id="sWords"></span>
+        <button class="small" id="sWrite" title="Open this scene's prose in the editor">Write prose</button>
+      </div>
       <div class="row" style="margin-top:16px">
         <button id="sEarlier">Move earlier</button>
         <button id="sLater">Move later</button>
@@ -182,15 +274,46 @@
       </div>
       <label class="field-label" for="cName">Name</label>
       <input id="cName">
+      <label class="field-label" for="cRole">Role</label>
+      <input id="cRole" placeholder="Protagonist, mentor, antagonist…">
+      <label class="field-label" for="cGoal">Goal</label>
+      <textarea id="cGoal" rows="2" placeholder="What they want, and what stands in the way."></textarea>
       <label class="field-label" for="cNotes">Notes</label>
-      <textarea id="cNotes" rows="8" placeholder="Motivation, arc, voice, relationships."></textarea>
+      <textarea id="cNotes" rows="6" placeholder="Appearance, voice, backstory, arc."></textarea>
       <div class="hint" id="cPovCount"></div>
+      <label class="field-label" for="relTarget">Relationships</label>
+      <div id="relList"></div>
+      <div class="rel-row" id="relAdd">
+        <select id="relTarget" aria-label="Related character"></select>
+        <input id="relLabel" placeholder="mentor, sister…" aria-label="How they relate">
+        <button class="small" id="relAddBtn">Add</button>
+      </div>
       <div class="row" style="margin-top:16px">
         <button id="cUp">Move up</button>
         <button id="cDown">Move down</button>
       </div>
       <div class="row">
         <button class="danger" id="cDelete">Delete character</button>
+      </div>
+    </div>
+
+    <div id="locationInspector">
+      <div class="insp-head">
+        <span class="num">LOCATION</span>
+        <span class="ttl" id="lHeading"></span>
+        <button class="icon" id="lClose" title="Close">×</button>
+      </div>
+      <label class="field-label" for="lName">Name</label>
+      <input id="lName">
+      <label class="field-label" for="lNotes">Notes</label>
+      <textarea id="lNotes" rows="8" placeholder="Look, sound, smell, history, who goes there."></textarea>
+      <div class="hint" id="lCount"></div>
+      <div class="row" style="margin-top:16px">
+        <button id="lUp">Move up</button>
+        <button id="lDown">Move down</button>
+      </div>
+      <div class="row">
+        <button class="danger" id="lDelete">Delete location</button>
       </div>
     </div>
   </aside>
@@ -209,6 +332,13 @@ const ACTS = ["Act I", "Act II", "Act III"];
 const DEFAULT_TITLE = "Untitled Novel";
 const NONE_LABEL = "— none —";
 const SAVE_DEBOUNCE_MS = 400;
+const FILE_POLL_MS = 2000;
+const BACKUP_INTERVAL_MS = 30 * 60 * 1000;
+const BACKUPS_KEPT = 30;
+const BACKUP_NUDGE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
+const FILE_KEY = "storysquish.file";
+const DB_NAME = "storysquish";
+const FILE_ACCESS = "showOpenFilePicker" in window;
 const UNDO_LIMIT = 100;
 const SUMMARY_PREVIEW_CHARS = 180;
 const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
@@ -284,7 +414,7 @@ function generateId() {
 }
 
 function defaultBoard() {
-  return {title: DEFAULT_TITLE, characters: [], scenes: []};
+  return {title: DEFAULT_TITLE, characters: [], scenes: [], locations: [], relationships: []};
 }
 
 function isPlainObject(value) {
@@ -302,6 +432,21 @@ function requiredTextField(value, what) {
   return textField(value, what);
 }
 
+// Mirrors the desktop app's i32.
+function dayField(value, what) {
+  if (value === undefined || value === null) return null;
+  if (!Number.isInteger(value) || value < -(2 ** 31) || value >= 2 ** 31) {
+    throw new Error(`${what} must be a whole number`);
+  }
+  return value;
+}
+
+function listField(value, what) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error(`${what} must be a list`);
+  return value;
+}
+
 function choiceField(value, what, choices, fallback) {
   if (value === undefined || value === null) return fallback;
   if (value === "" && fallback === "") return "";
@@ -315,7 +460,30 @@ function parseCharacter(raw, index) {
   return {
     id: requiredTextField(raw.id, `${what} id`),
     name: requiredTextField(raw.name, `${what} name`),
+    role: textField(raw.role, `${what} role`),
+    goal: textField(raw.goal, `${what} goal`),
     notes: textField(raw.notes, `${what} notes`),
+  };
+}
+
+function parseLocation(raw, index) {
+  const what = `location ${index + 1}`;
+  if (!isPlainObject(raw)) throw new Error(`${what} must be an object`);
+  return {
+    id: requiredTextField(raw.id, `${what} id`),
+    name: requiredTextField(raw.name, `${what} name`),
+    notes: textField(raw.notes, `${what} notes`),
+  };
+}
+
+function parseRelationship(raw, index) {
+  const what = `relationship ${index + 1}`;
+  if (!isPlainObject(raw)) throw new Error(`${what} must be an object`);
+  return {
+    id: requiredTextField(raw.id, `${what} id`),
+    from: requiredTextField(raw.from, `${what} from`),
+    to: requiredTextField(raw.to, `${what} to`),
+    label: textField(raw.label, `${what} label`),
   };
 }
 
@@ -329,6 +497,9 @@ function parseScene(raw, index) {
     status: raw.status === undefined ? "Outline" : choiceField(raw.status, `${what} status`, STATUSES, "Outline"),
     pov: raw.pov === null ? "" : textField(raw.pov, `${what} pov`),
     act: choiceField(raw.act, `${what} act`, ACTS, ""),
+    location: raw.location === null ? "" : textField(raw.location, `${what} location`),
+    day: dayField(raw.day, `${what} day`),
+    text: textField(raw.text, `${what} text`),
   };
 }
 
@@ -336,22 +507,51 @@ function parseBoard(text) {
   const data = JSON.parse(text);
   if (!isPlainObject(data)) throw new Error("expected a JSON object");
   if (!Array.isArray(data.scenes)) throw new Error("missing the scenes list");
-  const characters = data.characters ?? [];
-  if (!Array.isArray(characters)) throw new Error("characters must be a list");
   return {
     title: textField(data.title, "title"),
-    characters: characters.map(parseCharacter),
+    characters: listField(data.characters ?? undefined, "characters").map(parseCharacter),
     scenes: data.scenes.map(parseScene),
+    locations: listField(data.locations ?? undefined, "locations").map(parseLocation),
+    relationships: listField(data.relationships ?? undefined, "relationships").map(parseRelationship),
   };
+}
+
+// The desktop app leaves "day" out when unset, so do the same.
+function serializeBoard(b) {
+  return JSON.stringify(b, (key, value) => (key === "day" && value === null ? undefined : value), 2);
 }
 
 function sceneIndex(id) { return board.scenes.findIndex(s => s.id === id); }
 function characterIndex(id) { return board.characters.findIndex(c => c.id === id); }
 function findCharacter(id) { return id ? board.characters.find(c => c.id === id) : undefined; }
 function povSceneCount(id) { return board.scenes.filter(s => s.pov === id).length; }
+function locationIndex(id) { return board.locations.findIndex(l => l.id === id); }
+function findLocation(id) { return id ? board.locations.find(l => l.id === id) : undefined; }
+function locationSceneCount(id) { return board.scenes.filter(s => s.location === id).length; }
+
+function wordCount(text) {
+  const trimmed = text.trim();
+  return trimmed ? trimmed.split(/\s+/).length : 0;
+}
+
+function manuscriptWordCount(b = board) {
+  return b.scenes.filter(s => s.status !== "Archived").reduce((sum, s) => sum + wordCount(s.text), 0);
+}
+
+// Dated, non-archived scenes in story order; same-day scenes keep board order.
+function chronologicalIndices() {
+  return board.scenes
+    .map((scene, index) => ({scene, index}))
+    .filter(({scene}) => scene.status !== "Archived" && scene.day !== null)
+    .sort((a, b) => a.scene.day - b.scene.day || a.index - b.index)
+    .map(({index}) => index);
+}
 
 function addSceneToBoard() {
-  const scene = {id: generateId(), title: "", summary: "", status: "Outline", pov: "", act: ""};
+  const scene = {
+    id: generateId(), title: "", summary: "", status: "Outline", pov: "", act: "",
+    location: "", day: null, text: "",
+  };
   board.scenes.push(scene);
   return scene.id;
 }
@@ -388,13 +588,32 @@ function moveScene(from, to) {
 function addCharacterToBoard(name) {
   const trimmed = name.trim();
   if (!trimmed) return false;
-  board.characters.push({id: generateId(), name: trimmed, notes: ""});
+  board.characters.push({id: generateId(), name: trimmed, role: "", goal: "", notes: ""});
   return true;
 }
 
 function deleteCharacterFromBoard(id) {
   board.characters = board.characters.filter(c => c.id !== id);
+  board.relationships = board.relationships.filter(r => r.from !== id && r.to !== id);
   for (const scene of board.scenes) if (scene.pov === id) scene.pov = "";
+}
+
+function addLocationToBoard(name) {
+  const trimmed = name.trim();
+  if (!trimmed) return false;
+  board.locations.push({id: generateId(), name: trimmed, notes: ""});
+  return true;
+}
+
+function deleteLocationFromBoard(id) {
+  board.locations = board.locations.filter(l => l.id !== id);
+  for (const scene of board.scenes) if (scene.location === id) scene.location = "";
+}
+
+function addRelationshipToBoard(from, to, label) {
+  if (from === to || !findCharacter(from) || !findCharacter(to)) return false;
+  board.relationships.push({id: generateId(), from, to, label: label.trim()});
+  return true;
 }
 
 function matchingIndices() {
@@ -406,7 +625,9 @@ function matchingIndices() {
     if (filters.pov && scene.pov !== filters.pov) return;
     if (needle) {
       const povName = findCharacter(scene.pov)?.name ?? "";
-      const haystack = [scene.title, scene.summary, scene.status, scene.act, povName].join(" ").toLowerCase();
+      const locationName = findLocation(scene.location)?.name ?? "";
+      const haystack = [scene.title, scene.summary, scene.status, scene.act, povName, locationName, scene.text]
+        .join(" ").toLowerCase();
       if (!haystack.includes(needle)) return;
     }
     indices.push(index);
@@ -475,6 +696,9 @@ function toMarkdown(b) {
     if (scene.act) facts.push(scene.act);
     const pov = b.characters.find(c => c.id === scene.pov && scene.pov);
     if (pov) facts.push(`POV: ${pov.name.trim()}`);
+    const location = b.locations.find(l => l.id === scene.location && scene.location);
+    if (location) facts.push(`Location: ${location.name.trim()}`);
+    if (scene.day !== null) facts.push(`Day ${scene.day}`);
     out += `_${facts.join(" · ")}_\n\n`;
     const summary = scene.summary.trim();
     if (summary) out += `${summary}\n\n`;
@@ -483,9 +707,39 @@ function toMarkdown(b) {
     out += "## Characters\n\n";
     for (const character of b.characters) {
       out += `### ${character.name.trim()}\n\n`;
+      for (const [field, value] of [["Role", character.role], ["Goal", character.goal]]) {
+        if (value.trim()) out += `**${field}:** ${value.trim()}\n\n`;
+      }
+      const outgoing = b.relationships.filter(r => r.from === character.id);
+      for (const relationship of outgoing) {
+        const other = b.characters.find(c => c.id === relationship.to);
+        if (other) out += `- ${relationship.label.trim() || "related to"} → ${other.name.trim()}\n`;
+      }
+      if (outgoing.length) out += "\n";
       const notes = character.notes.trim();
       if (notes) out += `${notes}\n\n`;
     }
+  }
+  if (b.locations.length) {
+    out += "## Locations\n\n";
+    for (const location of b.locations) {
+      out += `### ${location.name.trim()}\n\n`;
+      const notes = location.notes.trim();
+      if (notes) out += `${notes}\n\n`;
+    }
+  }
+  return out.trimEnd() + "\n";
+}
+
+// The prose of every non-archived scene in board order, ready to paste into
+// a word processor.
+function manuscriptMarkdown(b) {
+  let out = `# ${b.title.trim() || DEFAULT_TITLE}\n\n`;
+  for (const scene of b.scenes) {
+    if (scene.status === "Archived") continue;
+    out += `## ${scene.title.trim() || "* * *"}\n\n`;
+    const text = scene.text.trim();
+    if (text) out += `${text}\n\n`;
   }
   return out.trimEnd() + "\n";
 }
@@ -551,7 +805,7 @@ function loadBoard() {
 }
 
 function loadSettings() {
-  const defaults = {colorScheme: DEFAULT_SCHEME};
+  const defaults = {colorScheme: DEFAULT_SCHEME, lastExportAt: 0};
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
     if (raw === null) return {settings: defaults, alert: null};
@@ -559,14 +813,66 @@ function loadSettings() {
     if (!isPlainObject(data)) throw new Error("expected a JSON object");
     const scheme = data["color-scheme"] ?? DEFAULT_SCHEME;
     if (!COLOR_SCHEMES.some(s => s.key === scheme)) throw new Error(`unknown color scheme ${JSON.stringify(scheme)}`);
-    return {settings: {colorScheme: scheme}, alert: null};
+    const lastExportAt = data["last-export"] ?? 0;
+    if (!Number.isFinite(lastExportAt)) throw new Error("last-export must be a timestamp");
+    return {settings: {colorScheme: scheme, lastExportAt}, alert: null};
   } catch (e) {
     return {settings: defaults, alert: `Could not read settings, using defaults: ${e.message}`};
   }
 }
 
 function persistSettings() {
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify({"color-scheme": settings.colorScheme}, null, 2));
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(
+    {"color-scheme": settings.colorScheme, "last-export": settings.lastExportAt}, null, 2));
+}
+
+/* ---------- IndexedDB: backups and the linked file handle ---------- */
+
+let dbPromise = null;
+
+function openDb() {
+  if (!globalThis.indexedDB) return Promise.reject(new Error("this browser has no IndexedDB"));
+  dbPromise ??= new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore("backups", {keyPath: "id", autoIncrement: true});
+      request.result.createObjectStore("handles");
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => { dbPromise = null; reject(request.error); };
+  });
+  return dbPromise;
+}
+
+async function idb(storeName, mode, operation) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, mode);
+    const request = operation(tx.objectStore(storeName));
+    tx.oncomplete = () => resolve(request?.result);
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error ?? new Error("transaction aborted"));
+  });
+}
+
+async function addBackup(json, tag = "") {
+  await idb("backups", "readwrite", store => store.add({at: Date.now(), tag, json}));
+  const keys = await idb("backups", "readonly", store => store.getAllKeys());
+  const excess = keys.slice(0, Math.max(0, keys.length - BACKUPS_KEPT));
+  if (excess.length) await idb("backups", "readwrite", store => { for (const key of excess) store.delete(key); });
+}
+
+async function listBackups() {
+  return (await idb("backups", "readonly", store => store.getAll())).reverse();
+}
+
+function readFileMeta() {
+  try { return {lastModified: 0, unsynced: false, ...JSON.parse(localStorage.getItem(FILE_KEY) ?? "{}")}; }
+  catch { return {lastModified: 0, unsynced: false}; }
+}
+
+function writeFileMeta(meta) {
+  try { localStorage.setItem(FILE_KEY, JSON.stringify(meta)); } catch { /* best effort */ }
 }
 
 /* ---------- app state ---------- */
@@ -589,6 +895,12 @@ let showStats = false;
 const filters = {query: "", status: "", act: "", pov: ""};
 let dragFrom = null;
 const modalStack = [];
+let view = "board";
+let lastBackupAt = 0;
+let persistRequested = false;
+// {handle, name, connected, lastModified}; null when the board only lives here.
+let linkedFile = null;
+let fileWrites = Promise.resolve();
 
 function isSelected(kind, id) {
   return selected?.kind === kind && selected.id === id;
@@ -627,13 +939,195 @@ function saveNow() {
   clearTimeout(saveTimer);
   saveTimer = null;
   history.commit(board);
+  backUpIfDue();
+  requestPersistentStorage();
+  const json = serializeBoard(board);
   try {
-    localStorage.setItem(BOARD_KEY, JSON.stringify(board, null, 2));
+    localStorage.setItem(BOARD_KEY, json);
     saveState = {kind: "saved"};
   } catch (e) {
     saveState = {kind: "failed", reason: e.message};
   }
+  writeToLinkedFile(json);
   render();
+}
+
+// Runs before the session's first write and then periodically, so backups
+// hold the board as it was before each stretch of editing.
+function backUpIfDue() {
+  if (Date.now() - lastBackupAt < BACKUP_INTERVAL_MS) return;
+  lastBackupAt = Date.now();
+  let previous;
+  try { previous = localStorage.getItem(BOARD_KEY); } catch { return; }
+  if (previous === null) return;
+  addBackup(previous).catch(e => alertDialog(`Could not back up the board: ${e.message}`));
+}
+
+// Without this, browsers may evict the board under storage pressure.
+function requestPersistentStorage() {
+  if (persistRequested) return;
+  persistRequested = true;
+  navigator.storage?.persist?.().catch(() => {});
+}
+
+/* ---------- linked file ---------- */
+
+function writeToLinkedFile(json) {
+  if (!linkedFile) return;
+  if (!linkedFile.connected) {
+    writeFileMeta({...readFileMeta(), unsynced: true});
+    return;
+  }
+  const target = linkedFile;
+  fileWrites = fileWrites
+    .then(() => writeBoardFile(target, json))
+    .catch(e => {
+      writeFileMeta({...readFileMeta(), unsynced: true});
+      saveState = {kind: "failed", reason: `Could not write ${target.name}: ${e.message}`};
+      render();
+    });
+}
+
+// Another device rewrote the file while there were unsaved edits here. Ours
+// wins, but theirs is kept as a backup; if that fails, the write is refused.
+async function writeBoardFile(target, json) {
+  const current = await target.handle.getFile();
+  if (current.lastModified !== target.lastModified) {
+    await addBackup(await current.text(), "conflict");
+    alertDialog(`${target.name} was changed outside this tab, perhaps on another device, while you had ` +
+      "unsaved edits here. Your version was kept; the other one is in Settings → Restore backup.");
+  }
+  const writable = await target.handle.createWritable();
+  await writable.write(json);
+  await writable.close();
+  target.lastModified = (await target.handle.getFile()).lastModified;
+  writeFileMeta({lastModified: target.lastModified, unsynced: false});
+}
+
+function replaceBoard(loaded, kind) {
+  history.commit(board);
+  board = loaded;
+  history.commit(board);
+  try { localStorage.setItem(BOARD_KEY, serializeBoard(board)); } catch { /* next save retries */ }
+  saveState = {kind};
+  render();
+}
+
+// Picks up edits synced in from another device. Skipped while edits are
+// pending here; writeBoardFile handles that case as a conflict.
+async function pollLinkedFile() {
+  if (!linkedFile?.connected || document.hidden) return;
+  await fileWrites;
+  const target = linkedFile;
+  const busy = () => target !== linkedFile || saveState.kind === "pending" || saveState.kind === "failed";
+  if (busy()) return;
+  const file = await target.handle.getFile();
+  if (file.lastModified === target.lastModified) return;
+  let loaded;
+  // A parse failure usually means a sync client is mid-write; try again later.
+  try { loaded = parseBoard(await file.text()); } catch { return; }
+  if (busy()) return;
+  target.lastModified = file.lastModified;
+  writeFileMeta({lastModified: file.lastModified, unsynced: false});
+  if (JSON.stringify(loaded) !== JSON.stringify(board)) replaceBoard(loaded, "reloaded");
+}
+
+async function rememberHandle(handle) {
+  try { await idb("handles", "readwrite", store => store.put(handle, "board")); }
+  catch (e) { alertDialog(`The file is linked for now, but could not be remembered: ${e.message}`); }
+}
+
+async function openLinkedFile() {
+  let handle;
+  try {
+    [handle] = await showOpenFilePicker({types: [{description: "StorySquish board", accept: {"application/json": [".json"]}}]});
+  } catch (e) {
+    if (e.name !== "AbortError") alertDialog(`Could not open the file: ${e.message}`);
+    return;
+  }
+  try {
+    if (await handle.requestPermission({mode: "readwrite"}) !== "granted") return;
+    const file = await handle.getFile();
+    const loaded = parseBoard(await file.text());
+    if (saveState.kind === "pending") saveNow();
+    linkedFile = {handle, name: handle.name, connected: true, lastModified: file.lastModified};
+    writeFileMeta({lastModified: file.lastModified, unsynced: false});
+    selected = null;
+    replaceBoard(loaded, "imported");
+    await rememberHandle(handle);
+  } catch (e) {
+    alertDialog(`Could not open ${handle.name}: ${e.message}`);
+  }
+}
+
+async function saveToLinkedFile() {
+  let handle;
+  try {
+    handle = await showSaveFilePicker({
+      suggestedName: exportFileName("json"),
+      types: [{description: "StorySquish board", accept: {"application/json": [".json"]}}],
+    });
+  } catch (e) {
+    if (e.name !== "AbortError") alertDialog(`Could not choose the file: ${e.message}`);
+    return;
+  }
+  try {
+    const target = {handle, name: handle.name, connected: true, lastModified: (await handle.getFile()).lastModified};
+    await writeBoardFile(target, serializeBoard(board));
+    linkedFile = target;
+    await rememberHandle(handle);
+    render();
+  } catch (e) {
+    alertDialog(`Could not save to ${handle.name}: ${e.message}`);
+  }
+}
+
+async function unlinkFile() {
+  linkedFile = null;
+  try { localStorage.removeItem(FILE_KEY); } catch { /* best effort */ }
+  try { await idb("handles", "readwrite", store => store.delete("board")); } catch { /* best effort */ }
+  render();
+}
+
+// Browsers forget file permissions between visits, so reconnecting needs a
+// click; until then edits are kept here and flagged as unsynced.
+async function connectLinkedFile() {
+  const target = linkedFile;
+  if (!target) return;
+  try {
+    if (await target.handle.requestPermission({mode: "readwrite"}) !== "granted") return;
+    const file = await target.handle.getFile();
+    target.connected = true;
+    const {unsynced} = readFileMeta();
+    if (unsynced || saveState.kind === "pending") {
+      if (saveState.kind === "pending") saveNow();
+      else writeToLinkedFile(serializeBoard(board));
+    } else if (file.lastModified !== target.lastModified) {
+      target.lastModified = file.lastModified;
+      writeFileMeta({lastModified: file.lastModified, unsynced: false});
+      const loaded = parseBoard(await file.text());
+      if (JSON.stringify(loaded) !== JSON.stringify(board)) replaceBoard(loaded, "reloaded");
+    }
+  } catch (e) {
+    alertDialog(`Could not reconnect ${target.name}: ${e.message}`);
+  }
+  render();
+}
+
+async function restoreLinkedFile() {
+  if (!FILE_ACCESS) return;
+  let handle;
+  try { handle = await idb("handles", "readonly", store => store.get("board")); } catch { return; }
+  if (!handle) return;
+  linkedFile = {handle, name: handle.name, connected: false, lastModified: readFileMeta().lastModified};
+  if (await handle.queryPermission({mode: "readwrite"}) === "granted") await connectLinkedFile();
+  render();
+}
+
+function needsBackupNudge() {
+  if (linkedFile) return false;
+  const hasWork = board.scenes.length > 0 || board.characters.length > 0;
+  return hasWork && Date.now() - settings.lastExportAt > BACKUP_NUDGE_AFTER_MS;
 }
 
 function markDirty() {
@@ -669,8 +1163,14 @@ function duplicateSelectedScene() {
 
 function shiftSelection(offset) {
   if (!selected) return;
-  const items = selected.kind === "scene" ? board.scenes : board.characters;
+  const items = {scene: board.scenes, character: board.characters, location: board.locations}[selected.kind];
   if (shiftBy(items, selected.id, offset)) saveNow();
+}
+
+function deleteLocation(id) {
+  deleteLocationFromBoard(id);
+  if (isSelected("location", id)) selected = null;
+  saveNow();
 }
 
 function deleteCharacter(id) {
@@ -688,7 +1188,7 @@ function confirmDeleteScene(id) {
 }
 
 function confirmReset() {
-  confirmDialog("Delete ALL scenes and characters? You can still undo this.", () => {
+  confirmDialog("Delete ALL scenes, characters and locations? You can still undo this.", () => {
     board = defaultBoard();
     selected = null;
     saveNow();
@@ -723,13 +1223,20 @@ async function importBoard(file) {
 }
 
 function exportBoard() {
-  try { download(exportFileName("json"), JSON.stringify(board, null, 2), "application/json"); }
-  catch (e) { alertDialog(`Could not export: ${e.message}`); }
+  try {
+    download(exportFileName("json"), serializeBoard(board), "application/json");
+  } catch (e) {
+    alertDialog(`Could not export: ${e.message}`);
+    return;
+  }
+  settings.lastExportAt = Date.now();
+  try { persistSettings(); } catch { /* the nudge just comes back */ }
+  render();
 }
 
-function exportOutline() {
-  try { download(exportFileName("md"), toMarkdown(board), "text/markdown"); }
-  catch (e) { alertDialog(`Could not export outline: ${e.message}`); }
+function exportMarkdown(what, renderMarkdown) {
+  try { download(exportFileName("md"), renderMarkdown(board), "text/markdown"); }
+  catch (e) { alertDialog(`Could not export ${what}: ${e.message}`); }
 }
 
 /* ---------- rendering ---------- */
@@ -740,6 +1247,18 @@ function esc(value) {
 
 function characterDisplayName(name) {
   return name.trim() ? name : "Unnamed";
+}
+
+function sceneTitle(scene) {
+  return scene.title.trim() ? scene.title : "Untitled";
+}
+
+function formatCount(count) {
+  return count.toLocaleString("en-US");
+}
+
+function words(count) {
+  return `${formatCount(count)} word${count === 1 ? "" : "s"}`;
 }
 
 function preview(text) {
@@ -772,7 +1291,8 @@ function render() {
   renderHeader();
   renderFilters();
   renderCharacters();
-  renderBoard();
+  renderLocations();
+  renderTabs();
   renderInspector();
   renderStats();
   const failed = saveState.kind === "failed" ? " (save failed)" : "";
@@ -783,9 +1303,17 @@ function renderHeader() {
   syncValue($("bookTitle"), board.title);
   $("statsToggle").checked = showStats;
   const label = $("saveState");
-  label.textContent = {saved: "saved", pending: "saving…", imported: "imported", failed: "save failed"}[saveState.kind];
+  label.textContent = {
+    saved: "saved", pending: "saving…", imported: "imported", reloaded: "reloaded", failed: "save failed",
+  }[saveState.kind];
   label.classList.toggle("failed", saveState.kind === "failed");
-  label.title = saveState.kind === "failed" ? saveState.reason : "";
+  label.title = saveState.kind === "failed" ? saveState.reason
+    : saveState.kind === "reloaded" ? "Picked up changes made to the board file elsewhere"
+    : linkedFile?.connected ? `Saved in this browser and to ${linkedFile.name}`
+    : "Saved in this browser";
+  $("reconnectBtn").hidden = !linkedFile || linkedFile.connected;
+  $("reconnectBtn").title = linkedFile ? `Allow this tab to read and write ${linkedFile.name} again` : "";
+  $("backupNudge").hidden = !needsBackupNudge();
   $("undoBtn").disabled = !history.canUndo(board);
   $("redoBtn").disabled = !history.canRedo(board);
 }
@@ -814,8 +1342,42 @@ function renderCharacters() {
     </div>`).join("");
 }
 
+function renderLocations() {
+  const list = $("locList");
+  if (!board.locations.length) {
+    list.innerHTML = '<div class="hint" style="margin-bottom:6px">No locations yet.</div>';
+    return;
+  }
+  list.innerHTML = board.locations.map(l => `
+    <div class="char${isSelected("location", l.id) ? " selected" : ""}" data-id="${esc(l.id)}">
+      <div class="cname"><span>${esc(characterDisplayName(l.name))}</span></div>
+      <div class="hint">${plural(locationSceneCount(l.id), "scene")}</div>
+    </div>`).join("");
+}
+
+// Location, story day and word count: the parts that are set.
+function sceneFootnote(scene) {
+  const parts = [];
+  const location = findLocation(scene.location);
+  if (location) parts.push(characterDisplayName(location.name));
+  if (scene.day !== null) parts.push(`Day ${scene.day}`);
+  const count = wordCount(scene.text);
+  if (count) parts.push(words(count));
+  return parts.join(" · ");
+}
+
+function sceneDetails(scene) {
+  const parts = [scene.status];
+  const pov = findCharacter(scene.pov);
+  if (pov) parts.push(`POV ${characterDisplayName(pov.name)}`);
+  const location = findLocation(scene.location);
+  if (location) parts.push(characterDisplayName(location.name));
+  return parts.join(" · ");
+}
+
 function sceneCard(scene, index) {
   const pov = findCharacter(scene.pov);
+  const footnote = sceneFootnote(scene);
   const classes = ["card"];
   if (isSelected("scene", scene.id)) classes.push("selected");
   if (dragFrom === index) classes.push("dragging");
@@ -831,7 +1393,140 @@ function sceneCard(scene, index) {
         ${scene.act ? `<span class="badge act">${esc(scene.act)}</span>` : ""}
         ${pov ? `<span class="badge pov">${esc(characterDisplayName(pov.name))}</span>` : ""}
       </div>
+      ${footnote ? `<div class="footnote">${esc(footnote)}</div>` : ""}
     </div>`;
+}
+
+const VIEWS = {board: renderBoard, write: renderWrite, timeline: renderTimeline, graph: renderGraph};
+
+function renderTabs() {
+  for (const tab of document.querySelectorAll(".tab")) {
+    const active = tab.dataset.view === view;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+  }
+  for (const name of Object.keys(VIEWS)) $(name).hidden = name !== view;
+  VIEWS[view]();
+}
+
+function emptyState(heading, hint) {
+  return `<div class="empty"><strong>${esc(heading)}</strong>${esc(hint)}</div>`;
+}
+
+function renderWrite() {
+  const index = selected?.kind === "scene" ? sceneIndex(selected.id) : -1;
+  const picker = $("writePicker");
+  $("writeEditor").hidden = index < 0;
+  picker.hidden = index >= 0;
+  if (index < 0) {
+    picker.innerHTML = board.scenes.length
+      ? `<h2>Pick a scene to write</h2>${board.scenes.map((scene, i) =>
+          `<button class="link" data-id="${esc(scene.id)}">${sceneNumber(i)}  ${esc(sceneTitle(scene))}</button>`).join("")}`
+      : emptyState("No scenes yet", "Add a scene, then write its prose here.");
+    return;
+  }
+  const scene = board.scenes[index];
+  $("wHeading").textContent = `${sceneNumber(index)}  ${sceneTitle(scene)}`;
+  $("wPrev").disabled = index === 0;
+  $("wNext").disabled = index === board.scenes.length - 1;
+  $("wWords").textContent = `${words(wordCount(scene.text))} · ${formatCount(manuscriptWordCount())} in manuscript`;
+  $("wSummary").textContent = scene.summary.trim();
+  syncValue($("prose"), scene.text);
+}
+
+function timelineRow(index) {
+  const scene = board.scenes[index];
+  return `<div class="trow${isSelected("scene", scene.id) ? " selected" : ""}" data-id="${esc(scene.id)}">
+    <span class="num">${sceneNumber(index)}</span>
+    <strong>${esc(sceneTitle(scene))}</strong>
+    <span class="hint">${esc(sceneDetails(scene))}</span>
+  </div>`;
+}
+
+function renderTimeline() {
+  const host = $("timeline");
+  const dated = chronologicalIndices();
+  const undated = board.scenes
+    .map((scene, index) => ({scene, index}))
+    .filter(({scene}) => scene.day === null && scene.status !== "Archived")
+    .map(({index}) => index);
+  if (!dated.length && !undated.length) {
+    host.innerHTML = emptyState("No scenes yet", "Scenes with a story day appear here in story order.");
+    return;
+  }
+  let html = dated.length ? "" : '<p class="hint">Set a story day on scenes in the inspector to see them in story order, flashbacks included.</p>';
+  let currentDay = null;
+  for (const index of dated) {
+    const {day} = board.scenes[index];
+    if (day !== currentDay) {
+      currentDay = day;
+      html += `<div class="day-heading">DAY ${day}</div>`;
+    }
+    html += timelineRow(index);
+  }
+  if (undated.length) html += `<div class="day-heading" style="margin-top:20px">UNDATED</div>${undated.map(timelineRow).join("")}`;
+  host.innerHTML = html;
+}
+
+const NODE_RADIUS = 26;
+// Short of the midpoint, so the labels of A→B and B→A land apart.
+const LABEL_POSITION = 0.4;
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function renderGraph() {
+  const host = $("graph");
+  const characters = board.characters;
+  if (characters.length < 2) {
+    host.innerHTML = emptyState("Not enough characters", "Add at least two characters to map how they relate.");
+    return;
+  }
+  const width = Math.max(host.clientWidth, 320);
+  const hint = board.relationships.length ? ""
+    : '<p class="hint graph-hint">Select a character and add relationships in the inspector.</p>';
+  const height = Math.max(host.clientHeight - (hint ? 40 : 0), 320);
+  const center = {x: width / 2, y: height / 2};
+  const ring = Math.max(Math.min(width, height) / 2 - NODE_RADIUS - 24, NODE_RADIUS);
+  const positions = new Map(characters.map((c, i) => {
+    const angle = (2 * Math.PI * i) / characters.length - Math.PI / 2;
+    return [c.id, {x: center.x + ring * Math.cos(angle), y: center.y + ring * Math.sin(angle)}];
+  }));
+
+  let edges = "";
+  for (const relationship of board.relationships) {
+    const from = positions.get(relationship.from);
+    const to = positions.get(relationship.to);
+    if (!from || !to) continue;
+    const length = Math.hypot(to.x - from.x, to.y - from.y) || 1;
+    const dir = {x: (to.x - from.x) / length, y: (to.y - from.y) / length};
+    // Offsetting sideways keeps A→B and B→A from drawing on top of each other.
+    const side = {x: -dir.y * 6, y: dir.x * 6};
+    const start = {x: from.x + dir.x * NODE_RADIUS + side.x, y: from.y + dir.y * NODE_RADIUS + side.y};
+    const tip = {x: to.x - dir.x * (NODE_RADIUS + 2) + side.x, y: to.y - dir.y * (NODE_RADIUS + 2) + side.y};
+    const wing = (sign) => `${tip.x - dir.x * 9 + sign * -dir.y * 5},${tip.y - dir.y * 9 + sign * dir.x * 5}`;
+    edges += `<line class="edge" x1="${start.x}" y1="${start.y}" x2="${tip.x}" y2="${tip.y}"/>`;
+    edges += `<polyline class="edge" points="${wing(1)} ${tip.x},${tip.y} ${wing(-1)}"/>`;
+    const label = relationship.label.trim();
+    if (label) {
+      edges += `<text class="edge-label" text-anchor="middle" dominant-baseline="middle"
+        x="${start.x + (tip.x - start.x) * LABEL_POSITION + side.x * 1.5}"
+        y="${start.y + (tip.y - start.y) * LABEL_POSITION + side.y * 1.5}">${esc(label)}</text>`;
+    }
+  }
+
+  const nodes = characters.map(c => {
+    const {x, y} = positions.get(c.id);
+    const name = characterDisplayName(c.name);
+    const initials = name.split(/\s+/).filter(Boolean).slice(0, 2).map(w => Array.from(w)[0]).join("");
+    return `<g class="node${isSelected("character", c.id) ? " selected" : ""}" data-id="${esc(c.id)}"
+        tabindex="0" role="button" aria-label="${esc(name)}">
+      <circle cx="${x}" cy="${y}" r="${NODE_RADIUS}"/>
+      <text class="initials" x="${x}" y="${y}" text-anchor="middle" dominant-baseline="central" font-size="15">${esc(initials)}</text>
+      <text x="${x}" y="${y + NODE_RADIUS + 14}" text-anchor="middle" font-size="12">${esc(name)}</text>
+    </g>`;
+  }).join("");
+
+  host.innerHTML = `${hint}<svg xmlns="${SVG_NS}" viewBox="0 0 ${width} ${height}" role="img"
+    aria-label="Character relationships">${edges}${nodes}</svg>`;
 }
 
 function renderBoard() {
@@ -852,13 +1547,14 @@ function renderInspector() {
   const panel = $("inspector");
   if (selected?.kind === "scene" && sceneIndex(selected.id) < 0) selected = null;
   if (selected?.kind === "character" && characterIndex(selected.id) < 0) selected = null;
+  if (selected?.kind === "location" && locationIndex(selected.id) < 0) selected = null;
   panel.hidden = !selected;
   if (!selected) return;
 
   $("sceneInspector").hidden = selected.kind !== "scene";
   $("characterInspector").hidden = selected.kind !== "character";
-  if (selected.kind === "scene") renderSceneInspector();
-  else renderCharacterInspector();
+  $("locationInspector").hidden = selected.kind !== "location";
+  ({scene: renderSceneInspector, character: renderCharacterInspector, location: renderLocationInspector})[selected.kind]();
 }
 
 function renderSceneInspector() {
@@ -872,6 +1568,13 @@ function renderSceneInspector() {
   syncOptions($("sPov"),
     [["", NONE_LABEL], ...board.characters.map(c => [c.id, characterDisplayName(c.name)])], scene.pov);
   syncOptions($("sAct"), [["", NONE_LABEL], ...ACTS.map(a => [a, a])], scene.act);
+  syncOptions($("sLocation"),
+    [["", NONE_LABEL], ...board.locations.map(l => [l.id, characterDisplayName(l.name)])], scene.location);
+  $("sDated").checked = scene.day !== null;
+  $("sDay").hidden = scene.day === null;
+  syncValue($("sDay"), scene.day === null ? "" : String(scene.day));
+  $("sWords").textContent = words(wordCount(scene.text));
+  $("sWrite").hidden = view === "write";
   $("sEarlier").disabled = index === 0;
   $("sLater").disabled = index === board.scenes.length - 1;
   if (focusSceneTitle) {
@@ -885,10 +1588,56 @@ function renderCharacterInspector() {
   const character = board.characters[index];
   $("cHeading").textContent = characterDisplayName(character.name);
   syncValue($("cName"), character.name);
+  syncValue($("cRole"), character.role);
+  syncValue($("cGoal"), character.goal);
   syncValue($("cNotes"), character.notes);
   $("cPovCount").textContent = `POV in ${plural(povSceneCount(character.id), "scene")}`;
   $("cUp").disabled = index === 0;
   $("cDown").disabled = index === board.characters.length - 1;
+  renderRelationshipEditor(character);
+}
+
+// Rows are rebuilt only when the set of relationships changes, so typing a
+// label never loses the caret.
+function renderRelationshipEditor(character) {
+  const rows = board.relationships
+    .filter(r => r.from === character.id || r.to === character.id)
+    .map(r => {
+      const outgoing = r.from === character.id;
+      const other = findCharacter(outgoing ? r.to : r.from);
+      return {r, text: `${outgoing ? "to" : "from"} ${characterDisplayName(other?.name ?? "")}`};
+    });
+  const list = $("relList");
+  const signature = rows.map(({r, text}) => `${r.id}:${text}`).join("|") || "none";
+  if (list.dataset.signature !== signature) {
+    list.dataset.signature = signature;
+    list.innerHTML = rows.length
+      ? rows.map(({r, text}) => `<div class="rel-row" data-id="${esc(r.id)}">
+          <span>${esc(text)}</span>
+          <input class="rel-label" placeholder="how they relate" aria-label="${esc(`Relationship ${text}`)}">
+          <button class="icon" title="Remove relationship">×</button>
+        </div>`).join("")
+      : '<div class="hint">None yet.</div>';
+  }
+  for (const {r} of rows) syncValue(list.querySelector(`[data-id="${CSS.escape(r.id)}"] input`), r.label);
+
+  const others = board.characters.filter(c => c.id !== character.id);
+  $("relAdd").hidden = !others.length;
+  const target = $("relTarget");
+  const keep = others.some(c => c.id === target.value) ? target.value : "";
+  syncOptions(target, [["", "Character…"], ...others.map(c => [c.id, characterDisplayName(c.name)])], keep);
+  $("relAddBtn").disabled = !keep;
+}
+
+function renderLocationInspector() {
+  const index = locationIndex(selected.id);
+  const location = board.locations[index];
+  $("lHeading").textContent = characterDisplayName(location.name);
+  syncValue($("lName"), location.name);
+  syncValue($("lNotes"), location.notes);
+  $("lCount").textContent = `Setting of ${plural(locationSceneCount(location.id), "scene")}`;
+  $("lUp").disabled = index === 0;
+  $("lDown").disabled = index === board.locations.length - 1;
 }
 
 function renderStats() {
@@ -900,7 +1649,8 @@ function renderStats() {
   ];
   $("statsBody").innerHTML =
     rows.map(([label, count]) => `<tr><td>${esc(label)}</td><td>${count}</td></tr>`).join("") +
-    `<tr class="total"><td>Total</td><td>${board.scenes.length}</td></tr>`;
+    `<tr class="total"><td>Total</td><td>${board.scenes.length}</td></tr>` +
+    `<tr><td>Words</td><td>${formatCount(manuscriptWordCount())}</td></tr>`;
 }
 
 /* ---------- dialogs ---------- */
@@ -1003,12 +1753,111 @@ function settingsDialog() {
           .map(fill => `<span style="background:${fill}"></span>`).join("")}</span>${esc(scheme.name)}`;
         list.append(option);
       }
-      const status = document.createElement("div");
-      status.className = "hint";
-      status.style.margin = "8px 0 12px";
-      status.textContent = settingsSaveError ?? "Saved in this browser's storage.";
+      const status = hint(settingsSaveError ?? "Saved in this browser's storage.");
       if (settingsSaveError) status.style.color = "var(--danger)";
-      box.append(heading, label, list, status, button("Close", "", closeModal));
+      box.append(heading, label, list, status, ...boardFileSection(), ...backupSection(), button("Close", "", closeModal));
+      box.style.maxWidth = "420px";
+    },
+  });
+}
+
+function hint(text) {
+  const div = document.createElement("div");
+  div.className = "hint";
+  div.style.margin = "6px 0";
+  div.textContent = text;
+  return div;
+}
+
+function fieldLabel(text) {
+  const div = document.createElement("div");
+  div.className = "field-label";
+  div.textContent = text;
+  return div;
+}
+
+function row(...children) {
+  const div = document.createElement("div");
+  div.className = "row";
+  div.append(...children);
+  return div;
+}
+
+function boardFileSection() {
+  const label = fieldLabel("Board file");
+  if (!FILE_ACCESS) {
+    return [label, hint("This browser can only keep the board in its own storage. To keep it in a file " +
+      "(and use it on several computers through iCloud Drive, Dropbox, OneDrive or Syncthing), use " +
+      "Chrome or Edge on a desktop, or the desktop app. Otherwise, export a copy regularly.")];
+  }
+  const afterAction = action => async () => { await action(); drawModal(); };
+  if (!linkedFile) {
+    return [label,
+      hint("Kept only in this browser. Link a file so the board survives clearing browser data and can " +
+        "be used on several computers through a synced folder (iCloud Drive, Dropbox, OneDrive, Syncthing)."),
+      row(button("Save to file…", "", afterAction(saveToLinkedFile)), button("Open file…", "", afterAction(openLinkedFile)))];
+  }
+  const state = linkedFile.connected
+    ? `Every change is saved to ${linkedFile.name}; changes synced in from elsewhere load automatically.`
+    : `Linked to ${linkedFile.name}, but this tab needs permission again. Edits are kept here until then.`;
+  return [label, hint(state), row(
+    ...(linkedFile.connected ? [] : [button("Reconnect", "primary", afterAction(connectLinkedFile))]),
+    button("Open other…", "", afterAction(openLinkedFile)),
+    button("Unlink", "", afterAction(unlinkFile)),
+  )];
+}
+
+function backupSection() {
+  const storageState = hint("");
+  navigator.storage?.persisted?.().then(persisted => {
+    storageState.textContent = persisted
+      ? "This browser has agreed not to clear the board's storage on its own."
+      : "This browser may clear the board's storage when space runs low; link a file or export regularly.";
+  }).catch(() => {});
+  return [fieldLabel("Backups"),
+    hint(`The last ${BACKUPS_KEPT} versions are kept in this browser: one before the first save of each visit, then every 30 minutes of editing.`),
+    storageState,
+    row(button("Restore backup…", "", restoreBackupDialog))];
+}
+
+async function restoreBackupDialog() {
+  let backups;
+  try { backups = await listBackups(); }
+  catch (e) { alertDialog(`Could not read backups: ${e.message}`); return; }
+  openModal({
+    draw(box) {
+      const heading = document.createElement("h2");
+      heading.textContent = "Restore backup";
+      const list = document.createElement("div");
+      list.className = "backup-list";
+      for (const backup of backups) {
+        let summary;
+        try {
+          const b = parseBoard(backup.json);
+          summary = `${b.title.trim() || DEFAULT_TITLE} · ${plural(b.scenes.length, "scene")}`;
+        } catch {
+          summary = "unreadable";
+        }
+        const when = new Date(backup.at).toLocaleString();
+        const tag = backup.tag === "conflict" ? " · other device's version" : "";
+        list.append(button(`${when} — ${summary}${tag}`, "", () => {
+          try {
+            const restored = parseBoard(backup.json);
+            modalStack.length = 0;
+            drawModal();
+            history.commit(board);
+            board = restored;
+            selected = null;
+            saveNow();
+            if (saveState.kind === "saved") { saveState = {kind: "imported"}; render(); }
+          } catch (e) {
+            alertDialog(`Could not restore: ${e.message}`);
+          }
+        }));
+      }
+      box.append(heading,
+        backups.length ? hint("Restoring can be undone.") : hint("No backups yet."),
+        list, button("Cancel", "", closeModal));
     },
   });
 }
@@ -1034,8 +1883,18 @@ function withSelectedCharacter(fn) {
 $("bookTitle").addEventListener("input", e => { board.title = e.target.value; markDirty(); });
 $("statsToggle").addEventListener("change", e => { showStats = e.target.checked; render(); });
 $("settingsBtn").addEventListener("click", settingsDialog);
-$("outlineBtn").addEventListener("click", exportOutline);
-$("exportBtn").addEventListener("click", exportBoard);
+const exportMenu = $("exportMenu");
+exportMenu.addEventListener("click", e => {
+  const item = e.target.closest("[data-export]");
+  if (!item) return;
+  exportMenu.open = false;
+  if (item.dataset.export === "board") exportBoard();
+  else if (item.dataset.export === "outline") exportMarkdown("outline", toMarkdown);
+  else exportMarkdown("manuscript", manuscriptMarkdown);
+});
+document.addEventListener("click", e => { if (!exportMenu.contains(e.target)) exportMenu.open = false; });
+$("backupNudge").addEventListener("click", exportBoard);
+$("reconnectBtn").addEventListener("click", connectLinkedFile);
 $("importBtn").addEventListener("click", () => $("importFile").click());
 $("importFile").addEventListener("change", e => {
   const [file] = e.target.files;
@@ -1062,6 +1921,55 @@ $("charList").addEventListener("click", e => {
   if (e.target.closest(".x")) deleteCharacter(card.dataset.id);
   else { selected = {kind: "character", id: card.dataset.id}; render(); }
 });
+$("locList").addEventListener("click", e => {
+  const card = e.target.closest(".char");
+  if (card) { selected = {kind: "location", id: card.dataset.id}; render(); }
+});
+$("newLoc").addEventListener("keydown", e => {
+  if (e.key !== "Enter") return;
+  e.preventDefault();
+  if (addLocationToBoard(e.target.value)) {
+    e.target.value = "";
+    saveNow();
+  }
+});
+
+$("tabs").addEventListener("click", e => {
+  const tab = e.target.closest(".tab");
+  if (tab) { view = tab.dataset.view; render(); }
+});
+function selectScene(id) {
+  selected = {kind: "scene", id};
+  render();
+}
+$("writePicker").addEventListener("click", e => {
+  const link = e.target.closest(".link");
+  if (link) selectScene(link.dataset.id);
+});
+$("wPrev").addEventListener("click", () => {
+  const index = sceneIndex(selected?.id);
+  if (index > 0) selectScene(board.scenes[index - 1].id);
+});
+$("wNext").addEventListener("click", () => {
+  const index = sceneIndex(selected?.id);
+  if (index >= 0 && index < board.scenes.length - 1) selectScene(board.scenes[index + 1].id);
+});
+$("prose").addEventListener("input", withSelectedScene((s, v) => { s.text = v; }));
+$("timeline").addEventListener("click", e => {
+  const rowEl = e.target.closest(".trow");
+  if (rowEl) selectScene(rowEl.dataset.id);
+});
+const graphHost = $("graph");
+function selectGraphNode(e) {
+  const node = e.target.closest(".node");
+  if (node) { selected = {kind: "character", id: node.dataset.id}; render(); }
+}
+graphHost.addEventListener("click", selectGraphNode);
+graphHost.addEventListener("keydown", e => {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectGraphNode(e); }
+});
+window.addEventListener("resize", () => { if (view === "graph") renderGraph(); });
+
 $("newChar").addEventListener("keydown", e => {
   if (e.key !== "Enter") return;
   e.preventDefault();
@@ -1115,6 +2023,14 @@ $("sSum").addEventListener("input", withSelectedScene((s, v) => { s.summary = v;
 $("sStatus").addEventListener("change", withSelectedScene((s, v) => { s.status = v; }));
 $("sPov").addEventListener("change", withSelectedScene((s, v) => { s.pov = v; }));
 $("sAct").addEventListener("change", withSelectedScene((s, v) => { s.act = v; }));
+$("sLocation").addEventListener("change", withSelectedScene((s, v) => { s.location = v; }));
+$("sDated").addEventListener("change", withSelectedScene(s => { s.day = $("sDated").checked ? 1 : null; }));
+$("sDay").addEventListener("input", e => {
+  const day = Number(e.target.value);
+  if (e.target.value.trim() === "" || !Number.isInteger(day) || Math.abs(day) >= 2 ** 31) return;
+  withSelectedScene(s => { s.day = day; })(e);
+});
+$("sWrite").addEventListener("click", () => { view = "write"; render(); });
 $("sClose").addEventListener("click", closeInspector);
 $("sEarlier").addEventListener("click", () => shiftSelection(-1));
 $("sLater").addEventListener("click", () => shiftSelection(1));
@@ -1122,7 +2038,42 @@ $("sDuplicate").addEventListener("click", duplicateSelectedScene);
 $("sDelete").addEventListener("click", () => { if (selected?.kind === "scene") confirmDeleteScene(selected.id); });
 
 $("cName").addEventListener("input", withSelectedCharacter((c, v) => { c.name = v; }));
+$("cRole").addEventListener("input", withSelectedCharacter((c, v) => { c.role = v; }));
+$("cGoal").addEventListener("input", withSelectedCharacter((c, v) => { c.goal = v; }));
 $("cNotes").addEventListener("input", withSelectedCharacter((c, v) => { c.notes = v; }));
+$("relTarget").addEventListener("change", render);
+$("relAddBtn").addEventListener("click", () => {
+  if (selected?.kind !== "character") return;
+  if (addRelationshipToBoard(selected.id, $("relTarget").value, $("relLabel").value)) {
+    $("relLabel").value = "";
+    $("relTarget").value = "";
+    saveNow();
+  }
+});
+$("relList").addEventListener("input", e => {
+  const relationship = board.relationships.find(r => r.id === e.target.closest(".rel-row")?.dataset.id);
+  if (relationship) { relationship.label = e.target.value; markDirty(); }
+});
+$("relList").addEventListener("click", e => {
+  if (!e.target.closest("button")) return;
+  const id = e.target.closest(".rel-row")?.dataset.id;
+  board.relationships = board.relationships.filter(r => r.id !== id);
+  saveNow();
+});
+
+function withSelectedLocation(fn) {
+  return e => {
+    if (selected?.kind !== "location") return;
+    const location = findLocation(selected.id);
+    if (location) { fn(location, e.target.value); markDirty(); }
+  };
+}
+$("lName").addEventListener("input", withSelectedLocation((l, v) => { l.name = v; }));
+$("lNotes").addEventListener("input", withSelectedLocation((l, v) => { l.notes = v; }));
+$("lClose").addEventListener("click", closeInspector);
+$("lUp").addEventListener("click", () => shiftSelection(-1));
+$("lDown").addEventListener("click", () => shiftSelection(1));
+$("lDelete").addEventListener("click", () => { if (selected?.kind === "location") deleteLocation(selected.id); });
 $("cClose").addEventListener("click", closeInspector);
 $("cUp").addEventListener("click", () => shiftSelection(-1));
 $("cDown").addEventListener("click", () => shiftSelection(1));
@@ -1138,6 +2089,8 @@ $("sEarlier").title = SHORTCUT_LABELS.earlier;
 $("sLater").title = SHORTCUT_LABELS.later;
 $("cUp").title = SHORTCUT_LABELS.up;
 $("cDown").title = SHORTCUT_LABELS.down;
+$("lUp").title = SHORTCUT_LABELS.up;
+$("lDown").title = SHORTCUT_LABELS.down;
 
 function isTextEntry(el) {
   return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement
@@ -1183,8 +2136,21 @@ document.addEventListener("keydown", e => {
 
 window.addEventListener("pagehide", () => { if (saveState.kind === "pending") saveNow(); });
 
+// Another tab of this page saved; follow it unless there are unsaved edits here.
+window.addEventListener("storage", e => {
+  if (e.key !== BOARD_KEY || e.newValue === null || saveState.kind === "pending") return;
+  let loaded;
+  try { loaded = parseBoard(e.newValue); } catch { return; }
+  if (JSON.stringify(loaded) !== JSON.stringify(board)) replaceBoard(loaded, "reloaded");
+});
+
+const pollQuietly = () => pollLinkedFile().catch(() => {});
+setInterval(pollQuietly, FILE_POLL_MS);
+window.addEventListener("focus", pollQuietly);
+
 applyTheme(schemeByKey(settings.colorScheme));
 render();
+restoreLinkedFile().catch(() => {});
 const startupAlert = boardLoad.alert ?? settingsLoad.alert;
 if (startupAlert) alertDialog(startupAlert);
 </script>

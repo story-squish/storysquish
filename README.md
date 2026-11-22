@@ -6,10 +6,19 @@ day, write each scene's prose, and keep characters, relationships and
 locations alongside. Built in Rust with [egui/eframe](https://github.com/emilk/egui).
 
 A browser version lives in [`docs/index.html`](docs/index.html) and is
-published at <https://story-squish.github.io/storysquish/>. It stores its board
-in the browser's `localStorage` and uses the same JSON format, so boards move
-between the two through Export and Import. It does not yet have prose,
-locations, story days or relationships, and drops them on import.
+published at <https://story-squish.github.io/storysquish/>. It has the same
+features and JSON format, so boards move between the two through Export and
+Import, or by pointing both at the same file.
+
+The web version keeps its board in the browser's `localStorage`, the last 30
+versions in IndexedDB (Settings → Restore backup…), and asks the browser for
+persistent storage. In Chrome and Edge on desktop, Settings → Save to file… /
+Open file… links the board to a JSON file, for example in a synced folder:
+every change is written to it and changes synced in are picked up, with the
+same conflict handling as the desktop app. Browsers drop file permission
+between visits, so a "Reconnect file" button appears until clicked. Without a
+linked file, a "Back up" button appears when the board has not been exported
+for a week.
 
 ## Quick start
 
