@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Manuscript Board — StorySquish</title>
+<style>
+  :root{
+    --bg:#c9b79c; --ink:#2b2118; --card:#fdfaf2; --line:#d8cdb6;
+    --accent:#8a5a2b; --accent2:#5a7a8a; --danger:#b04030;
+    --draft:#e8dcc0; --outline:#cfe0e8; --revision:#f3e0c0; --final:#d5ecd0; --archived:#e2e2e2;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.45 "Segoe UI",system-ui,sans-serif;background:var(--bg);color:var(--ink);height:100vh;display:flex;flex-direction:column}
+  header{display:flex;align-items:center;gap:10px;padding:10px 16px;background:#3a2c1e;color:#f4ead6;box-shadow:0 2px 8px #0003}
+  header h1{font-size:17px;margin:0;letter-spacing:.5px;font-weight:600}
+  header .grow{flex:1}
+  header input.title{background:#4d3b25;color:#f4ead6;border:1px solid #6b5438;border-radius:6px;padding:6px 10px;font-size:14px;width:min(360px,40vw)}
+  button{cursor:pointer;border:1px solid #00000022;border-radius:6px;padding:6px 12px;font-size:13px;background:#f4ead6;color:#3a2c1e;font-weight:500}
+  button:hover{filter:brightness(.96)}
+  button.primary{background:var(--accent);color:#fff;border-color:#6b4320}
+  button.ghost{background:#4d3b25;color:#f4ead6;border-color:#6b5438}
+  button.danger{background:var(--danger);color:#fff}
+  .hint{font-size:11px;opacity:.7}
+  main{flex:1;display:flex;overflow:hidden}
+  #board{flex:1;overflow:auto;padding:22px}
+  .board-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px;align-items:start}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:4px;padding:12px 12px 14px;box-shadow:0 3px 6px #0001;cursor:pointer;position:relative;transition:transform .08s,box-shadow .08s;min-height:90px}
+  .card:hover{transform:translateY(-2px);box-shadow:0 6px 12px #0002}
+  .card.dragging{opacity:.4}
+  .card .num{font-size:11px;color:#9a8a70;font-weight:700;letter-spacing:1px}
+  .card .ttl{font-weight:600;margin:2px 0 6px;min-height:20px}
+  .card .sum{font-size:12px;color:#5a4a36;white-space:pre-wrap;max-height:72px;overflow:hidden}
+  .card .meta{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px;align-items:center}
+  .badge{font-size:10px;padding:2px 7px;border-radius:10px;font-weight:600;letter-spacing:.3px;text-transform:uppercase}
+  .status-Draft{background:var(--draft)}
+  .status-Outline{background:var(--outline)}
+  .status-Revision{background:var(--revision)}
+  .status-Final{background:var(--final)}
+  .status-Archived{background:var(--archived);color:#666}
+  .pov{font-size:10px;background:#3a2c1e;color:#fff;padding:2px 7px;border-radius:10px;font-weight:600}
+  .empty{grid-column:1/-1;text-align:center;color:#4a3a26;padding:60px 20px}
+  .empty h2{margin:0 0 8px;font-weight:600}
+  #inspector{width:340px;background:#faf6ec;border-left:1px solid var(--line);padding:16px;overflow:auto;display:none;flex-direction:column;gap:12px}
+  #inspector.open{display:flex}
+  #inspector h2{margin:0;font-size:15px}
+  label{display:block;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:#7a6a52;margin:10px 0 4px}
+  input,textarea,select{width:100%;font:inherit;padding:7px 9px;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--ink)}
+  textarea{resize:vertical;min-height:90px}
+  .field-row{display:flex;gap:8px}
+  .field-row > *{flex:1}
+  .chip-row{display:flex;flex-wrap:wrap;gap:6px}
+  .chip{font-size:11px;padding:4px 9px;border-radius:10px;background:var(--draft);cursor:pointer;border:1px solid transparent}
+  .chip.sel{border-color:var(--accent);background:var(--outline)}
+  .inspector-actions{display:flex;gap:8px;margin-top:6px}
+  #characters{width:250px;background:#f2ecdd;border-right:1px solid var(--line);padding:16px;overflow:auto}
+  #characters h2{margin:0 0 4px;font-size:15px}
+  .char{background:#fff;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px}
+  .char .cname{font-weight:600;display:flex;justify-content:space-between}
+  .char .cnotes{font-size:12px;color:#5a4a36;margin-top:4px;white-space:pre-wrap}
+  .char .x{color:var(--danger);cursor:pointer;font-weight:700}
+  .save-state{font-size:11px;opacity:.7}
+  .close-x{float:right;cursor:pointer;color:#7a6a52;font-size:18px;line-height:1}
+</style>
+</head>
+<body>
+<header>
+  <h1>📖 Manuscript Board</h1>
+  <input class="title" id="bookTitle" placeholder="Novel title">
+  <span class="grow"></span>
+  <span class="save-state" id="saveState">saved</span>
+  <button class="ghost" id="exportBtn">Export</button>
+  <button class="ghost" id="importBtn">Import</button>
+  <button class="ghost" id="resetBtn">Reset</button>
+  <button class="primary" id="addBtn">+ Scene</button>
+  <input type="file" id="importFile" accept="application/json" hidden>
+</header>
+
+<main>
+  <div id="characters">
+    <h2>Characters</h2>
+    <div id="charList"></div>
+    <label class="char" style="cursor:text">
+      <input id="newChar" placeholder="New character name">
+    </label>
+    <small class="hint" style="display:block;margin-top:4px;color:#7a6a52">Type a name + Enter to add.</small>
+  </div>
+
+  <div id="board">
+    <div class="board-grid" id="grid"></div>
+  </div>
+
+  <aside id="inspector">
+    <h2><span id="inspNum"></span> <span id="inspTitle">Scene</span> <span class="close-x" id="inspClose">×</span></h2>
+    <label>Title</label>
+    <input id="sTitle" placeholder="e.g. The confrontation in the rain">
+    <label>Summary / beat</label>
+    <textarea id="sSum" placeholder="What happens in this scene. What changes."></textarea>
+    <div class="field-row">
+      <div>
+        <label>Status</label>
+        <select id="sStatus">
+          <option>Outline</option><option>Draft</option><option>Revision</option>
+          <option>Final</option><option>Archived</option>
+        </select>
+      </div>
+      <div>
+        <label>POV character</label>
+        <select id="sPov"></select>
+      </div>
+    </div>
+    <label>Act</label>
+    <select id="sAct">
+      <option value="">— none —</option>
+      <option>Act I</option><option>Act II</option><option>Act III</option>
+    </select>
+    <div class="inspector-actions">
+      <button class="danger" id="delBtn">Delete scene</button>
+    </div>
+  </aside>
+</main>
+
+<script>
+const STORE = "manuscriptBoard.v1";
+let state = load();
+let selectedId = null;
+let saveTimer = null;
+
+function uid(){return Math.random().toString(36).slice(2,9)}
+function load(){
+  try{const s=JSON.parse(localStorage.getItem(STORE));
+    if(s&&Array.isArray(s.scenes))return s;
+  }catch(e){}
+  return {title:"Untitled Novel",characters:[],scenes:[],next:0};
+}
+function save(){
+  document.getElementById("saveState").textContent="saved";
+  localStorage.setItem(STORE,JSON.stringify(state));
+}
+function scheduleSave(){
+  document.getElementById("saveState").textContent="saving…";
+  clearTimeout(saveTimer);
+  saveTimer=setTimeout(save,400);
+}
+function newScene(){
+  const sc={id:uid(),title:"",summary:"",status:"Outline",pov:"",act:""};
+  state.scenes.push(sc);
+  selectedId=sc.id;
+  render();save();
+  const inp=document.getElementById("sTitle");inp.focus();
+}
+
+/* ---------- RENDER ---------- */
+function byId(id){return state.scenes.find(s=>s.id===id)}
+
+function render(){
+  document.getElementById("bookTitle").value=state.title;
+
+  // board
+  const grid=document.getElementById("grid");
+  grid.innerHTML="";
+  if(!state.scenes.length){
+    grid.innerHTML='<div class="empty"><h2>No scenes yet</h2><div>Click “+ Scene” to pin your first index card.</div></div>';
+  }else{
+    state.scenes.forEach((sc,i)=>{
+      const card=document.createElement("div");
+      card.className="card";card.draggable=true;card.dataset.id=sc.id;
+      const povCh=state.characters.find(c=>c.id===sc.pov);
+      card.innerHTML=`
+        <div class="num">SCENE ${String(i+1).padStart(2,"0")}</div>
+        <div class="ttl">${sc.title?"<b>"+esc(sc.title)+"</b>":"<em>Untitled scene</em>"}</div>
+        <div class="sum">${esc(sc.summary||"No summary yet.")}</div>
+        <div class="meta">
+          <span class="badge status-${esc(sc.status)}">${esc(sc.status)}</span>
+          ${sc.act?`<span class="badge status-Outline">${esc(sc.act)}</span>`:""}
+          ${povCh?`<span class="pov">${esc(povCh.name)}</span>`:""}
+        </div>`;
+      card.onclick=()=>selectScene(sc.id);
+      addDrag(card,sc.id);
+      grid.appendChild(card);
+    });
+  }
+  renderCharacters();
+  renderPovOptions();
+  if(selectedId!==null)renderInspector();
+  updateActFilterButtons();
+}
+
+function renderInspector(){
+  const sc=byId(selectedId);
+  const asp=document.getElementById("inspector");
+  if(!sc){asp.classList.remove("open");return;}
+  asp.classList.add("open");
+  const i=state.scenes.findIndex(s=>s.id===selectedId)+1;
+  document.getElementById("inspNum").textContent=`SCENE ${String(i).padStart(2,"0")} `;
+  document.getElementById("inspTitle").textContent=sc.title||"Untitled";
+  document.getElementById("sTitle").value=sc.title;
+  document.getElementById("sSum").value=sc.summary;
+  document.getElementById("sStatus").value=sc.status;
+  document.getElementById("sAct").value=sc.act||"";
+}
+
+function renderPovOptions(){
+  const sel=document.getElementById("sPov");
+  const cur=sel.value;
+  sel.innerHTML='<option value="">— none —</option>'+
+    state.characters.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join("");
+  sel.value=cur;
+}
+
+function renderCharacters(){
+  const list=document.getElementById("charList");
+  list.innerHTML="";
+  if(!state.characters.length)list.innerHTML='<small class="hint">No characters yet.</small>';
+  state.characters.forEach(ch=>{
+    const d=document.createElement("div");d.className="char";
+    const sceneCount=state.scenes.filter(s=>s.pov===ch.id).length;
+    d.innerHTML=`
+      <div class="cname">${esc(ch.name)} <span class="x" data-x="${ch.id}">×</span></div>
+      <div class="hint">${sceneCount} POV scene${sceneCount===1?"":"s"}</div>
+      ${ch.notes?`<div class="cnotes">${esc(ch.notes)}</div>`:""}`;
+    d.querySelector(".x").onclick=e=>{e.stopPropagation();deleteChar(ch.id)};
+    list.appendChild(d);
+  });
+}
+
+/* ---------- ACTIONS ---------- */
+function selectScene(id){selectedId=id;renderInspector();}
+
+function update(id,field,val){
+  const sc=byId(id);if(!sc)return;
+  sc[field]=val;
+  document.getElementById("saveState").textContent="saving…";
+  // live preview if board not busy
+  if(field==="title"){
+    const card=[...document.querySelectorAll(".card")].find(c=>c.dataset.id===id);
+    if(card){const t=card.querySelector(".ttl");t.innerHTML=val?"<b>"+esc(val)+"</b>":"<em>Untitled scene</em>";}
+    document.getElementById("inspTitle").textContent=val||"Untitled";
+  }
+  scheduleSave();
+}
+
+function deleteScene(id){
+  state.scenes=state.scenes.filter(s=>s.id!==id);
+  if(selectedId===id)selectedId=null;
+  render();save();
+}
+function deleteChar(id){
+  state.characters=state.characters.filter(c=>c.id!==id);
+  state.scenes.forEach(s=>{if(s.pov===id)s.pov="";});
+  render();save();
+}
+
+function addChar(){
+  const inp=document.getElementById("newChar");
+  const name=inp.value.trim();
+  if(!name)return;
+  state.characters.push({id:uid(),name,notes:""});
+  inp.value="";render();save();
+}
+
+/* ---------- IMPORT / EXPORT ---------- */
+function exportData(){
+  const blob=new Blob([JSON.stringify(state,null,2)],{type:"application/json"});
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(blob);
+  a.download=(state.title||"novel").replace(/\s+/g,"_")+".json";
+  a.click();URL.revokeObjectURL(a.href);
+}
+function importData(file){
+  const r=new FileReader();
+  r.onload=()=>{
+    try{
+      const d=JSON.parse(r.result);
+      if(!d||!Array.isArray(d.scenes))throw new Error("bad file");
+      // merge characters by name if id missing
+      if(!d.characters)d.characters=[];
+      state=d;selectedId=null;render();save();
+      document.getElementById("saveState").textContent="imported";
+    }catch(e){alert("Could not import: "+e.message)}
+  };
+  r.readAsText(file);
+}
+
+/* ---------- DRAG & DROP REORDER ---------- */
+let dragId=null;
+function addDrag(card,id){
+  card.addEventListener("dragstart",e=>{
+    dragId=id;card.classList.add("dragging");
+    e.dataTransfer.effectAllowed="move";
+  });
+  card.addEventListener("dragover",e=>{
+    e.preventDefault();
+    const after=dragAt(card,e.clientY);
+    const dragging=document.querySelector(".card.dragging");
+    if(!dragging)return;
+    if(after===null)grid.appendChild(dragging);
+    else grid.insertBefore(dragging,after);
+  });
+  card.addEventListener("dragend",()=>{
+    card.classList.remove("dragging");dragId=null;commitReorder();
+  });
+}
+function dragAt(card,y){
+  const siblings=[...grid.children].filter(c=>c.classList.contains("card"));
+  let empty=null;
+  const before=siblings.filter(s=>{
+    const box=s.getBoundingClientRect();return y<box.top+box.height/2;
+  });
+  if(!before.length)empty=grid.lastElementChild;
+  else empty=before[before.length-1].nextElementSibling;
+  return empty;
+}
+function commitReorder(){
+  const order=[...grid.querySelectorAll(".card")].map(c=>c.dataset.id);
+  state.scenes.sort((a,b)=>order.indexOf(a.id)-order.indexOf(b.id));
+  save();
+}
+
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
+
+/* ---------- WIRE UP ---------- */
+document.getElementById("addBtn").onclick=newScene;
+document.getElementById("inspClose").onclick=()=>{selectedId=null;document.getElementById("inspector").classList.remove("open");};
+document.getElementById("delBtn").onclick=()=>{if(selectedId!==null&&confirm("Delete this scene?"))deleteScene(selectedId)};
+
+document.getElementById("sTitle").oninput=e=>{if(selectedId!==null)update(selectedId,"title",e.target.value)};
+document.getElementById("sSum").oninput=e=>{if(selectedId!==null)update(selectedId,"summary",e.target.value)};
+document.getElementById("sStatus").onchange=e=>{if(selectedId!==null)update(selectedId,"status",e.target.value)};
+document.getElementById("sPov").onchange=e=>{if(selectedId!==null)update(selectedId,"pov",e.target.value)};
+document.getElementById("sAct").onchange=e=>{if(selectedId!==null)update(selectedId,"act",e.target.value)};
+
+document.getElementById("bookTitle").oninput=e=>{state.title=e.target.value;scheduleSave();};
+document.getElementById("newChar").addEventListener("keydown",e=>{if(e.key==="Enter"){addChar();e.preventDefault()}});
+document.getElementById("exportBtn").onclick=exportData;
+document.getElementById("resetBtn").onclick=()=>{if(confirm("Delete ALL scenes and characters? This clears the page.")){state={title:"Untitled Novel",characters:[],scenes:[],next:0};selectedId=null;render();save();}};
+document.getElementById("importBtn").onclick=()=>document.getElementById("importFile").click();
+document.getElementById("importFile").onchange=e=>{if(e.target.files[0])importData(e.target.files[0]);e.target.value=""};
+
+document.getElementById("sAct").addEventListener("change",e=>{update(selectedId,"act",e.target.value)});
+
+render();save();
+</script>
+</body>
+</html>
+
