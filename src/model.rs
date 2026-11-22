@@ -69,6 +69,8 @@ pub struct Character {
     #[serde(default)]
     pub role: String,
     #[serde(default)]
+    pub gender: String,
+    #[serde(default)]
     pub goal: String,
     #[serde(default)]
     pub notes: String,
@@ -241,6 +243,7 @@ impl Board {
             id: Id::generate(),
             name: name.to_owned(),
             role: String::new(),
+            gender: String::new(),
             goal: String::new(),
             notes: String::new(),
         });
@@ -581,6 +584,7 @@ mod tests {
         assert_eq!(board.scenes[0].day, None);
         assert_eq!(board.scenes[0].text, "");
         assert_eq!(board.characters[0].role, "");
+        assert_eq!(board.characters[0].gender, "");
         let json = serde_json::to_string(&board).unwrap();
         assert!(!json.contains("\"day\""));
     }

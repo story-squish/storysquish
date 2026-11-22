@@ -2915,6 +2915,16 @@ fn character_profile_fields(ui: &mut Ui, colors: Palette, character: &mut Charac
         .labelled_by(role_label)
         .changed();
 
+    let gender_label = field_label(ui, colors, "Gender");
+    changed |= ui
+        .add(
+            TextEdit::singleline(&mut character.gender)
+                .hint_text("Woman, man, nonbinary…")
+                .desired_width(f32::INFINITY),
+        )
+        .labelled_by(gender_label)
+        .changed();
+
     let goal_label = field_label(ui, colors, "Goal");
     changed |= ui
         .add(

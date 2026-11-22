@@ -49,7 +49,11 @@ pub fn to_markdown(board: &Board) -> String {
         out.push_str("## Characters\n\n");
         for character in &board.characters {
             let _ = writeln!(out, "### {}\n", character.name.trim());
-            for (field, value) in [("Role", &character.role), ("Goal", &character.goal)] {
+            for (field, value) in [
+                ("Role", &character.role),
+                ("Gender", &character.gender),
+                ("Goal", &character.goal),
+            ] {
                 let value = value.trim();
                 if !value.is_empty() {
                     let _ = writeln!(out, "**{field}:** {value}\n");
@@ -214,6 +218,7 @@ mod tests {
         board.add_character("Ada");
         board.add_character("Bo");
         board.characters[0].role = "Detective".into();
+        board.characters[0].gender = "Woman".into();
         let [ada, bo] = [0, 1].map(|i| board.characters[i].id.clone());
         board.add_relationship(&ada, &bo, "mentor");
         board.add_location("Harbor");
@@ -227,7 +232,9 @@ mod tests {
         let outline = to_markdown(&board);
 
         assert!(outline.contains("_Outline · Location: Harbor · Day 2_"));
-        assert!(outline.contains("### Ada\n\n**Role:** Detective\n\n- mentor → Bo\n\n### Bo"));
+        assert!(outline.contains(
+            "### Ada\n\n**Role:** Detective\n\n**Gender:** Woman\n\n- mentor → Bo\n\n### Bo"
+        ));
         assert!(outline.ends_with("## Locations\n\n### Harbor\n\nFog every morning\n"));
     }
 
