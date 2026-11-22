@@ -32,6 +32,18 @@ fn board_with_scenes(titles: &[&str]) -> Board {
     board
 }
 
+fn labelled_text_input<'h>(
+    harness: &'h Harness<'_, PlannerApp>,
+    label: &'h str,
+) -> egui_kittest::Node<'h> {
+    harness.get_by(|node| {
+        matches!(
+            node.role(),
+            egui::accesskit::Role::MultilineTextInput | egui::accesskit::Role::TextInput
+        ) && node.label().as_deref() == Some(label)
+    })
+}
+
 fn scene_titles(harness: &Harness<'_, PlannerApp>) -> Vec<String> {
     harness
         .state()
@@ -158,10 +170,9 @@ fn character_notes_are_editable_from_inspector() {
     harness.get_by_label("Ada").click();
     harness.run();
     assert!(harness.query_by_label("Delete character").is_some());
-    let notes_role = egui::accesskit::Role::MultilineTextInput;
-    harness.get_by_role(notes_role).focus();
+    labelled_text_input(&harness, "NOTES").focus();
     harness.run();
-    harness.get_by_role(notes_role).type_text("Wants revenge");
+    labelled_text_input(&harness, "NOTES").type_text("Wants revenge");
     harness.run();
 
     assert_eq!(harness.state().board().characters[0].notes, "Wants revenge");
@@ -326,6 +337,7 @@ fn saved_color_scheme_is_restored_on_launch() {
         &settings_path,
         &storysquish::settings::Settings {
             color_scheme: ColorScheme::Ember,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -353,5 +365,166 @@ fn scene_card_stacks_number_title_and_badges() {
     assert!(
         act.height() < 2.0 * title.height(),
         "badge text wrapped: {act:?}"
+    );
+}
+
+#[test]
+fn write_view_edits_prose_of_selected_scene() {
+    let Fixture { mut harness, .. } = launch(board_with_scenes(&["Rain", "Sun"]));
+
+    harness.get_by_label("Rain").click();
+    harness.run();
+    harness.get_by_label("Write prose").click();
+    harness.run();
+    labelled_text_input(&harness, "SCENE 01  Rain").focus();
+    harness.run();
+    labelled_text_input(&harness, "SCENE 01  Rain").type_text("It poured all night.");
+    harness.run();
+    assert_eq!(
+        harness.state().board().scenes[0].text,
+        "It poured all night."
+    );
+    assert!(
+        harness
+            .query_by_label("4 words · 4 in manuscript")
+            .is_some()
+    );
+
+    harness.get_by_label("Next").click();
+    harness.run();
+    assert!(harness.query_by_label("SCENE 02  Sun").is_some());
+}
+
+#[test]
+fn deleting_location_from_inspector_clears_it_from_scenes() {
+    let mut board = board_with_scenes(&["Rain"]);
+    board.add_location("Harbor");
+    board.scenes[0].location = Some(board.locations[0].id.clone());
+    board.scenes[0].day = Some(3);
+    let Fixture { mut harness, .. } = launch(board);
+    assert!(harness.query_by_label("Harbor · Day 3").is_some());
+
+    harness.get_by_label("Harbor").click();
+    harness.run();
+    assert!(harness.query_by_label("Setting of 1 scene").is_some());
+    harness.get_by_label("Delete location").click();
+    harness.run();
+
+    assert_eq!(harness.state().board().locations.len(), 0);
+    assert_eq!(harness.state().board().scenes[0].location, None);
+}
+
+#[test]
+fn relationship_is_added_from_character_inspector() {
+    let mut board = Board::default();
+    board.add_character("Ada");
+    board.add_character("Bo");
+    let Fixture { mut harness, .. } = launch(board);
+
+    harness.get_by_label("Ada").click();
+    harness.run();
+    harness
+        .get_by(|node| {
+            node.role() == egui::accesskit::Role::ComboBox
+                && node.label().as_deref() == Some("RELATIONSHIPS")
+        })
+        .click();
+    harness.run();
+    harness
+        .get_all_by_label("Bo")
+        .last()
+        .expect("Bo is offered as a relationship target")
+        .click();
+    harness.run();
+    harness.get_by_label("Add").click();
+    harness.run();
+
+    let board = harness.state().board();
+    assert_eq!(board.relationships.len(), 1);
+    assert_eq!(board.relationships[0].from, board.characters[0].id);
+    assert_eq!(board.relationships[0].to, board.characters[1].id);
+    assert!(harness.query_by_label("to Bo").is_some());
+}
+
+#[test]
+fn timeline_lists_dated_scenes_in_story_order() {
+    let mut board = board_with_scenes(&["Present", "Flashback", "Loose end"]);
+    board.scenes[0].day = Some(10);
+    board.scenes[1].day = Some(2);
+    let Fixture { mut harness, .. } = launch(board);
+
+    harness.get_by_label("Timeline").click();
+    harness.run();
+
+    let flashback = harness.get_by_label("Flashback").rect();
+    let present = harness.get_by_label("Present").rect();
+    let loose_end = harness.get_by_label("Loose end").rect();
+    assert!(flashback.top() < present.top());
+    assert!(present.top() < harness.get_by_label("UNDATED").rect().top());
+    assert!(harness.get_by_label("UNDATED").rect().top() < loose_end.top());
+}
+
+#[test]
+fn board_changed_elsewhere_is_reloaded_and_undoable() {
+    let Fixture { mut harness, dir } = launch(board_with_scenes(&["Mine"]));
+    let path = dir.path().join("board.json");
+    storysquish::storage::save(&path, &board_with_scenes(&["Synced"])).unwrap();
+
+    std::thread::sleep(std::time::Duration::from_millis(2100));
+    harness.run();
+
+    assert_eq!(scene_titles(&harness), ["Synced"]);
+    assert!(harness.query_by_label("reloaded").is_some());
+    harness.get_by_label("Undo").click();
+    harness.run();
+    assert_eq!(scene_titles(&harness), ["Mine"]);
+}
+
+#[test]
+fn unsaved_edits_win_over_external_change_but_keep_a_copy() {
+    let Fixture { mut harness, dir } = launch(board_with_scenes(&["Mine"]));
+    let path = dir.path().join("board.json");
+    storysquish::storage::save(&path, &board_with_scenes(&["Theirs"])).unwrap();
+
+    harness.get_by_label("+ Scene").click();
+    harness.run();
+
+    assert!(
+        harness
+            .query_by_label_contains("changed outside StorySquish")
+            .is_some()
+    );
+    let saved = storysquish::storage::load(&path).unwrap();
+    assert_eq!(saved.scenes.len(), 2);
+    let conflict = std::fs::read_dir(dir.path().join("board-backups"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.to_string_lossy().ends_with("-conflict.json"))
+        .expect("their version is kept as a conflict backup");
+    assert_eq!(
+        storysquish::storage::load(&conflict).unwrap().scenes[0].title,
+        "Theirs"
+    );
+}
+
+#[test]
+fn relationship_graph_renders_and_selects_nothing_by_default() {
+    let mut board = Board::default();
+    for name in ["Ada Lovelace", "Bo", "Cy"] {
+        board.add_character(name);
+    }
+    let [ada, bo] = [0, 1].map(|i| board.characters[i].id.clone());
+    board.add_relationship(&ada, &bo, "mentor");
+    board.add_relationship(&bo, &ada, "rival");
+    let Fixture { mut harness, .. } = launch(board);
+
+    harness.get_by_label("Relationships").click();
+    harness.run();
+
+    assert!(harness.query_by_label("Delete character").is_none());
+    assert!(
+        harness
+            .query_by_label_contains("add relationships in the inspector")
+            .is_none()
     );
 }

@@ -6,16 +6,7 @@ use crate::model::{Board, Status};
 /// remaining scenes keep their board numbers so they match the cards.
 pub fn to_markdown(board: &Board) -> String {
     let mut out = String::new();
-    let title = board.title.trim();
-    let _ = writeln!(
-        out,
-        "# {}\n",
-        if title.is_empty() {
-            "Untitled Novel"
-        } else {
-            title
-        }
-    );
+    let _ = writeln!(out, "# {}\n", novel_title(board));
 
     for (index, scene) in board.scenes.iter().enumerate() {
         if scene.status == Status::Archived {
@@ -40,6 +31,12 @@ pub fn to_markdown(board: &Board) -> String {
         if let Some(pov) = scene.pov.as_ref().and_then(|id| board.character(id)) {
             facts.push(format!("POV: {}", pov.name.trim()));
         }
+        if let Some(location) = scene.location.as_ref().and_then(|id| board.location(id)) {
+            facts.push(format!("Location: {}", location.name.trim()));
+        }
+        if let Some(day) = scene.day {
+            facts.push(format!("Day {day}"));
+        }
         let _ = writeln!(out, "_{}_\n", facts.join(" · "));
 
         let summary = scene.summary.trim();
@@ -52,6 +49,31 @@ pub fn to_markdown(board: &Board) -> String {
         out.push_str("## Characters\n\n");
         for character in &board.characters {
             let _ = writeln!(out, "### {}\n", character.name.trim());
+            for (field, value) in [("Role", &character.role), ("Goal", &character.goal)] {
+                let value = value.trim();
+                if !value.is_empty() {
+                    let _ = writeln!(out, "**{field}:** {value}\n");
+                }
+            }
+            for relationship in board
+                .relationships
+                .iter()
+                .filter(|r| r.from == character.id)
+            {
+                let Some(other) = board.character(&relationship.to) else {
+                    continue;
+                };
+                let label = relationship.label.trim();
+                let label = if label.is_empty() {
+                    "related to"
+                } else {
+                    label
+                };
+                let _ = writeln!(out, "- {label} → {}", other.name.trim());
+            }
+            if board.relationships.iter().any(|r| r.from == character.id) {
+                out.push('\n');
+            }
             let notes = character.notes.trim();
             if !notes.is_empty() {
                 let _ = writeln!(out, "{notes}\n");
@@ -59,6 +81,54 @@ pub fn to_markdown(board: &Board) -> String {
         }
     }
 
+    if !board.locations.is_empty() {
+        out.push_str("## Locations\n\n");
+        for location in &board.locations {
+            let _ = writeln!(out, "### {}\n", location.name.trim());
+            let notes = location.notes.trim();
+            if !notes.is_empty() {
+                let _ = writeln!(out, "{notes}\n");
+            }
+        }
+    }
+
+    finish(out)
+}
+
+/// The prose of every non-archived scene in board order, one heading per
+/// scene, ready to paste into a word processor.
+pub fn manuscript_markdown(board: &Board) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "# {}\n", novel_title(board));
+    for scene in board.scenes.iter().filter(|s| s.status != Status::Archived) {
+        let scene_title = scene.title.trim();
+        let _ = writeln!(
+            out,
+            "## {}\n",
+            if scene_title.is_empty() {
+                "* * *"
+            } else {
+                scene_title
+            }
+        );
+        let text = scene.text.trim();
+        if !text.is_empty() {
+            let _ = writeln!(out, "{text}\n");
+        }
+    }
+    finish(out)
+}
+
+fn novel_title(board: &Board) -> &str {
+    let title = board.title.trim();
+    if title.is_empty() {
+        "Untitled Novel"
+    } else {
+        title
+    }
+}
+
+fn finish(mut out: String) -> String {
     let trimmed_len = out.trim_end().len();
     out.truncate(trimmed_len);
     out.push('\n');
@@ -103,6 +173,51 @@ mod tests {
              ## Characters\n\n\
              ### Ada\n\n\
              Wants revenge\n"
+        );
+    }
+
+    #[test]
+    fn outline_lists_worldbuilding_details() {
+        let mut board = Board::default();
+        board.add_character("Ada");
+        board.add_character("Bo");
+        board.characters[0].role = "Detective".into();
+        let [ada, bo] = [0, 1].map(|i| board.characters[i].id.clone());
+        board.add_relationship(&ada, &bo, "mentor");
+        board.add_location("Harbor");
+        board.locations[0].notes = "Fog every morning".into();
+        let harbor = board.locations[0].id.clone();
+        let scene = board.add_scene();
+        let scene = board.scene_mut(&scene).unwrap();
+        scene.location = Some(harbor);
+        scene.day = Some(2);
+
+        let outline = to_markdown(&board);
+
+        assert!(outline.contains("_Outline · Location: Harbor · Day 2_"));
+        assert!(outline.contains("### Ada\n\n**Role:** Detective\n\n- mentor → Bo\n\n### Bo"));
+        assert!(outline.ends_with("## Locations\n\n### Harbor\n\nFog every morning\n"));
+    }
+
+    #[test]
+    fn manuscript_holds_prose_of_kept_scenes() {
+        let mut board = Board {
+            title: "Dune".into(),
+            ..Board::default()
+        };
+        let opening = board.add_scene();
+        let scene = board.scene_mut(&opening).unwrap();
+        scene.title = "Arrakis".into();
+        scene.text = "  The spice must flow.  ".into();
+        let cut = board.add_scene();
+        let scene = board.scene_mut(&cut).unwrap();
+        scene.text = "Cut.".into();
+        scene.status = Status::Archived;
+        board.add_scene();
+
+        assert_eq!(
+            manuscript_markdown(&board),
+            "# Dune\n\n## Arrakis\n\nThe spice must flow.\n\n## * * *\n"
         );
     }
 
