@@ -1030,3 +1030,96 @@ fn reopening_from_cloud_keeps_edits_made_just_before_switching_away() {
     let saved = storysquish::storage::load(&novel_path).unwrap();
     assert_eq!(saved.relationships.len(), 1);
 }
+
+fn write_local_backup(dir: &std::path::Path, name: &str, titles: &[&str]) {
+    storysquish::storage::save(
+        &dir.join("board-backups").join(name),
+        &board_with_scenes(titles),
+    )
+    .unwrap();
+}
+
+fn open_local_recovery(harness: &mut Harness<'_, PlannerApp>) {
+    open_settings(harness);
+    harness.get_by_label("Recover from local…").click();
+    harness.run();
+}
+
+#[test]
+fn recover_from_local_defaults_to_the_newest_readable_backup() {
+    let Fixture { mut harness, dir } = launch(board_with_scenes(&["Current"]));
+    write_local_backup(dir.path(), "board-001700000000000.json", &["Old", "Older"]);
+    write_local_backup(dir.path(), "board-001800000000000.json", &["Newest"]);
+    std::fs::write(
+        dir.path().join("board-backups/board-001900000000000.json"),
+        "{",
+    )
+    .unwrap();
+
+    open_local_recovery(&mut harness);
+    let unreadable = harness.get_by(|n| n.label().is_some_and(|l| l.ends_with("unreadable")));
+    assert!(unreadable.accesskit_node().is_disabled());
+    assert!(
+        harness
+            .query_by(|n| n
+                .label()
+                .is_some_and(|l| l.ends_with("Untitled Novel  ·  1 scene")))
+            .is_some()
+    );
+    harness.get_by_label("Recover").click();
+    harness.run();
+
+    assert_eq!(scene_titles(&harness), ["Newest"]);
+    assert!(harness.query_by_label("Recover").is_none());
+}
+
+#[test]
+fn recover_from_local_restores_the_chosen_backup() {
+    let Fixture { mut harness, dir } = launch(board_with_scenes(&["Current"]));
+    write_local_backup(dir.path(), "board-001700000000000.json", &["Old", "Older"]);
+    write_local_backup(
+        dir.path(),
+        "board-001800000000000-conflict.json",
+        &["Theirs"],
+    );
+
+    open_local_recovery(&mut harness);
+    assert!(
+        harness
+            .query_by(|n| n
+                .label()
+                .is_some_and(|l| l.ends_with("1 scene  ·  changed elsewhere")))
+            .is_some()
+    );
+    harness
+        .get_by(|n| n.label().is_some_and(|l| l.ends_with("2 scenes")))
+        .click();
+    harness.run();
+    harness.get_by_label("Recover").click();
+    harness.run();
+
+    assert_eq!(scene_titles(&harness), ["Old", "Older"]);
+}
+
+#[test]
+fn recover_from_local_without_backups_says_so() {
+    let Fixture { mut harness, .. } = launch(board_with_scenes(&["Current"]));
+
+    open_local_recovery(&mut harness);
+
+    assert!(
+        harness
+            .query_by_label("This board has no backups yet.")
+            .is_some()
+    );
+    assert!(
+        harness
+            .get_by_label("Recover")
+            .accesskit_node()
+            .is_disabled()
+    );
+    harness.get_by_label("Cancel").click();
+    harness.run();
+    assert!(harness.query_by_label("Recover").is_none());
+    assert!(harness.query_by_label("Recover from local…").is_some());
+}
