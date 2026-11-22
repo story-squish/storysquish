@@ -135,13 +135,16 @@ the `gist` scope) and click **Connect**.
   changes, and once more when you quit (the desktop app) or leave the page
   (the web version).
 - **Restore from gist…** lists the last 30 revisions; restoring can be undone.
+- In the desktop app each board file gets its own gist, so every novel keeps
+  a separate history, and the restore list is headed by that gist's title.
+  Moving the board file keeps its gist; opening another board switches to
+  that board's gist.
 - To back up to the same gist from another device or browser, paste its id or
   URL into the gist field there. Clear the field to start a new gist next time.
 - **Disconnect** forgets the token; the gist stays on GitHub.
 
-The gist follows the app, not the board file: after **Open…** a different
-board, the next push adds it as a revision of the same gist. Secret gists are
-unlisted, not private: anyone with the URL can read them.
+The web version has a single board, so it keeps a single gist. Secret gists
+are unlisted, not private: anyone with the URL can read them.
 
 The desktop app keeps the token in a separate `github-token` file (mode
 `0600`) so `settings.json` can be synced or shared safely. The web version

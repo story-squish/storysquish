@@ -335,14 +335,7 @@ fn choosing_a_color_scheme_applies_and_saves_it() {
 fn saved_color_scheme_is_restored_on_launch() {
     let dir = tempfile::tempdir().unwrap();
     let settings_path = dir.path().join("settings.json");
-    storysquish::settings::save(
-        &settings_path,
-        &storysquish::settings::Settings {
-            color_scheme: ColorScheme::Ember,
-            ..Default::default()
-        },
-    )
-    .unwrap();
+    std::fs::write(&settings_path, r#"{"color-scheme": "ember"}"#).unwrap();
     let board_path = dir.path().join("board.json");
     let harness = Harness::builder()
         .with_size(WINDOW)
@@ -597,7 +590,10 @@ fn pasting_a_gist_url_stores_its_id() {
     gist_field(&harness).type_text("https://gist.github.com/someone/aa5a315d61ae9438b18d");
     harness.run();
     assert_eq!(
-        harness.state().settings().gist_id.as_deref(),
+        harness
+            .state()
+            .settings()
+            .gist_id(harness.state().board_path()),
         Some("aa5a315d61ae9438b18d")
     );
     assert!(harness.query_by_label("Restore from gist…").is_some());
@@ -605,7 +601,10 @@ fn pasting_a_gist_url_stores_its_id() {
     harness.get_by_label("Back up automatically").click();
     harness.run();
     let saved = storysquish::settings::load(&dir.path().join("settings.json")).unwrap();
-    assert_eq!(saved.gist_id.as_deref(), Some("aa5a315d61ae9438b18d"));
+    assert_eq!(
+        saved.gist_id(&dir.path().join("board.json")),
+        Some("aa5a315d61ae9438b18d")
+    );
     assert!(saved.gist_auto_backup);
 }
 
@@ -620,7 +619,13 @@ fn text_that_is_not_a_gist_is_flagged_and_not_saved() {
     harness.run();
 
     assert!(harness.query_by_label("Not a gist id or URL").is_some());
-    assert_eq!(harness.state().settings().gist_id, None);
+    assert_eq!(
+        harness
+            .state()
+            .settings()
+            .gist_id(harness.state().board_path()),
+        None
+    );
 }
 
 #[test]

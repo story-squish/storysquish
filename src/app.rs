@@ -127,12 +127,16 @@ struct GistState {
     last_attempt: Option<Instant>,
     last_success: Option<Instant>,
     last_pushed_json: Option<String>,
+    /// The board file a push in flight belongs to, which can differ from the
+    /// open one if another board was opened meanwhile.
+    pushed_board: Option<PathBuf>,
     error: Option<String>,
     restore: Option<GistRestore>,
 }
 
 #[derive(Default)]
 struct GistRestore {
+    title: Option<String>,
     revisions: Option<Vec<Revision>>,
     error: Option<String>,
 }
@@ -184,7 +188,7 @@ impl PlannerApp {
         settings_path: PathBuf,
         startup_alert: Option<String>,
     ) -> Self {
-        let (settings, settings_alert) = match settings::load(&settings_path) {
+        let (mut settings, settings_alert) = match settings::load(&settings_path) {
             Ok(settings) => (settings, None),
             Err(e) => (
                 Settings::default(),
@@ -198,14 +202,15 @@ impl PlannerApp {
                 Some(format!("Could not read the GitHub token: {e:#}")),
             ),
         };
+        let claimed_gist_id = settings.claim_unclaimed_gist_id(&path);
         let gist = GistState {
             token,
-            gist_id_draft: settings.gist_id.clone().unwrap_or_default(),
+            gist_id_draft: settings.gist_id(&path).unwrap_or_default().to_owned(),
             ..GistState::default()
         };
         let colors = settings.color_scheme.palette();
         apply_theme(&cc.egui_ctx, colors);
-        Self {
+        let mut app = Self {
             history: History::new(board.clone(), UNDO_LIMIT),
             board,
             disk_modified: storage::modified_time(&path),
@@ -234,7 +239,11 @@ impl PlannerApp {
             settings_dialog: None,
             gist,
             colors,
+        };
+        if claimed_gist_id {
+            app.save_settings_reporting_errors();
         }
+        app
     }
 
     pub fn board(&self) -> &Board {
@@ -584,6 +593,7 @@ impl PlannerApp {
             return;
         }
         self.history.commit(&self.board);
+        self.settings.move_gist_id(&self.path, &path);
         self.use_board_path(path);
     }
 
@@ -601,6 +611,15 @@ impl PlannerApp {
         self.last_backup = None;
         self.settings.board_path = Some(self.path.clone());
         self.save_settings_reporting_errors();
+        self.gist.gist_id_draft = self.gist_id().unwrap_or_default();
+        self.gist.gist_id_invalid = false;
+        self.gist.last_pushed_json = None;
+        self.gist.last_success = None;
+        self.gist.board_changed = false;
+    }
+
+    fn gist_id(&self) -> Option<String> {
+        self.settings.gist_id(&self.path).map(str::to_owned)
     }
 
     fn token_path(&self) -> PathBuf {
@@ -640,6 +659,7 @@ impl PlannerApp {
             Ok(()) => {
                 self.gist.token = None;
                 self.gist.in_flight = None;
+                self.gist.pushed_board = None;
                 self.gist.error = None;
                 self.gist.last_success = None;
             }
@@ -658,8 +678,8 @@ impl PlannerApp {
             return;
         };
         self.gist.gist_id_invalid = false;
-        if gist_id != self.settings.gist_id {
-            self.settings.gist_id = gist_id;
+        if gist_id != self.gist_id() {
+            self.settings.set_gist_id(&self.path, gist_id);
             self.gist.last_pushed_json = None;
             self.save_settings_reporting_errors();
         }
@@ -683,7 +703,7 @@ impl PlannerApp {
 
     fn push_job(&self) -> gist::Job {
         gist::Job::Push {
-            gist_id: self.settings.gist_id.clone(),
+            gist_id: self.gist_id(),
             title: self.board.title.clone(),
             board_json: serde_json::to_string_pretty(&self.board).unwrap_or_default(),
         }
@@ -699,6 +719,9 @@ impl PlannerApp {
         self.gist.board_changed = false;
         let job = self.push_job();
         self.start_gist_job(task, job);
+        if self.gist.in_flight.is_some() {
+            self.gist.pushed_board = Some(self.path.clone());
+        }
     }
 
     /// Pushes at most once per interval and only after the board changed,
@@ -731,7 +754,7 @@ impl PlannerApp {
     }
 
     fn open_gist_restore(&mut self) {
-        let Some(gist_id) = self.settings.gist_id.clone() else {
+        let Some(gist_id) = self.gist_id() else {
             return;
         };
         self.gist.restore = Some(GistRestore::default());
@@ -742,7 +765,7 @@ impl PlannerApp {
     }
 
     fn restore_gist_revision(&mut self, version: String) {
-        let Some(gist_id) = self.settings.gist_id.clone() else {
+        let Some(gist_id) = self.gist_id() else {
             return;
         };
         self.start_gist_job(GistTask::Fetch, gist::Job::Fetch { gist_id, version });
@@ -764,17 +787,25 @@ impl PlannerApp {
     fn handle_gist_reply(&mut self, task: GistTask, reply: gist::Reply) {
         match reply {
             gist::Reply::Pushed { pushed, board_json } => {
-                self.gist.last_pushed_json = Some(board_json);
-                self.gist.last_success = Some(Instant::now());
+                let board = self
+                    .gist
+                    .pushed_board
+                    .take()
+                    .unwrap_or_else(|| self.path.clone());
                 self.gist.error = None;
-                if self.settings.gist_id.as_deref() != Some(pushed.gist_id.as_str()) {
+                if board == self.path {
+                    self.gist.last_pushed_json = Some(board_json);
+                    self.gist.last_success = Some(Instant::now());
                     self.gist.gist_id_draft.clone_from(&pushed.gist_id);
-                    self.settings.gist_id = Some(pushed.gist_id);
+                }
+                if self.settings.gist_id(&board) != Some(pushed.gist_id.as_str()) {
+                    self.settings.set_gist_id(&board, Some(pushed.gist_id));
                     self.save_settings_reporting_errors();
                 }
             }
-            gist::Reply::Revisions(revisions) => {
+            gist::Reply::Revisions { title, revisions } => {
                 if let Some(restore) = &mut self.gist.restore {
+                    restore.title = Some(title);
                     restore.revisions = Some(revisions);
                 }
             }
@@ -807,6 +838,9 @@ impl PlannerApp {
                     }
                     GistTask::AutoPush | GistTask::ManualPush => self.gist.error = Some(message),
                 }
+                if matches!(task, GistTask::AutoPush | GistTask::ManualPush) {
+                    self.gist.pushed_board = None;
+                }
             }
         }
     }
@@ -831,6 +865,7 @@ impl PlannerApp {
             return;
         }
         let reply = gist::run(&gist::Client::new(token), job);
+        self.gist.pushed_board = Some(self.path.clone());
         self.handle_gist_reply(GistTask::ManualPush, reply);
     }
 
@@ -891,7 +926,7 @@ impl PlannerApp {
             if id_field.changed() {
                 action = Some(GistAction::SetGistId);
             }
-            if let Some(id) = &self.settings.gist_id {
+            if let Some(id) = self.gist_id() {
                 ui.hyperlink_to("Open", format!("https://gist.github.com/{id}"));
             }
         });
@@ -922,7 +957,7 @@ impl PlannerApp {
             }
             if ui
                 .add_enabled(
-                    !busy && self.settings.gist_id.is_some(),
+                    !busy && self.gist_id().is_some(),
                     egui::Button::new("Restore from gist…"),
                 )
                 .clicked()
@@ -954,7 +989,7 @@ impl PlannerApp {
             "Empty boards are not backed up.".to_owned()
         } else if let Some(at) = self.gist.last_success {
             format!("Backed up {}", elapsed_description(at.elapsed()))
-        } else if self.settings.gist_id.is_none() {
+        } else if self.gist_id().is_none() {
             "The first backup creates a secret gist.".to_owned()
         } else {
             "Not backed up in this session yet.".to_owned()
@@ -983,6 +1018,10 @@ impl PlannerApp {
         let modal = egui::Modal::new(egui::Id::unique("gist_restore")).show(ctx, |ui| {
             ui.set_width(380.0);
             ui.heading("Restore from gist");
+            if let Some(title) = &restore.title {
+                let title = if title.is_empty() { "Untitled" } else { title };
+                ui.label(RichText::new(title).strong());
+            }
             if let Some(error) = &restore.error {
                 ui.label(RichText::new(error).small().color(colors.danger));
             }
