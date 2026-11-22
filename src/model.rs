@@ -162,6 +162,14 @@ impl Default for Board {
 }
 
 impl Board {
+    /// The title alone does not count: a reset board keeps a default one.
+    pub fn is_empty(&self) -> bool {
+        self.scenes.is_empty()
+            && self.characters.is_empty()
+            && self.locations.is_empty()
+            && self.relationships.is_empty()
+    }
+
     pub fn add_scene(&mut self) -> Id {
         let scene = Scene::new();
         let id = scene.id.clone();
@@ -496,6 +504,17 @@ mod empty_string_as_none {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_board_without_content_is_empty() {
+        let mut board = Board {
+            title: "Dune".to_owned(),
+            ..Board::default()
+        };
+        assert!(board.is_empty());
+        board.add_scene();
+        assert!(!board.is_empty());
+    }
 
     const HTML_EXPORT: &str = r#"{
       "title": "My Book",

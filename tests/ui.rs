@@ -1,5 +1,5 @@
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use storysquish::app::PlannerApp;
 use storysquish::model::Board;
 use storysquish::theme::ColorScheme;
@@ -542,7 +542,7 @@ fn gist_field<'h>(harness: &'h Harness<'_, PlannerApp>) -> egui_kittest::Node<'h
 
 #[test]
 fn connecting_github_stores_the_token_privately_and_disconnecting_forgets_it() {
-    let Fixture { mut harness, dir } = launch(Board::default());
+    let Fixture { mut harness, dir } = launch(board_with_scenes(&["Opening"]));
     let token_path = dir.path().join("config/storysquish/github-token");
     open_settings(&mut harness);
 
@@ -575,23 +575,21 @@ fn connecting_github_stores_the_token_privately_and_disconnecting_forgets_it() {
     assert!(harness.query_by_label("Connect").is_some());
 }
 
-fn launch_connected() -> (Harness<'static, PlannerApp>, TempDir) {
+fn launch_connected(board: Board) -> (Harness<'static, PlannerApp>, TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let settings_path = dir.path().join("settings.json");
     storysquish::gist::save_token(&storysquish::gist::token_path(&settings_path), "t").unwrap();
     let board_path = dir.path().join("board.json");
     let mut harness = Harness::builder()
         .with_size(WINDOW)
-        .build_eframe(move |cc| {
-            PlannerApp::new(cc, Board::default(), board_path, settings_path, None)
-        });
+        .build_eframe(move |cc| PlannerApp::new(cc, board, board_path, settings_path, None));
     harness.run();
     (harness, dir)
 }
 
 #[test]
 fn pasting_a_gist_url_stores_its_id() {
-    let (mut harness, dir) = launch_connected();
+    let (mut harness, dir) = launch_connected(Board::default());
     open_settings(&mut harness);
 
     gist_field(&harness).focus();
@@ -613,7 +611,7 @@ fn pasting_a_gist_url_stores_its_id() {
 
 #[test]
 fn text_that_is_not_a_gist_is_flagged_and_not_saved() {
-    let (mut harness, _dir) = launch_connected();
+    let (mut harness, _dir) = launch_connected(Board::default());
     open_settings(&mut harness);
 
     gist_field(&harness).focus();
@@ -623,4 +621,22 @@ fn text_that_is_not_a_gist_is_flagged_and_not_saved() {
 
     assert!(harness.query_by_label("Not a gist id or URL").is_some());
     assert_eq!(harness.state().settings().gist_id, None);
+}
+
+#[test]
+fn empty_board_is_not_backed_up_to_gist() {
+    let (mut harness, _dir) = launch_connected(Board::default());
+    open_settings(&mut harness);
+
+    assert!(
+        harness
+            .get_by_label("Back up now")
+            .accesskit_node()
+            .is_disabled()
+    );
+    assert!(
+        harness
+            .query_by_label("Empty boards are not backed up.")
+            .is_some()
+    );
 }

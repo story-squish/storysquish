@@ -689,7 +689,12 @@ impl PlannerApp {
         }
     }
 
+    /// An empty board is almost always a reset or a fresh start, and pushing
+    /// it would make the gist's latest revision a blank board.
     fn back_up_to_gist(&mut self, task: GistTask) {
+        if self.board.is_empty() {
+            return;
+        }
         self.gist.last_attempt = Some(Instant::now());
         self.gist.board_changed = false;
         let job = self.push_job();
@@ -704,6 +709,7 @@ impl PlannerApp {
             || self.gist.token.is_none()
             || self.gist.in_flight.is_some()
             || !self.gist.board_changed
+            || self.board.is_empty()
             || matches!(self.save_state, SaveState::Pending(_))
         {
             return;
@@ -812,7 +818,7 @@ impl PlannerApp {
             let reply = pending.wait();
             self.handle_gist_reply(task, reply);
         }
-        if !self.settings.gist_auto_backup || !self.gist.board_changed {
+        if !self.settings.gist_auto_backup || !self.gist.board_changed || self.board.is_empty() {
             return;
         }
         let Some(token) = &self.gist.token else {
@@ -906,7 +912,10 @@ impl PlannerApp {
         }
         ui.horizontal(|ui| {
             if ui
-                .add_enabled(!busy, egui::Button::new("Back up now"))
+                .add_enabled(
+                    !busy && !self.board.is_empty(),
+                    egui::Button::new("Back up now"),
+                )
                 .clicked()
             {
                 action = Some(GistAction::BackUpNow);
@@ -941,6 +950,8 @@ impl PlannerApp {
         }
         let status = if self.gist.in_flight.is_some() {
             "Talking to GitHub…".to_owned()
+        } else if self.board.is_empty() {
+            "Empty boards are not backed up.".to_owned()
         } else if let Some(at) = self.gist.last_success {
             format!("Backed up {}", elapsed_description(at.elapsed()))
         } else if self.settings.gist_id.is_none() {
