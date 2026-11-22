@@ -714,24 +714,23 @@ fn open_local_switches_back_to_the_previous_board() {
 }
 
 #[test]
-fn open_cloud_needs_a_github_connection() {
+fn open_offers_only_local_boards_without_a_github_connection() {
     let Fixture { mut harness, .. } = launch(Board::default());
     harness.get_by_label("Open").click();
     harness.run();
+    assert!(harness.query_by_label("Local").is_some());
     assert!(
         harness
             .get_by_label("Cloud…")
             .accesskit_node()
             .is_disabled()
     );
+}
 
-    let (mut harness, _dir) = launch_connected(Board::default());
-    harness.get_by_label("Open").click();
-    harness.run();
-    assert!(
-        !harness
-            .get_by_label("Cloud…")
-            .accesskit_node()
-            .is_disabled()
-    );
+#[test]
+fn open_offers_only_cloud_boards_with_a_github_connection() {
+    let (harness, _dir) = launch_connected(Board::default());
+    assert!(harness.query_by_label("Local").is_none());
+    assert!(harness.query_by_label("Cloud…").is_none());
+    assert!(!harness.get_by_label("Open").accesskit_node().is_disabled());
 }

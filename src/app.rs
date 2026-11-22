@@ -1281,7 +1281,7 @@ impl PlannerApp {
         }
     }
 
-    fn open_menu(&mut self, ui: &mut Ui) {
+    fn local_open_menu(&mut self, ui: &mut Ui) {
         ui.menu_button("Local", |ui| {
             match self.settings.previous_board_path.clone() {
                 Some(path) => {
@@ -1301,10 +1301,16 @@ impl PlannerApp {
                 }
             }
         });
-        if ui
-            .add_enabled(self.gist.token.is_some(), egui::Button::new("Cloud…"))
+        ui.add_enabled(false, egui::Button::new("Cloud…"))
+            .on_disabled_hover_text("Connect GitHub in Settings first");
+    }
+
+    fn open_button(&mut self, ui: &mut Ui) {
+        if self.gist.token.is_none() {
+            ui.menu_button("Open", |ui| self.local_open_menu(ui));
+        } else if ui
+            .button("Open")
             .on_hover_text("Boards backed up to your GitHub gists")
-            .on_disabled_hover_text("Connect GitHub in Settings first")
             .clicked()
         {
             self.open_cloud_picker();
@@ -1376,7 +1382,7 @@ impl PlannerApp {
                 if ui.button("Import").clicked() {
                     self.import();
                 }
-                ui.menu_button("Open", |ui| self.open_menu(ui));
+                self.open_button(ui);
                 ui.menu_button("Export", |ui| {
                     if ui.button("Board (JSON)").clicked() {
                         self.export();
