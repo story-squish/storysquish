@@ -464,6 +464,29 @@ fn reverse_button_adds_opposite_relationship_once() {
 }
 
 #[test]
+fn inspector_keeps_its_width_with_long_relationship_names() {
+    let mut board = Board::default();
+    board.add_character("Adelaide Montgomery-Fairweather");
+    board.add_character("Bartholomew Featherstonehaugh III");
+    let [ada, bo] = [0, 1].map(|i| board.characters[i].id.clone());
+    board.add_relationship(&ada, &bo, "estranged cousin");
+    let Fixture { mut harness, .. } = launch(board);
+
+    harness
+        .get_by_label("Adelaide Montgomery-Fairweather")
+        .click();
+    harness.run();
+    let name = "to Bartholomew Featherstonehaugh III";
+    let initial = harness.get_by_label(name).rect();
+    for step in 0..10u8 {
+        harness.hover_at(egui::pos2(400.0 + f32::from(step) * 10.0, 400.0));
+        harness.run();
+    }
+
+    assert_eq!(harness.get_by_label(name).rect(), initial);
+}
+
+#[test]
 fn timeline_lists_dated_scenes_in_story_order() {
     let mut board = board_with_scenes(&["Present", "Flashback", "Loose end"]);
     board.scenes[0].day = Some(10);
