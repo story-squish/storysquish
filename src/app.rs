@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::f32::consts::{FRAC_PI_2, TAU};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
@@ -1819,6 +1820,14 @@ impl PlannerApp {
                 .map_or("Unnamed", |(_, name)| name.as_str())
         };
 
+        let linked_pairs: HashSet<(Id, Id)> = self
+            .board
+            .relationships
+            .iter()
+            .map(|r| (r.from.clone(), r.to.clone()))
+            .collect();
+        let mut to_reverse = None;
+
         let relationships_label = field_label(ui, colors, "Relationships");
         let mut any = false;
         for relationship in self
@@ -1843,6 +1852,15 @@ impl PlannerApp {
                     {
                         to_remove = Some(relationship.id.clone());
                     }
+                    let reverse_pair = (relationship.to.clone(), relationship.from.clone());
+                    if !linked_pairs.contains(&reverse_pair)
+                        && ui
+                            .small_button("Add reverse")
+                            .on_hover_text("Add a relationship pointing the other way")
+                            .clicked()
+                    {
+                        to_reverse = Some(relationship.id.clone());
+                    }
                     edited |= ui
                         .add(
                             TextEdit::singleline(&mut relationship.label)
@@ -1861,6 +1879,9 @@ impl PlannerApp {
         if let Some(rel) = to_remove {
             self.board.delete_relationship(&rel);
             added = true;
+        }
+        if let Some(rel) = to_reverse {
+            added |= self.board.add_reverse_relationship(&rel);
         }
         (edited, added)
     }

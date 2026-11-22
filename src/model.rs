@@ -319,6 +319,23 @@ impl Board {
         true
     }
 
+    pub fn has_relationship(&self, from: &Id, to: &Id) -> bool {
+        self.relationships
+            .iter()
+            .any(|r| &r.from == from && &r.to == to)
+    }
+
+    /// Adds an unlabelled relationship pointing the other way, since the
+    /// reverse of a label ("pimp" → "in love") can't be inferred. Returns
+    /// `false` when that reverse already exists or `id` is unknown.
+    pub fn add_reverse_relationship(&mut self, id: &Id) -> bool {
+        let Some(relationship) = self.relationships.iter().find(|r| &r.id == id) else {
+            return false;
+        };
+        let (from, to) = (relationship.to.clone(), relationship.from.clone());
+        !self.has_relationship(&from, &to) && self.add_relationship(&from, &to, "")
+    }
+
     pub fn delete_relationship(&mut self, id: &Id) {
         self.relationships.retain(|r| &r.id != id);
     }
@@ -605,6 +622,24 @@ mod tests {
         let rival = board.relationships[0].id.clone();
         board.delete_relationship(&rival);
         assert_eq!(board.relationships, vec![]);
+    }
+
+    #[test]
+    fn reverse_relationship_is_added_once_and_unlabelled() {
+        let mut board = Board::default();
+        board.add_character("Ada");
+        board.add_character("Bo");
+        let [ada, bo] = [0, 1].map(|i| board.characters[i].id.clone());
+        board.add_relationship(&ada, &bo, "pimp");
+        let pimp = board.relationships[0].id.clone();
+
+        assert!(board.add_reverse_relationship(&pimp));
+        assert!(!board.add_reverse_relationship(&pimp));
+        assert!(!board.add_reverse_relationship(&Id("missing".into())));
+        assert_eq!(board.relationships.len(), 2);
+        let reverse = &board.relationships[1];
+        assert_eq!((&reverse.from, &reverse.to), (&bo, &ada));
+        assert_eq!(reverse.label, "");
     }
 
     #[test]

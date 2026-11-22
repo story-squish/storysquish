@@ -442,6 +442,28 @@ fn relationship_is_added_from_character_inspector() {
 }
 
 #[test]
+fn reverse_button_adds_opposite_relationship_once() {
+    let mut board = Board::default();
+    board.add_character("Ada");
+    board.add_character("Bo");
+    let [ada, bo] = [0, 1].map(|i| board.characters[i].id.clone());
+    board.add_relationship(&ada, &bo, "pimp");
+    let Fixture { mut harness, .. } = launch(board);
+
+    harness.get_by_label("Ada").click();
+    harness.run();
+    harness.get_by_label("Add reverse").click();
+    harness.run();
+
+    let board = harness.state().board();
+    assert_eq!(board.relationships.len(), 2);
+    assert_eq!(board.relationships[1].from, bo);
+    assert_eq!(board.relationships[1].to, ada);
+    assert!(harness.query_by_label("from Bo").is_some());
+    assert!(harness.query_by_label("Add reverse").is_none());
+}
+
+#[test]
 fn timeline_lists_dated_scenes_in_story_order() {
     let mut board = board_with_scenes(&["Present", "Flashback", "Loose end"]);
     board.scenes[0].day = Some(10);
