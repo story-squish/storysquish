@@ -148,6 +148,7 @@
       <button data-export="board">Board (JSON)</button>
       <button data-export="outline">Outline (Markdown)</button>
       <button data-export="manuscript" title="The prose of every scene, for a word processor">Manuscript (Markdown)</button>
+      <button data-export="combined" title="The outline followed by the manuscript, in one file">Outline + Manuscript (Markdown)</button>
     </div>
   </details>
   <button id="importBtn">Import</button>
@@ -751,9 +752,24 @@ function manuscriptMarkdown(b) {
   return out.trimEnd() + "\n";
 }
 
-function exportFileName(extension) {
-  const stem = board.title.trim() || "novel";
-  return `${stem.split(/\s+/).join("_")}.${extension}`;
+// The outline and the manuscript under one title, each a section with its
+// own headings nested one level deeper.
+function combinedMarkdown(b) {
+  let out = `# ${b.title.trim() || DEFAULT_TITLE}\n\n`;
+  for (const [section, document] of [["Outline", toMarkdown(b)], ["Manuscript", manuscriptMarkdown(b)]]) {
+    out += `## ${section}\n\n`;
+    const newline = document.indexOf("\n");
+    const body = newline < 0 ? "" : document.slice(newline + 1).replace(/^\n+/, "");
+    if (!body) continue;
+    for (const line of body.trimEnd().split("\n")) out += `${line.startsWith("#") ? "#" : ""}${line}\n`;
+    out += "\n";
+  }
+  return out.trimEnd() + "\n";
+}
+
+function exportFileName(extension, suffix = null) {
+  const stem = (board.title.trim() || "novel").split(/\s+/).join("_");
+  return suffix ? `${stem}_${suffix}.${extension}` : `${stem}.${extension}`;
 }
 
 function download(name, text, type) {
@@ -1259,8 +1275,8 @@ function exportBoard() {
   render();
 }
 
-function exportMarkdown(what, renderMarkdown) {
-  try { download(exportFileName("md"), renderMarkdown(board), "text/markdown"); }
+function exportMarkdown(what, suffix, renderMarkdown) {
+  try { download(exportFileName("md", suffix), renderMarkdown(board), "text/markdown"); }
   catch (e) { alertDialog(`Could not export ${what}: ${e.message}`); }
 }
 
@@ -2196,8 +2212,9 @@ exportMenu.addEventListener("click", e => {
   if (!item) return;
   exportMenu.open = false;
   if (item.dataset.export === "board") exportBoard();
-  else if (item.dataset.export === "outline") exportMarkdown("outline", toMarkdown);
-  else exportMarkdown("manuscript", manuscriptMarkdown);
+  else if (item.dataset.export === "outline") exportMarkdown("outline", "outline", toMarkdown);
+  else if (item.dataset.export === "manuscript") exportMarkdown("manuscript", "manuscript", manuscriptMarkdown);
+  else exportMarkdown("outline and manuscript", null, combinedMarkdown);
 });
 document.addEventListener("click", e => { if (!exportMenu.contains(e.target)) exportMenu.open = false; });
 $("backupNudge").addEventListener("click", exportBoard);

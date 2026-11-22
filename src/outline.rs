@@ -119,6 +119,38 @@ pub fn manuscript_markdown(board: &Board) -> String {
     finish(out)
 }
 
+/// The outline and the manuscript under one title, each a section with its
+/// own headings nested one level deeper.
+pub fn combined_markdown(board: &Board) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "# {}\n", novel_title(board));
+    for (section, document) in [
+        ("Outline", to_markdown(board)),
+        ("Manuscript", manuscript_markdown(board)),
+    ] {
+        let _ = writeln!(out, "## {section}\n");
+        let body = without_title(&document);
+        if body.is_empty() {
+            continue;
+        }
+        for line in body.lines() {
+            if line.starts_with('#') {
+                out.push('#');
+            }
+            out.push_str(line);
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+    finish(out)
+}
+
+fn without_title(document: &str) -> &str {
+    document
+        .split_once('\n')
+        .map_or("", |(_, rest)| rest.trim_start_matches('\n'))
+}
+
 fn novel_title(board: &Board) -> &str {
     let title = board.title.trim();
     if title.is_empty() {
@@ -218,6 +250,42 @@ mod tests {
         assert_eq!(
             manuscript_markdown(&board),
             "# Dune\n\n## Arrakis\n\nThe spice must flow.\n\n## * * *\n"
+        );
+    }
+
+    #[test]
+    fn combined_nests_outline_and_manuscript_under_one_title() {
+        let mut board = Board {
+            title: "Dune".into(),
+            ..Board::default()
+        };
+        board.add_character("Paul");
+        let opening = board.add_scene();
+        let scene = board.scene_mut(&opening).unwrap();
+        scene.title = "Arrakis".into();
+        scene.summary = "Paul arrives.".into();
+        scene.text = "The spice must flow.".into();
+
+        assert_eq!(
+            combined_markdown(&board),
+            "# Dune\n\n\
+             ## Outline\n\n\
+             ### Scene 01: Arrakis\n\n\
+             _Outline_\n\n\
+             Paul arrives.\n\n\
+             ### Characters\n\n\
+             #### Paul\n\n\
+             ## Manuscript\n\n\
+             ### Arrakis\n\n\
+             The spice must flow.\n"
+        );
+    }
+
+    #[test]
+    fn combined_empty_board_keeps_both_sections() {
+        assert_eq!(
+            combined_markdown(&Board::default()),
+            "# Untitled Novel\n\n## Outline\n\n## Manuscript\n"
         );
     }
 

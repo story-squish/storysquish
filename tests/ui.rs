@@ -734,3 +734,18 @@ fn open_offers_only_cloud_boards_with_a_github_connection() {
     assert!(harness.query_by_label("Cloud…").is_none());
     assert!(!harness.get_by_label("Open").accesskit_node().is_disabled());
 }
+
+#[test]
+fn export_menu_offers_outline_manuscript_and_combined_markdown() {
+    let Fixture { mut harness, .. } = launch(Board::default());
+    harness.get_by_label("Export").click();
+    harness.run();
+    for label in [
+        "Board (JSON)",
+        "Outline (Markdown)",
+        "Manuscript (Markdown)",
+        "Outline + Manuscript (Markdown)",
+    ] {
+        assert!(harness.query_by_label(label).is_some(), "missing {label}");
+    }
+}
