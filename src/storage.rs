@@ -88,7 +88,13 @@ pub struct LocalBackup {
     /// file was changed elsewhere while there were unsaved edits.
     pub tag: String,
     /// `None` when the file is not a readable board.
-    pub scene_count: Option<usize>,
+    pub contents: Option<BackupContents>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct BackupContents {
+    pub title: String,
+    pub scene_count: usize,
 }
 
 /// Newest first. A board that has never been backed up has no backups
@@ -119,12 +125,15 @@ fn describe_backup(board_stem: &str, path: PathBuf) -> LocalBackup {
         Some((at, tag)) => (Some(at), tag),
         None => (modified_time(&path), String::new()),
     };
-    let scene_count = load(&path).ok().map(|board| board.scenes.len());
+    let contents = load(&path).ok().map(|board| BackupContents {
+        scene_count: board.scenes.len(),
+        title: board.title,
+    });
     LocalBackup {
         path,
         saved_at,
         tag,
-        scene_count,
+        contents,
     }
 }
 
@@ -290,9 +299,13 @@ mod tests {
         let path = dir.path().join("my-novel.json");
         let backups = backups_dir(&path);
         let at = |millis| UNIX_EPOCH + Duration::from_millis(millis);
-        let mut board = Board::default();
+        let mut board = Board {
+            title: "Draft".into(),
+            ..Board::default()
+        };
         board.add_scene();
         save(&backups.join(backup_file_name(&path, at(1), "")), &board).unwrap();
+        board.title = "Revised".into();
         board.add_scene();
         save(
             &backups.join(backup_file_name(&path, at(2), "conflict")),
@@ -310,14 +323,21 @@ mod tests {
 
         let summary: Vec<_> = listed
             .iter()
-            .map(|b| (b.saved_at, b.tag.as_str(), b.scene_count))
+            .map(|b| {
+                let contents = b.contents.as_ref();
+                (
+                    b.saved_at,
+                    b.tag.as_str(),
+                    contents.map(|c| (c.title.as_str(), c.scene_count)),
+                )
+            })
             .collect();
         assert_eq!(
             summary,
             [
                 (Some(at(3)), "", None),
-                (Some(at(2)), "conflict", Some(2)),
-                (Some(at(1)), "", Some(1)),
+                (Some(at(2)), "conflict", Some(("Revised", 2))),
+                (Some(at(1)), "", Some(("Draft", 1))),
             ]
         );
     }

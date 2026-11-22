@@ -610,7 +610,7 @@ impl PlannerApp {
     fn open_local_recovery(&mut self) {
         match storage::list_backups(&self.path) {
             Ok(backups) => {
-                let selected = backups.iter().position(|b| b.scene_count.is_some());
+                let selected = backups.iter().position(|b| b.contents.is_some());
                 self.local_recovery = Some(LocalRecovery {
                     backups,
                     selected,
@@ -688,7 +688,7 @@ impl PlannerApp {
                         for (index, backup) in recovery.backups.iter().enumerate() {
                             let row = ui
                                 .add_enabled(
-                                    backup.scene_count.is_some(),
+                                    backup.contents.is_some(),
                                     egui::Button::selectable(
                                         recovery.selected == Some(index),
                                         local_backup_label(backup, now),
@@ -3552,10 +3552,15 @@ fn local_backup_label(backup: &storage::LocalBackup, now: SystemTime) -> String 
         || "unknown time".to_owned(),
         |at| elapsed_description(now.duration_since(at).unwrap_or_default()),
     );
-    let contents = match backup.scene_count {
+    let contents = match &backup.contents {
         None => "unreadable".to_owned(),
-        Some(1) => "1 scene".to_owned(),
-        Some(count) => format!("{count} scenes"),
+        Some(contents) => {
+            let title = display_cloud_title(contents.title.trim());
+            match contents.scene_count {
+                1 => format!("{title}  ·  1 scene"),
+                count => format!("{title}  ·  {count} scenes"),
+            }
+        }
     };
     let origin = match backup.tag.as_str() {
         "" => String::new(),
@@ -3716,19 +3721,25 @@ mod tests {
     #[test]
     fn local_backup_label_names_age_contents_and_origin() {
         let now = SystemTime::UNIX_EPOCH + Duration::from_hours(100);
-        let backup = |hours_ago, tag: &str, scene_count| storage::LocalBackup {
+        let contents = |title: &str, scene_count| {
+            Some(storage::BackupContents {
+                title: title.to_owned(),
+                scene_count,
+            })
+        };
+        let backup = |hours_ago, tag: &str, contents| storage::LocalBackup {
             path: PathBuf::from("board-backups/x.json"),
             saved_at: Some(now - Duration::from_hours(hours_ago)),
             tag: tag.to_owned(),
-            scene_count,
+            contents,
         };
         assert_eq!(
-            local_backup_label(&backup(2, "", Some(1)), now),
-            "2 hours ago  ·  1 scene"
+            local_backup_label(&backup(2, "", contents("Dune", 1)), now),
+            "2 hours ago  ·  Dune  ·  1 scene"
         );
         assert_eq!(
-            local_backup_label(&backup(5, "conflict", Some(3)), now),
-            "5 hours ago  ·  3 scenes  ·  changed elsewhere"
+            local_backup_label(&backup(5, "conflict", contents("  ", 3)), now),
+            "5 hours ago  ·  Untitled  ·  3 scenes  ·  changed elsewhere"
         );
         assert_eq!(
             local_backup_label(&backup(0, "", None), now),

@@ -1059,6 +1059,13 @@ fn recover_from_local_defaults_to_the_newest_readable_backup() {
     open_local_recovery(&mut harness);
     let unreadable = harness.get_by(|n| n.label().is_some_and(|l| l.ends_with("unreadable")));
     assert!(unreadable.accesskit_node().is_disabled());
+    assert!(
+        harness
+            .query_by(|n| n
+                .label()
+                .is_some_and(|l| l.ends_with("Untitled Novel  ·  1 scene")))
+            .is_some()
+    );
     harness.get_by_label("Recover").click();
     harness.run();
 
