@@ -39,7 +39,9 @@ fn labelled_text_input<'h>(
     harness.get_by(|node| {
         matches!(
             node.role(),
-            egui::accesskit::Role::MultilineTextInput | egui::accesskit::Role::TextInput
+            egui::accesskit::Role::MultilineTextInput
+                | egui::accesskit::Role::TextInput
+                | egui::accesskit::Role::PasswordInput
         ) && node.label().as_deref() == Some(label)
     })
 }
@@ -527,4 +529,98 @@ fn relationship_graph_renders_and_selects_nothing_by_default() {
             .query_by_label_contains("add relationships in the inspector")
             .is_none()
     );
+}
+
+fn open_settings(harness: &mut Harness<'_, PlannerApp>) {
+    harness.get_by_label("Settings").click();
+    harness.run();
+}
+
+fn gist_field<'h>(harness: &'h Harness<'_, PlannerApp>) -> egui_kittest::Node<'h> {
+    labelled_text_input(harness, "GITHUB GIST")
+}
+
+#[test]
+fn connecting_github_stores_the_token_privately_and_disconnecting_forgets_it() {
+    let Fixture { mut harness, dir } = launch(Board::default());
+    let token_path = dir.path().join("config/storysquish/github-token");
+    open_settings(&mut harness);
+
+    gist_field(&harness).focus();
+    harness.run();
+    gist_field(&harness).type_text("ghp_example");
+    harness.run();
+    harness.get_by_label("Connect").click();
+    harness.run();
+
+    assert_eq!(
+        storysquish::gist::load_token(&token_path)
+            .unwrap()
+            .as_deref(),
+        Some("ghp_example")
+    );
+    let settings = std::fs::read_to_string(dir.path().join("config/storysquish/settings.json"))
+        .unwrap_or_default();
+    assert!(!settings.contains("ghp_example"));
+    assert!(harness.query_by_label("Back up now").is_some());
+    assert!(
+        harness
+            .query_by_label("The first backup creates a secret gist.")
+            .is_some()
+    );
+
+    harness.get_by_label("Disconnect").click();
+    harness.run();
+    assert_eq!(storysquish::gist::load_token(&token_path).unwrap(), None);
+    assert!(harness.query_by_label("Connect").is_some());
+}
+
+fn launch_connected() -> (Harness<'static, PlannerApp>, TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let settings_path = dir.path().join("settings.json");
+    storysquish::gist::save_token(&storysquish::gist::token_path(&settings_path), "t").unwrap();
+    let board_path = dir.path().join("board.json");
+    let mut harness = Harness::builder()
+        .with_size(WINDOW)
+        .build_eframe(move |cc| {
+            PlannerApp::new(cc, Board::default(), board_path, settings_path, None)
+        });
+    harness.run();
+    (harness, dir)
+}
+
+#[test]
+fn pasting_a_gist_url_stores_its_id() {
+    let (mut harness, dir) = launch_connected();
+    open_settings(&mut harness);
+
+    gist_field(&harness).focus();
+    harness.run();
+    gist_field(&harness).type_text("https://gist.github.com/someone/aa5a315d61ae9438b18d");
+    harness.run();
+    assert_eq!(
+        harness.state().settings().gist_id.as_deref(),
+        Some("aa5a315d61ae9438b18d")
+    );
+    assert!(harness.query_by_label("Restore from gist…").is_some());
+
+    harness.get_by_label("Back up automatically").click();
+    harness.run();
+    let saved = storysquish::settings::load(&dir.path().join("settings.json")).unwrap();
+    assert_eq!(saved.gist_id.as_deref(), Some("aa5a315d61ae9438b18d"));
+    assert!(saved.gist_auto_backup);
+}
+
+#[test]
+fn text_that_is_not_a_gist_is_flagged_and_not_saved() {
+    let (mut harness, _dir) = launch_connected();
+    open_settings(&mut harness);
+
+    gist_field(&harness).focus();
+    harness.run();
+    gist_field(&harness).type_text("my novel");
+    harness.run();
+
+    assert!(harness.query_by_label("Not a gist id or URL").is_some());
+    assert_eq!(harness.state().settings().gist_id, None);
 }

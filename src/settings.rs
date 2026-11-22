@@ -15,6 +15,9 @@ pub struct Settings {
     /// e.g. a folder synced by iCloud Drive, Dropbox or Syncthing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub board_path: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gist_id: Option<String>,
+    pub gist_auto_backup: bool,
 }
 
 /// `~/.config/storysquish/settings.json` on every platform, honouring
@@ -69,6 +72,8 @@ mod tests {
         let settings = Settings {
             color_scheme: ColorScheme::ForestNight,
             board_path: Some(dir.path().join("Dropbox/novel.json")),
+            gist_id: Some("aa5a315d61ae9438b18d".to_owned()),
+            gist_auto_backup: true,
         };
         save(&path, &settings).unwrap();
         assert!(
