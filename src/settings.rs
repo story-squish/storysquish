@@ -16,6 +16,9 @@ pub struct Settings {
     /// e.g. a folder synced by iCloud Drive, Dropbox or Syncthing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub board_path: Option<PathBuf>,
+    /// The board open before the current one, offered by Open → Local.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_board_path: Option<PathBuf>,
     /// Gist id per board file, so each novel keeps its own history.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     gists: BTreeMap<PathBuf, String>,
@@ -37,6 +40,13 @@ impl Settings {
             Some(id) => self.gists.insert(key, id),
             None => self.gists.remove(&key),
         };
+    }
+
+    pub fn boards_linked_to<'a>(&'a self, gist_id: &'a str) -> impl Iterator<Item = &'a Path> {
+        self.gists
+            .iter()
+            .filter(move |(_, id)| id.as_str() == gist_id)
+            .map(|(board, _)| board.as_path())
     }
 
     pub fn move_gist_id(&mut self, from: &Path, to: &Path) {
@@ -112,6 +122,7 @@ mod tests {
         let mut settings = Settings {
             color_scheme: ColorScheme::ForestNight,
             board_path: Some(board.clone()),
+            previous_board_path: Some(dir.path().join("emma.json")),
             gist_auto_backup: true,
             ..Settings::default()
         };
@@ -142,6 +153,12 @@ mod tests {
         settings.move_gist_id(Path::new("/novels/dune.json"), Path::new("/sync/dune.json"));
         assert_eq!(settings.gist_id(Path::new("/novels/dune.json")), None);
         assert_eq!(settings.gist_id(Path::new("/sync/dune.json")), Some("aaa"));
+
+        assert_eq!(
+            settings.boards_linked_to("aaa").collect::<Vec<_>>(),
+            [Path::new("/sync/dune.json")]
+        );
+        assert_eq!(settings.boards_linked_to("zzz").count(), 0);
 
         settings.set_gist_id(Path::new("/sync/dune.json"), None);
         assert_eq!(settings.gist_id(Path::new("/sync/dune.json")), None);
