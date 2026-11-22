@@ -24,6 +24,7 @@ fn main() -> Result<()> {
             .with_title("StorySquish")
             .with_icon(icon)
             .with_inner_size([1200.0, 780.0])
+            .with_maximized(true)
             .with_min_inner_size([720.0, 480.0]),
         ..Default::default()
     };

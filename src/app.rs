@@ -127,6 +127,9 @@ struct GistState {
     gist_id_invalid: bool,
     in_flight: Option<(GistTask, gist::Pending)>,
     board_changed: bool,
+    /// The title names the gist in GitHub's list, so a rename is pushed
+    /// without waiting out the interval.
+    title_changed: bool,
     last_attempt: Option<Instant>,
     last_success: Option<Instant>,
     last_pushed_json: Option<String>,
@@ -698,6 +701,7 @@ impl PlannerApp {
         self.gist.last_pushed_json = None;
         self.gist.last_success = None;
         self.gist.board_changed = false;
+        self.gist.title_changed = false;
     }
 
     fn gist_id(&self) -> Option<String> {
@@ -818,6 +822,7 @@ impl PlannerApp {
         }
         self.gist.last_attempt = Some(Instant::now());
         self.gist.board_changed = false;
+        self.gist.title_changed = false;
         let job = self.push_job();
         self.start_gist_job(task, job);
         if self.gist.in_flight.is_some() {
@@ -827,7 +832,8 @@ impl PlannerApp {
 
     /// Pushes at most once per interval and only after the board changed,
     /// so a long writing session leaves a revision every few minutes rather
-    /// than one per keystroke.
+    /// than one per keystroke. A title edit skips the interval but still
+    /// waits for the save debounce or for the field to lose focus.
     fn back_up_to_gist_if_due(&mut self, ctx: &egui::Context) {
         if !self.settings.gist_auto_backup
             || self.gist.token.is_none()
@@ -838,12 +844,12 @@ impl PlannerApp {
         {
             return;
         }
-        if let Some(at) = self.gist.last_attempt {
-            let elapsed = at.elapsed();
-            if elapsed < GIST_BACKUP_INTERVAL {
-                ctx.request_repaint_after(GIST_BACKUP_INTERVAL.saturating_sub(elapsed));
-                return;
-            }
+        if let Some(wait) = gist_push_wait(
+            self.gist.last_attempt.map(|at| at.elapsed()),
+            self.gist.title_changed,
+        ) {
+            ctx.request_repaint_after(wait);
+            return;
         }
         if let gist::Job::Push { board_json, .. } = self.push_job()
             && self.gist.last_pushed_json.as_ref() == Some(&board_json)
@@ -1363,15 +1369,17 @@ impl PlannerApp {
                     .strong()
                     .color(colors.header_text),
             );
-            if ui
-                .add(
-                    TextEdit::singleline(&mut self.board.title)
-                        .hint_text("Novel title")
-                        .desired_width(360.0),
-                )
-                .changed()
-            {
+            let title = ui.add(
+                TextEdit::singleline(&mut self.board.title)
+                    .hint_text("Novel title")
+                    .desired_width(360.0),
+            );
+            if title.changed() {
+                self.gist.title_changed = true;
                 self.mark_dirty();
+            }
+            if title.lost_focus() {
+                self.flush_pending_edits();
             }
 
             ui.checkbox(
@@ -3351,6 +3359,15 @@ fn preview(summary: &str) -> String {
     }
 }
 
+fn gist_push_wait(since_last_attempt: Option<Duration>, title_changed: bool) -> Option<Duration> {
+    if title_changed {
+        return None;
+    }
+    since_last_attempt
+        .filter(|&elapsed| elapsed < GIST_BACKUP_INTERVAL)
+        .map(|elapsed| GIST_BACKUP_INTERVAL.saturating_sub(elapsed))
+}
+
 fn boards_other_than<'a>(
     boards: &'a [CloudBoard],
     open_gist_id: Option<&str>,
@@ -3381,6 +3398,18 @@ mod tests {
         };
         assert_eq!(ids(Some("dune")), ["emma"]);
         assert_eq!(ids(None), ["dune", "emma"]);
+    }
+
+    #[test]
+    fn title_change_skips_the_gist_interval() {
+        let recent = Some(Duration::from_secs(10));
+        assert_eq!(
+            gist_push_wait(recent, false),
+            Some(Duration::from_secs(290))
+        );
+        assert_eq!(gist_push_wait(recent, true), None);
+        assert_eq!(gist_push_wait(None, false), None);
+        assert_eq!(gist_push_wait(Some(GIST_BACKUP_INTERVAL), false), None);
     }
 
     #[test]
