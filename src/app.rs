@@ -1219,7 +1219,11 @@ impl PlannerApp {
             if let Some(error) = &cloud.error {
                 ui.label(RichText::new(error).small().color(colors.danger));
             }
-            match &cloud.boards {
+            let other_boards = cloud
+                .boards
+                .as_deref()
+                .map(|boards| boards_other_than(boards, open_gist_id.as_deref()));
+            match other_boards {
                 None if busy => {
                     ui.horizontal(|ui| {
                         ui.spinner();
@@ -1228,7 +1232,12 @@ impl PlannerApp {
                 }
                 None => {}
                 Some(boards) if boards.is_empty() => {
-                    ui.label("No boards backed up to your gists yet.");
+                    let message = if open_gist_id.is_some() {
+                        "No other boards backed up to your gists."
+                    } else {
+                        "No boards backed up to your gists yet."
+                    };
+                    ui.label(message);
                 }
                 Some(boards) => {
                     ui.label(
@@ -1241,13 +1250,8 @@ impl PlannerApp {
                         .show(ui, |ui| {
                             for board in boards {
                                 let title = display_cloud_title(&board.title);
-                                let label = if open_gist_id.as_deref() == Some(&board.gist_id) {
-                                    format!("{title} (open)")
-                                } else {
-                                    title.to_owned()
-                                };
                                 if ui
-                                    .add_enabled(!busy, egui::Button::new(label))
+                                    .add_enabled(!busy, egui::Button::new(title))
                                     .on_hover_text(format!(
                                         "Last saved {}",
                                         display_timestamp(&board.updated_at)
@@ -3295,9 +3299,37 @@ fn preview(summary: &str) -> String {
     }
 }
 
+fn boards_other_than<'a>(
+    boards: &'a [CloudBoard],
+    open_gist_id: Option<&str>,
+) -> Vec<&'a CloudBoard> {
+    boards
+        .iter()
+        .filter(|board| open_gist_id != Some(board.gist_id.as_str()))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cloud_picker_leaves_out_the_open_board() {
+        let board = |gist_id: &str| CloudBoard {
+            gist_id: gist_id.to_owned(),
+            title: gist_id.to_owned(),
+            updated_at: String::new(),
+        };
+        let boards = [board("dune"), board("emma")];
+        let ids = |open| -> Vec<&str> {
+            boards_other_than(&boards, open)
+                .into_iter()
+                .map(|b| b.gist_id.as_str())
+                .collect()
+        };
+        assert_eq!(ids(Some("dune")), ["emma"]);
+        assert_eq!(ids(None), ["dune", "emma"]);
+    }
 
     #[test]
     fn preview_truncates_on_char_boundary() {
