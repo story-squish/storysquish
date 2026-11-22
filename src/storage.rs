@@ -107,18 +107,19 @@ pub fn modified_time(path: &Path) -> Option<SystemTime> {
     fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
-pub fn export_file_name(board: &Board, extension: &str) -> String {
+pub fn export_file_name(board: &Board, suffix: Option<&str>, extension: &str) -> String {
     let title = board.title.trim();
-    let stem = if title.is_empty() { "novel" } else { title };
-    format!(
-        "{}.{extension}",
-        stem.split_whitespace().collect::<Vec<_>>().join("_")
-    )
+    let title = if title.is_empty() { "novel" } else { title };
+    let stem = title.split_whitespace().collect::<Vec<_>>().join("_");
+    match suffix {
+        Some(suffix) => format!("{stem}_{suffix}.{extension}"),
+        None => format!("{stem}.{extension}"),
+    }
 }
 
 /// A file in `dir` named after the board's title that does not exist yet.
 pub fn unused_board_path(dir: &Path, board: &Board) -> PathBuf {
-    let name = export_file_name(board, "json");
+    let name = export_file_name(board, None, "json");
     let stem: String = name
         .trim_end_matches(".json")
         .trim_start_matches('.')
@@ -216,9 +217,20 @@ mod tests {
             title: "  The   Long Night ".into(),
             ..Board::default()
         };
-        assert_eq!(export_file_name(&board, "json"), "The_Long_Night.json");
+        assert_eq!(
+            export_file_name(&board, None, "json"),
+            "The_Long_Night.json"
+        );
+        assert_eq!(
+            export_file_name(&board, Some("outline"), "md"),
+            "The_Long_Night_outline.md"
+        );
         board.title.clear();
-        assert_eq!(export_file_name(&board, "md"), "novel.md");
+        assert_eq!(export_file_name(&board, None, "md"), "novel.md");
+        assert_eq!(
+            export_file_name(&board, Some("manuscript"), "md"),
+            "novel_manuscript.md"
+        );
     }
 
     #[test]

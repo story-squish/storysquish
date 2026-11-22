@@ -507,7 +507,7 @@ impl PlannerApp {
     fn export(&mut self) {
         let Some(path) = rfd::FileDialog::new()
             .add_filter("JSON", &["json"])
-            .set_file_name(storage::export_file_name(&self.board, "json"))
+            .set_file_name(storage::export_file_name(&self.board, None, "json"))
             .save_file()
         else {
             return;
@@ -517,10 +517,15 @@ impl PlannerApp {
         }
     }
 
-    fn export_markdown(&mut self, what: &str, render: fn(&Board) -> String) {
+    fn export_markdown(
+        &mut self,
+        what: &str,
+        file_suffix: Option<&str>,
+        render: fn(&Board) -> String,
+    ) {
         let Some(path) = rfd::FileDialog::new()
             .add_filter("Markdown", &["md"])
-            .set_file_name(storage::export_file_name(&self.board, "md"))
+            .set_file_name(storage::export_file_name(&self.board, file_suffix, "md"))
             .save_file()
         else {
             return;
@@ -1309,6 +1314,33 @@ impl PlannerApp {
             .on_disabled_hover_text("Connect GitHub in Settings first");
     }
 
+    fn export_menu(&mut self, ui: &mut Ui) {
+        if ui.button("Board (JSON)").clicked() {
+            self.export();
+        }
+        if ui.button("Outline (Markdown)").clicked() {
+            self.export_markdown("outline", Some("outline"), outline::to_markdown);
+        }
+        if ui
+            .button("Manuscript (Markdown)")
+            .on_hover_text("The prose of every scene, for a word processor")
+            .clicked()
+        {
+            self.export_markdown(
+                "manuscript",
+                Some("manuscript"),
+                outline::manuscript_markdown,
+            );
+        }
+        if ui
+            .button("Outline + Manuscript (Markdown)")
+            .on_hover_text("The outline followed by the manuscript, in one file")
+            .clicked()
+        {
+            self.export_markdown("outline and manuscript", None, outline::combined_markdown);
+        }
+    }
+
     fn open_button(&mut self, ui: &mut Ui) {
         if self.gist.token.is_none() {
             ui.menu_button("Open", |ui| self.local_open_menu(ui));
@@ -1387,21 +1419,7 @@ impl PlannerApp {
                     self.import();
                 }
                 self.open_button(ui);
-                ui.menu_button("Export", |ui| {
-                    if ui.button("Board (JSON)").clicked() {
-                        self.export();
-                    }
-                    if ui.button("Outline (Markdown)").clicked() {
-                        self.export_markdown("outline", outline::to_markdown);
-                    }
-                    if ui
-                        .button("Manuscript (Markdown)")
-                        .on_hover_text("The prose of every scene, for a word processor")
-                        .clicked()
-                    {
-                        self.export_markdown("manuscript", outline::manuscript_markdown);
-                    }
-                });
+                ui.menu_button("Export", |ui| self.export_menu(ui));
                 let (text, color) = match &self.save_state {
                     SaveState::Saved => ("saved", colors.header_text),
                     SaveState::Pending(_) => ("saving…", colors.header_text),
