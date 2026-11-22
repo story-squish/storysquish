@@ -872,3 +872,161 @@ fn export_menu_offers_outline_manuscript_and_combined_markdown() {
         assert!(harness.query_by_label(label).is_some(), "missing {label}");
     }
 }
+
+/// Keeps each gist's latest board in memory, like GitHub does, so a test can
+/// see whether edits reached the cloud before a board was reopened from it.
+fn fake_github(gists: &[(&str, &Board)]) -> String {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use storysquish::gist::BOARD_FILE_NAME;
+
+    let mut boards: std::collections::HashMap<String, String> = gists
+        .iter()
+        .map(|(id, board)| ((*id).to_owned(), serde_json::to_string(board).unwrap()))
+        .collect();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request_line = String::new();
+            reader.read_line(&mut request_line).unwrap();
+            let mut parts = request_line.split_whitespace();
+            let method = parts.next().unwrap_or_default().to_owned();
+            let path = parts.next().unwrap_or_default().to_owned();
+            let mut content_length = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let line = line.trim_end();
+                if line.is_empty() {
+                    break;
+                }
+                let (name, value) = line.split_once(':').unwrap();
+                if name.eq_ignore_ascii_case("content-length") {
+                    content_length = value.trim().parse().unwrap();
+                }
+            }
+            let mut body = vec![0; content_length];
+            reader.read_exact(&mut body).unwrap();
+
+            let gist = |id: &str, content: &str| {
+                let board: Board = serde_json::from_str(content).unwrap();
+                serde_json::json!({
+                    "id": id,
+                    "html_url": format!("https://gist.github.com/{id}"),
+                    "description": format!("StorySquish board: {}", board.title),
+                    "updated_at": "2026-01-01T00:00:00Z",
+                    "files": { BOARD_FILE_NAME: {
+                        "content": content, "truncated": false, "raw_url": "",
+                    }},
+                })
+            };
+            let reply = if path.starts_with("/gists?") {
+                serde_json::Value::Array(
+                    boards
+                        .iter()
+                        .map(|(id, content)| gist(id, content))
+                        .collect(),
+                )
+            } else {
+                let id = path.trim_start_matches("/gists/").to_owned();
+                if method == "PATCH" {
+                    let sent: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                    let content = sent["files"][BOARD_FILE_NAME]["content"]
+                        .as_str()
+                        .unwrap()
+                        .to_owned();
+                    boards.insert(id.clone(), content);
+                }
+                gist(&id, &boards[&id])
+            }
+            .to_string();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                reply.len()
+            )
+            .unwrap();
+        }
+    });
+    base
+}
+
+fn step_until(
+    harness: &mut Harness<'_, PlannerApp>,
+    done: impl Fn(&Harness<'_, PlannerApp>) -> bool,
+) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !done(harness) {
+        assert!(std::time::Instant::now() < deadline, "timed out");
+        harness.step();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+fn open_from_cloud(harness: &mut Harness<'_, PlannerApp>, title: &str, path: &std::path::Path) {
+    harness.get_by_label("Open").click();
+    step_until(harness, |h| h.query_by_label(title).is_some());
+    harness.get_by_label(title).click();
+    step_until(harness, |h| h.state().board_path() == path);
+    harness.run_steps(2);
+}
+
+#[test]
+fn reopening_from_cloud_keeps_edits_made_just_before_switching_away() {
+    let dir = tempfile::tempdir().unwrap();
+    let settings_path = dir.path().join("settings.json");
+    storysquish::gist::save_token(&storysquish::gist::token_path(&settings_path), "t").unwrap();
+    let mut novel = Board {
+        title: "Novel".to_owned(),
+        ..Board::default()
+    };
+    novel.add_character("Ada");
+    novel.add_character("Bo");
+    let mut other = Board {
+        title: "Other".to_owned(),
+        ..Board::default()
+    };
+    other.add_character("Cy");
+    let novel_path = dir.path().join("novel.json");
+    let other_path = dir.path().join("other.json");
+    storysquish::storage::save(&novel_path, &novel).unwrap();
+    storysquish::storage::save(&other_path, &other).unwrap();
+    let mut settings = storysquish::settings::Settings::default();
+    settings.gist_auto_backup = true;
+    settings.set_gist_id(&novel_path, Some("novel".to_owned()));
+    settings.set_gist_id(&other_path, Some("other".to_owned()));
+    storysquish::settings::save(&settings_path, &settings).unwrap();
+    let api_base = fake_github(&[("novel", &novel), ("other", &other)]);
+    let open_path = novel_path.clone();
+    let mut harness = Harness::builder()
+        .with_size(WINDOW)
+        .build_eframe(move |cc| {
+            PlannerApp::new(cc, novel, open_path, settings_path, None).with_gist_api_base(&api_base)
+        });
+    harness.run();
+
+    harness.get_by_label("Ada").click();
+    harness.run();
+    harness
+        .get_by(|node| {
+            node.role() == egui::accesskit::Role::ComboBox
+                && node.label().as_deref() == Some("RELATIONSHIPS")
+        })
+        .click();
+    harness.run();
+    harness.get_all_by_label("Bo").last().unwrap().click();
+    harness.run();
+    harness.get_by_label("Add").click();
+    harness.run();
+    assert_eq!(harness.state().board().relationships.len(), 1);
+
+    open_from_cloud(&mut harness, "Other", &other_path);
+    open_from_cloud(&mut harness, "Novel", &novel_path);
+
+    assert_eq!(harness.state().board().relationships.len(), 1);
+    let saved = storysquish::storage::load(&novel_path).unwrap();
+    assert_eq!(saved.relationships.len(), 1);
+}
