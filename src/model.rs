@@ -164,7 +164,7 @@ impl Default for Board {
 }
 
 impl Board {
-    /// The title alone does not count: a reset board keeps a default one.
+    /// The title alone does not count: a new board keeps a default one.
     pub fn is_empty(&self) -> bool {
         self.scenes.is_empty()
             && self.characters.is_empty()

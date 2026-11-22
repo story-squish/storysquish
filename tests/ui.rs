@@ -728,7 +728,7 @@ fn pasting_a_gist_url_stores_its_id() {
 }
 
 #[test]
-fn reset_unlinks_the_boards_gist() {
+fn new_starts_an_empty_board_in_its_own_file() {
     let (mut harness, dir) = launch_connected(board_with_scenes(&["Opening"]));
     open_settings(&mut harness);
     gist_field(&harness).focus();
@@ -738,21 +738,25 @@ fn reset_unlinks_the_boards_gist() {
     harness.key_press(egui::Key::Escape);
     harness.run();
 
-    harness.get_by_label("Reset").click();
-    harness.run();
-    harness.get_by_label("Delete").click();
+    harness.get_by_label("New").click();
     harness.run();
 
+    let old_path = dir.path().join("board.json");
+    let new_path = dir.path().join("Untitled_Novel.json");
     assert!(harness.state().board().is_empty());
+    assert_eq!(harness.state().board_path(), new_path);
+    assert_eq!(harness.state().settings().gist_id(&new_path), None);
     assert_eq!(
-        harness
-            .state()
-            .settings()
-            .gist_id(harness.state().board_path()),
-        None
+        harness.state().settings().gist_id(&old_path),
+        Some("aa5a315d61ae9438b18d")
     );
+    assert!(storysquish::storage::load(&new_path).unwrap().is_empty());
     let saved = storysquish::settings::load(&dir.path().join("settings.json")).unwrap();
-    assert_eq!(saved.gist_id(&dir.path().join("board.json")), None);
+    assert_eq!(saved.board_path.as_deref(), Some(new_path.as_path()));
+    assert_eq!(
+        saved.previous_board_path.as_deref(),
+        Some(old_path.as_path())
+    );
 }
 
 #[test]
