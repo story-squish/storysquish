@@ -13,6 +13,8 @@ use ureq::Agent;
 pub const API_BASE: &str = "https://api.github.com";
 pub const BOARD_FILE_NAME: &str = "storysquish-board.json";
 pub const TOKEN_FILE_NAME: &str = "github-token";
+const UNTITLED_DESCRIPTION: &str = "StorySquish board";
+const TITLED_DESCRIPTION_PREFIX: &str = "StorySquish board: ";
 const REVISIONS_LISTED: usize = 30;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_RESPONSE_BYTES: u64 = 100 * 1024 * 1024;
@@ -33,6 +35,8 @@ pub struct Pushed {
 struct GistResponse {
     id: String,
     html_url: String,
+    #[serde(default)]
+    description: Option<String>,
     #[serde(default)]
     files: std::collections::HashMap<String, Option<GistFile>>,
 }
@@ -105,6 +109,19 @@ impl Client {
             .call()
             .context("contacting GitHub")?;
         read_json(response)
+    }
+
+    /// The board title from the gist's description, which every push
+    /// refreshes; empty for an untitled board.
+    pub fn title(&self, gist_id: &str) -> Result<String> {
+        let response = self
+            .authorized(self.agent.get(format!("{}/gists/{gist_id}", self.api_base)))
+            .call()
+            .context("contacting GitHub")?;
+        let gist: GistResponse = read_json(response)?;
+        Ok(title_from_description(
+            gist.description.as_deref().unwrap_or_default(),
+        ))
     }
 
     pub fn board_at(&self, gist_id: &str, version: &str) -> Result<String> {
@@ -187,10 +204,23 @@ fn describe_failure(status: u16, body: &str) -> String {
 fn gist_description(title: &str) -> String {
     let title = title.trim();
     if title.is_empty() {
-        "StorySquish board".to_owned()
+        UNTITLED_DESCRIPTION.to_owned()
     } else {
-        format!("StorySquish board: {title}")
+        format!("{TITLED_DESCRIPTION_PREFIX}{title}")
     }
+}
+
+/// A description edited on GitHub is shown as is.
+fn title_from_description(description: &str) -> String {
+    let description = description.trim();
+    if description == UNTITLED_DESCRIPTION {
+        return String::new();
+    }
+    description
+        .strip_prefix(TITLED_DESCRIPTION_PREFIX)
+        .unwrap_or(description)
+        .trim()
+        .to_owned()
 }
 
 /// Accepts a bare id or any gist URL, e.g. one copied from the address bar.
@@ -269,8 +299,14 @@ pub enum Job {
 
 #[derive(Debug)]
 pub enum Reply {
-    Pushed { pushed: Pushed, board_json: String },
-    Revisions(Vec<Revision>),
+    Pushed {
+        pushed: Pushed,
+        board_json: String,
+    },
+    Revisions {
+        title: String,
+        revisions: Vec<Revision>,
+    },
     Fetched(String),
     Failed(String),
 }
@@ -314,7 +350,12 @@ pub fn run(client: &Client, job: Job) -> Reply {
         } => client
             .push(gist_id.as_deref(), &title, &board_json)
             .map(|pushed| Reply::Pushed { pushed, board_json }),
-        Job::ListRevisions { gist_id } => client.revisions(&gist_id).map(Reply::Revisions),
+        Job::ListRevisions { gist_id } => client.revisions(&gist_id).and_then(|revisions| {
+            Ok(Reply::Revisions {
+                title: client.title(&gist_id)?,
+                revisions,
+            })
+        }),
         Job::Fetch { gist_id, version } => client.board_at(&gist_id, &version).map(Reply::Fetched),
     };
     result.unwrap_or_else(|e| Reply::Failed(format!("{e:#}")))
@@ -345,6 +386,14 @@ mod tests {
     fn description_names_the_novel() {
         assert_eq!(gist_description("  "), "StorySquish board");
         assert_eq!(gist_description("Dune"), "StorySquish board: Dune");
+    }
+
+    #[test]
+    fn title_round_trips_through_the_description() {
+        for title in ["", "Dune", "Dune: Messiah"] {
+            assert_eq!(title_from_description(&gist_description(title)), title);
+        }
+        assert_eq!(title_from_description("my notes"), "my notes");
     }
 
     #[test]

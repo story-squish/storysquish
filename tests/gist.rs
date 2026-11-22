@@ -200,3 +200,21 @@ fn a_revision_without_the_board_file_is_an_error() {
     let error = format!("{:#}", client.board_at("abc123", "v1").unwrap_err());
     assert!(error.contains(BOARD_FILE_NAME), "{error}");
 }
+
+#[test]
+fn title_comes_from_the_gist_description() {
+    let (base, _) = mock_github(|_, path| match path {
+        "/gists/titled" => (
+            200,
+            r#"{"id":"titled","html_url":"x","description":"StorySquish board: Dune"}"#.to_owned(),
+        ),
+        _ => (
+            200,
+            r#"{"id":"untitled","html_url":"x","description":"StorySquish board"}"#.to_owned(),
+        ),
+    });
+    let client = Client::with_api_base("tok", &base);
+
+    assert_eq!(client.title("titled").unwrap(), "Dune");
+    assert_eq!(client.title("untitled").unwrap(), "");
+}
