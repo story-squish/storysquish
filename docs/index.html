@@ -65,6 +65,7 @@
   .rel-row > span{white-space:nowrap}
   .rel-row input{flex:1;min-width:0}
   .rel-row select{width:110px;flex:none}
+  .rel-row .rel-reverse{white-space:nowrap;flex:none}
   details.menu{position:relative}
   details.menu > summary{list-style:none;cursor:pointer;border:1px solid var(--line);border-radius:6px;padding:6px 12px;font-size:13px;background:var(--card);color:var(--ink)}
   details.menu > summary::-webkit-details-marker{display:none}
@@ -622,6 +623,16 @@ function addRelationshipToBoard(from, to, label) {
   if (from === to || !findCharacter(from) || !findCharacter(to)) return false;
   board.relationships.push({id: generateId(), from, to, label: label.trim()});
   return true;
+}
+
+function hasRelationship(from, to) {
+  return board.relationships.some(r => r.from === from && r.to === to);
+}
+
+function addReverseRelationshipToBoard(id) {
+  const relationship = board.relationships.find(r => r.id === id);
+  if (!relationship || hasRelationship(relationship.to, relationship.from)) return false;
+  return addRelationshipToBoard(relationship.to, relationship.from, "");
 }
 
 function matchingIndices() {
@@ -1646,17 +1657,19 @@ function renderRelationshipEditor(character) {
     .map(r => {
       const outgoing = r.from === character.id;
       const other = findCharacter(outgoing ? r.to : r.from);
-      return {r, text: `${outgoing ? "to" : "from"} ${characterDisplayName(other?.name ?? "")}`};
+      const reversible = !hasRelationship(r.to, r.from);
+      return {r, reversible, text: `${outgoing ? "to" : "from"} ${characterDisplayName(other?.name ?? "")}`};
     });
   const list = $("relList");
-  const signature = rows.map(({r, text}) => `${r.id}:${text}`).join("|") || "none";
+  const signature = rows.map(({r, reversible, text}) => `${r.id}:${reversible}:${text}`).join("|") || "none";
   if (list.dataset.signature !== signature) {
     list.dataset.signature = signature;
     list.innerHTML = rows.length
-      ? rows.map(({r, text}) => `<div class="rel-row" data-id="${esc(r.id)}">
+      ? rows.map(({r, reversible, text}) => `<div class="rel-row" data-id="${esc(r.id)}">
           <span>${esc(text)}</span>
           <input class="rel-label" placeholder="how they relate" aria-label="${esc(`Relationship ${text}`)}">
-          <button class="icon" title="Remove relationship">×</button>
+          ${reversible ? '<button class="rel-reverse" title="Add a relationship pointing the other way">Add reverse</button>' : ""}
+          <button class="icon rel-remove" title="Remove relationship">×</button>
         </div>`).join("")
       : '<div class="hint">None yet.</div>';
   }
@@ -2379,8 +2392,13 @@ $("relList").addEventListener("input", e => {
   if (relationship) { relationship.label = e.target.value; markDirty(); }
 });
 $("relList").addEventListener("click", e => {
-  if (!e.target.closest("button")) return;
+  const button = e.target.closest("button");
+  if (!button) return;
   const id = e.target.closest(".rel-row")?.dataset.id;
+  if (button.classList.contains("rel-reverse")) {
+    if (addReverseRelationshipToBoard(id)) saveNow();
+    return;
+  }
   board.relationships = board.relationships.filter(r => r.id !== id);
   saveNow();
 });
