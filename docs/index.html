@@ -3,344 +3,1190 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Manuscript Board — StorySquish</title>
+<title>Untitled Novel — StorySquish</title>
 <style>
   :root{
-    --bg:#c9b79c; --ink:#2b2118; --card:#fdfaf2; --line:#d8cdb6;
-    --accent:#8a5a2b; --accent2:#5a7a8a; --danger:#b04030;
-    --draft:#e8dcc0; --outline:#cfe0e8; --revision:#f3e0c0; --final:#d5ecd0; --archived:#e2e2e2;
+    --board:#c9b79c;--header:#3a2c1e;--header-text:#f4ead6;--ink:#2b2118;--muted:#7a6a52;--card:#fdfaf2;
+    --line:#d8cdb6;--sidebar:#f2ecdd;--inspector:#faf6ec;--accent:#8a5a2b;--on-accent:#fff;--danger:#b04030;
+    --act:#cfe0e8;--field:#fff;
+    --status-Outline:#cfe0e8;--status-Draft:#e8dcc0;--status-Revision:#f3e0c0;--status-Final:#d5ecd0;--status-Archived:#e2e2e2;
   }
   *{box-sizing:border-box}
-  body{margin:0;font:14px/1.45 "Segoe UI",system-ui,sans-serif;background:var(--bg);color:var(--ink);height:100vh;display:flex;flex-direction:column}
-  header{display:flex;align-items:center;gap:10px;padding:10px 16px;background:#3a2c1e;color:#f4ead6;box-shadow:0 2px 8px #0003}
-  header h1{font-size:17px;margin:0;letter-spacing:.5px;font-weight:600}
+  [hidden]{display:none!important}
+  html,body{height:100%}
+  body{margin:0;font:14px/1.45 "Segoe UI",system-ui,sans-serif;background:var(--board);color:var(--ink);display:flex;flex-direction:column}
+  header{display:flex;align-items:center;gap:8px;padding:10px 16px;background:var(--header);color:var(--header-text);flex-wrap:wrap}
+  header h1{font-size:17px;margin:0 4px 0 0;font-weight:700;white-space:nowrap}
   header .grow{flex:1}
-  header input.title{background:#4d3b25;color:#f4ead6;border:1px solid #6b5438;border-radius:6px;padding:6px 10px;font-size:14px;width:min(360px,40vw)}
-  button{cursor:pointer;border:1px solid #00000022;border-radius:6px;padding:6px 12px;font-size:13px;background:#f4ead6;color:#3a2c1e;font-weight:500}
-  button:hover{filter:brightness(.96)}
-  button.primary{background:var(--accent);color:#fff;border-color:#6b4320}
-  button.ghost{background:#4d3b25;color:#f4ead6;border-color:#6b5438}
-  button.danger{background:var(--danger);color:#fff}
-  .hint{font-size:11px;opacity:.7}
-  main{flex:1;display:flex;overflow:hidden}
+  #bookTitle{width:min(360px,40vw)}
+  .toggle{display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer}
+  .toggle input{width:auto;margin:0}
+  button{cursor:pointer;border:1px solid var(--line);border-radius:6px;padding:6px 12px;font:inherit;font-size:13px;background:var(--card);color:var(--ink)}
+  button:hover:not(:disabled){filter:brightness(.95)}
+  button:disabled{opacity:.45;cursor:default}
+  button.primary{background:var(--accent);color:var(--on-accent);border-color:transparent}
+  button.danger{background:var(--danger);color:#fff;border-color:transparent}
+  button.small{padding:2px 8px;font-size:12px}
+  button.icon{padding:0 8px;font-size:16px;line-height:24px}
+  .save-state{font-size:11px;opacity:.8;margin-right:4px}
+  .save-state.failed{color:#ff9a8a;opacity:1;cursor:help}
+  main{flex:1;display:flex;min-height:0}
+  #sidebar{width:250px;flex:none;background:var(--sidebar);border-right:1px solid var(--line);padding:16px;overflow:auto}
+  #center{flex:1;display:flex;flex-direction:column;min-width:0}
   #board{flex:1;overflow:auto;padding:22px}
-  .board-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px;align-items:start}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:4px;padding:12px 12px 14px;box-shadow:0 3px 6px #0001;cursor:pointer;position:relative;transition:transform .08s,box-shadow .08s;min-height:90px}
-  .card:hover{transform:translateY(-2px);box-shadow:0 6px 12px #0002}
+  #inspector{width:340px;flex:none;background:var(--inspector);border-left:1px solid var(--line);padding:16px;overflow:auto}
+  #stats{background:var(--inspector);border-top:1px solid var(--line);padding:12px}
+  h2{margin:0 0 6px;font-size:16px}
+  .section + .section{margin-top:18px}
+  .field-label{display:block;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);margin:10px 0 4px}
+  input,textarea,select{width:100%;font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:6px;background:var(--field);color:var(--ink)}
+  textarea{resize:vertical}
+  .hint{font-size:12px;color:var(--muted)}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(248px,1fr));gap:16px;align-items:start}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:4px;padding:12px;box-shadow:0 3px 6px #0001;cursor:pointer;min-height:90px;user-select:none}
+  .card.selected,.char.selected{border:2px solid var(--accent)}
+  .card.selected{padding:11px}
   .card.dragging{opacity:.4}
-  .card .num{font-size:11px;color:#9a8a70;font-weight:700;letter-spacing:1px}
-  .card .ttl{font-weight:600;margin:2px 0 6px;min-height:20px}
-  .card .sum{font-size:12px;color:#5a4a36;white-space:pre-wrap;max-height:72px;overflow:hidden}
-  .card .meta{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px;align-items:center}
-  .badge{font-size:10px;padding:2px 7px;border-radius:10px;font-weight:600;letter-spacing:.3px;text-transform:uppercase}
-  .status-Draft{background:var(--draft)}
-  .status-Outline{background:var(--outline)}
-  .status-Revision{background:var(--revision)}
-  .status-Final{background:var(--final)}
-  .status-Archived{background:var(--archived);color:#666}
-  .pov{font-size:10px;background:#3a2c1e;color:#fff;padding:2px 7px;border-radius:10px;font-weight:600}
-  .empty{grid-column:1/-1;text-align:center;color:#4a3a26;padding:60px 20px}
-  .empty h2{margin:0 0 8px;font-weight:600}
-  #inspector{width:340px;background:#faf6ec;border-left:1px solid var(--line);padding:16px;overflow:auto;display:none;flex-direction:column;gap:12px}
-  #inspector.open{display:flex}
-  #inspector h2{margin:0;font-size:15px}
-  label{display:block;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:#7a6a52;margin:10px 0 4px}
-  input,textarea,select{width:100%;font:inherit;padding:7px 9px;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--ink)}
-  textarea{resize:vertical;min-height:90px}
-  .field-row{display:flex;gap:8px}
-  .field-row > *{flex:1}
-  .chip-row{display:flex;flex-wrap:wrap;gap:6px}
-  .chip{font-size:11px;padding:4px 9px;border-radius:10px;background:var(--draft);cursor:pointer;border:1px solid transparent}
-  .chip.sel{border-color:var(--accent);background:var(--outline)}
-  .inspector-actions{display:flex;gap:8px;margin-top:6px}
-  #characters{width:250px;background:#f2ecdd;border-right:1px solid var(--line);padding:16px;overflow:auto}
-  #characters h2{margin:0 0 4px;font-size:15px}
-  .char{background:#fff;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px}
-  .char .cname{font-weight:600;display:flex;justify-content:space-between}
-  .char .cnotes{font-size:12px;color:#5a4a36;margin-top:4px;white-space:pre-wrap}
-  .char .x{color:var(--danger);cursor:pointer;font-weight:700}
-  .save-state{font-size:11px;opacity:.7}
-  .close-x{float:right;cursor:pointer;color:#7a6a52;font-size:18px;line-height:1}
+  .card.drop-target{outline:2px solid var(--accent);outline-offset:4px}
+  .num{font-size:11px;font-weight:700;letter-spacing:1px;color:var(--muted)}
+  .card .ttl{font-weight:700;margin:2px 0 4px;overflow-wrap:anywhere}
+  .card .ttl.untitled{font-weight:400;font-style:italic}
+  .card .sum{font-size:12px;color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere}
+  .badges{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+  .badge{font-size:10px;padding:2px 7px;border-radius:10px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;color:var(--ink)}
+  .badge.act{background:var(--act)}
+  .badge.pov{background:var(--header);color:var(--header-text)}
+  .status-Outline{background:var(--status-Outline)}
+  .status-Draft{background:var(--status-Draft)}
+  .status-Revision{background:var(--status-Revision)}
+  .status-Final{background:var(--status-Final)}
+  .status-Archived{background:var(--status-Archived)}
+  .empty{text-align:center;padding:60px 20px}
+  .empty strong{display:block;font-size:20px;margin-bottom:4px}
+  .char{background:var(--card);border:1px solid var(--line);border-radius:4px;padding:8px 10px;margin-bottom:6px;cursor:pointer;box-shadow:0 3px 6px #0001}
+  .char.selected{padding:7px 9px}
+  .char .cname{display:flex;justify-content:space-between;gap:6px;font-weight:700;overflow-wrap:anywhere}
+  .char .x{color:var(--danger);font-weight:700;cursor:pointer;padding:0 2px}
+  .char .cnotes{font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere;margin-top:2px}
+  .insp-head{display:flex;align-items:center;gap:8px}
+  .insp-head .ttl{font-weight:700;flex:1;overflow-wrap:anywhere}
+  .stats-table{border-collapse:collapse}
+  .stats-table td{padding:2px 12px 2px 0}
+  .stats-table tr.total td{font-weight:700}
+  #modalHost{position:fixed;inset:0;background:#0006;display:flex;align-items:center;justify-content:center;padding:16px;z-index:10}
+  .modal{background:var(--inspector);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:16px;max-width:380px;width:100%;box-shadow:0 10px 30px #0005}
+  .modal .message{white-space:pre-wrap;overflow-wrap:anywhere;margin:0 0 12px}
+  .swatch{display:inline-flex;border:1px solid var(--line);flex:none}
+  .swatch span{width:10px;height:14px}
+  .scheme-list{display:flex;flex-direction:column;gap:2px;max-height:50vh;overflow:auto}
+  .scheme{display:flex;align-items:center;gap:8px;text-align:left;border-color:transparent;background:transparent}
+  .scheme.selected{background:var(--act);border-color:var(--accent)}
+  @media (max-width:760px){
+    main{flex-direction:column;overflow:auto}
+    #sidebar,#inspector{width:auto;border:0;overflow:visible}
+    #board{overflow:visible;padding:16px}
+    #bookTitle{width:100%}
+  }
 </style>
 </head>
 <body>
 <header>
-  <h1>📖 Manuscript Board</h1>
-  <input class="title" id="bookTitle" placeholder="Novel title">
+  <h1>Manuscript Board</h1>
+  <input id="bookTitle" placeholder="Novel title" aria-label="Novel title">
+  <label class="toggle"><input type="checkbox" id="statsToggle"> Stats</label>
+  <button id="settingsBtn">Settings</button>
   <span class="grow"></span>
   <span class="save-state" id="saveState">saved</span>
-  <button class="ghost" id="exportBtn">Export</button>
-  <button class="ghost" id="importBtn">Import</button>
-  <button class="ghost" id="resetBtn">Reset</button>
+  <button id="outlineBtn" title="Export a Markdown outline">Outline</button>
+  <button id="exportBtn">Export</button>
+  <button id="importBtn">Import</button>
+  <button id="resetBtn">Reset</button>
+  <button id="undoBtn">Undo</button>
+  <button id="redoBtn">Redo</button>
   <button class="primary" id="addBtn">+ Scene</button>
-  <input type="file" id="importFile" accept="application/json" hidden>
+  <input type="file" id="importFile" accept="application/json,.json" hidden>
 </header>
 
 <main>
-  <div id="characters">
-    <h2>Characters</h2>
-    <div id="charList"></div>
-    <label class="char" style="cursor:text">
-      <input id="newChar" placeholder="New character name">
-    </label>
-    <small class="hint" style="display:block;margin-top:4px;color:#7a6a52">Type a name + Enter to add.</small>
-  </div>
-
-  <div id="board">
-    <div class="board-grid" id="grid"></div>
-  </div>
-
-  <aside id="inspector">
-    <h2><span id="inspNum"></span> <span id="inspTitle">Scene</span> <span class="close-x" id="inspClose">×</span></h2>
-    <label>Title</label>
-    <input id="sTitle" placeholder="e.g. The confrontation in the rain">
-    <label>Summary / beat</label>
-    <textarea id="sSum" placeholder="What happens in this scene. What changes."></textarea>
-    <div class="field-row">
-      <div>
-        <label>Status</label>
-        <select id="sStatus">
-          <option>Outline</option><option>Draft</option><option>Revision</option>
-          <option>Final</option><option>Archived</option>
-        </select>
-      </div>
-      <div>
-        <label>POV character</label>
-        <select id="sPov"></select>
+  <aside id="sidebar">
+    <div class="section">
+      <h2>Filter</h2>
+      <input id="search" placeholder="Search title, summary, act, POV" aria-label="Search">
+      <label class="field-label" for="filterStatus">Status</label>
+      <select id="filterStatus"></select>
+      <label class="field-label" for="filterAct">Act</label>
+      <select id="filterAct"></select>
+      <label class="field-label" for="filterPov">POV</label>
+      <select id="filterPov"></select>
+      <div class="row">
+        <span class="hint" id="matchCount"></span>
+        <button class="small" id="clearFilters">Clear filters</button>
       </div>
     </div>
-    <label>Act</label>
-    <select id="sAct">
-      <option value="">— none —</option>
-      <option>Act I</option><option>Act II</option><option>Act III</option>
-    </select>
-    <div class="inspector-actions">
-      <button class="danger" id="delBtn">Delete scene</button>
+    <div class="section">
+      <h2>Characters</h2>
+      <div id="charList"></div>
+      <input id="newChar" placeholder="New character name" aria-label="New character name">
+      <div class="hint">Type a name + Enter to add.</div>
+    </div>
+  </aside>
+
+  <div id="center">
+    <section id="board"></section>
+    <section id="stats" hidden>
+      <h2>Statistics</h2>
+      <table class="stats-table"><tbody id="statsBody"></tbody></table>
+    </section>
+  </div>
+
+  <aside id="inspector" hidden>
+    <div id="sceneInspector">
+      <div class="insp-head">
+        <span class="num" id="sNum"></span>
+        <span class="ttl" id="sHeading"></span>
+        <button class="icon" id="sClose" title="Close">×</button>
+      </div>
+      <label class="field-label" for="sTitle">Title</label>
+      <input id="sTitle" placeholder="e.g. The confrontation in the rain">
+      <label class="field-label" for="sSum">Summary / beat</label>
+      <textarea id="sSum" rows="5" placeholder="What happens in this scene. What changes."></textarea>
+      <div class="cols">
+        <div>
+          <label class="field-label" for="sStatus">Status</label>
+          <select id="sStatus"></select>
+        </div>
+        <div>
+          <label class="field-label" for="sPov">POV character</label>
+          <select id="sPov"></select>
+        </div>
+      </div>
+      <label class="field-label" for="sAct">Act</label>
+      <select id="sAct"></select>
+      <div class="row" style="margin-top:16px">
+        <button id="sEarlier">Move earlier</button>
+        <button id="sLater">Move later</button>
+      </div>
+      <div class="row">
+        <button id="sDuplicate">Duplicate</button>
+        <button class="danger" id="sDelete">Delete scene</button>
+      </div>
+    </div>
+
+    <div id="characterInspector">
+      <div class="insp-head">
+        <span class="num">CHARACTER</span>
+        <span class="ttl" id="cHeading"></span>
+        <button class="icon" id="cClose" title="Close">×</button>
+      </div>
+      <label class="field-label" for="cName">Name</label>
+      <input id="cName">
+      <label class="field-label" for="cNotes">Notes</label>
+      <textarea id="cNotes" rows="8" placeholder="Motivation, arc, voice, relationships."></textarea>
+      <div class="hint" id="cPovCount"></div>
+      <div class="row" style="margin-top:16px">
+        <button id="cUp">Move up</button>
+        <button id="cDown">Move down</button>
+      </div>
+      <div class="row">
+        <button class="danger" id="cDelete">Delete character</button>
+      </div>
     </div>
   </aside>
 </main>
 
+<div id="modalHost" hidden></div>
+
 <script>
-const STORE = "manuscriptBoard.v1";
-let state = load();
-let selectedId = null;
-let saveTimer = null;
+"use strict";
 
-function uid(){return Math.random().toString(36).slice(2,9)}
-function load(){
-  try{const s=JSON.parse(localStorage.getItem(STORE));
-    if(s&&Array.isArray(s.scenes))return s;
-  }catch(e){}
-  return {title:"Untitled Novel",characters:[],scenes:[],next:0};
-}
-function save(){
-  document.getElementById("saveState").textContent="saved";
-  localStorage.setItem(STORE,JSON.stringify(state));
-}
-function scheduleSave(){
-  document.getElementById("saveState").textContent="saving…";
-  clearTimeout(saveTimer);
-  saveTimer=setTimeout(save,400);
-}
-function newScene(){
-  const sc={id:uid(),title:"",summary:"",status:"Outline",pov:"",act:""};
-  state.scenes.push(sc);
-  selectedId=sc.id;
-  render();save();
-  const inp=document.getElementById("sTitle");inp.focus();
-}
+const BOARD_KEY = "storysquish.board";
+const LEGACY_BOARD_KEYS = ["manuscriptBoard.v1"];
+const SETTINGS_KEY = "storysquish.settings";
+const STATUSES = ["Outline", "Draft", "Revision", "Final", "Archived"];
+const ACTS = ["Act I", "Act II", "Act III"];
+const DEFAULT_TITLE = "Untitled Novel";
+const NONE_LABEL = "— none —";
+const SAVE_DEBOUNCE_MS = 400;
+const UNDO_LIMIT = 100;
+const SUMMARY_PREVIEW_CHARS = 180;
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 
-/* ---------- RENDER ---------- */
-function byId(id){return state.scenes.find(s=>s.id===id)}
+const SHORTCUT_LABELS = IS_MAC
+  ? {newScene: "⌘N", undo: "⌘Z", redo: "⇧⌘Z", duplicate: "⌘D",
+     earlier: "⌥←", later: "⌥→", up: "⌥↑", down: "⌥↓"}
+  : {newScene: "Ctrl+N", undo: "Ctrl+Z", redo: "Ctrl+Shift+Z", duplicate: "Ctrl+D",
+     earlier: "Alt+Left", later: "Alt+Right", up: "Alt+Up", down: "Alt+Down"};
 
-function render(){
-  document.getElementById("bookTitle").value=state.title;
-
-  // board
-  const grid=document.getElementById("grid");
-  grid.innerHTML="";
-  if(!state.scenes.length){
-    grid.innerHTML='<div class="empty"><h2>No scenes yet</h2><div>Click “+ Scene” to pin your first index card.</div></div>';
-  }else{
-    state.scenes.forEach((sc,i)=>{
-      const card=document.createElement("div");
-      card.className="card";card.draggable=true;card.dataset.id=sc.id;
-      const povCh=state.characters.find(c=>c.id===sc.pov);
-      card.innerHTML=`
-        <div class="num">SCENE ${String(i+1).padStart(2,"0")}</div>
-        <div class="ttl">${sc.title?"<b>"+esc(sc.title)+"</b>":"<em>Untitled scene</em>"}</div>
-        <div class="sum">${esc(sc.summary||"No summary yet.")}</div>
-        <div class="meta">
-          <span class="badge status-${esc(sc.status)}">${esc(sc.status)}</span>
-          ${sc.act?`<span class="badge status-Outline">${esc(sc.act)}</span>`:""}
-          ${povCh?`<span class="pov">${esc(povCh.name)}</span>`:""}
-        </div>`;
-      card.onclick=()=>selectScene(sc.id);
-      addDrag(card,sc.id);
-      grid.appendChild(card);
-    });
-  }
-  renderCharacters();
-  renderPovOptions();
-  if(selectedId!==null)renderInspector();
-  updateActFilterButtons();
-}
-
-function renderInspector(){
-  const sc=byId(selectedId);
-  const asp=document.getElementById("inspector");
-  if(!sc){asp.classList.remove("open");return;}
-  asp.classList.add("open");
-  const i=state.scenes.findIndex(s=>s.id===selectedId)+1;
-  document.getElementById("inspNum").textContent=`SCENE ${String(i).padStart(2,"0")} `;
-  document.getElementById("inspTitle").textContent=sc.title||"Untitled";
-  document.getElementById("sTitle").value=sc.title;
-  document.getElementById("sSum").value=sc.summary;
-  document.getElementById("sStatus").value=sc.status;
-  document.getElementById("sAct").value=sc.act||"";
-}
-
-function renderPovOptions(){
-  const sel=document.getElementById("sPov");
-  const cur=sel.value;
-  sel.innerHTML='<option value="">— none —</option>'+
-    state.characters.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join("");
-  sel.value=cur;
-}
-
-function renderCharacters(){
-  const list=document.getElementById("charList");
-  list.innerHTML="";
-  if(!state.characters.length)list.innerHTML='<small class="hint">No characters yet.</small>';
-  state.characters.forEach(ch=>{
-    const d=document.createElement("div");d.className="char";
-    const sceneCount=state.scenes.filter(s=>s.pov===ch.id).length;
-    d.innerHTML=`
-      <div class="cname">${esc(ch.name)} <span class="x" data-x="${ch.id}">×</span></div>
-      <div class="hint">${sceneCount} POV scene${sceneCount===1?"":"s"}</div>
-      ${ch.notes?`<div class="cnotes">${esc(ch.notes)}</div>`:""}`;
-    d.querySelector(".x").onclick=e=>{e.stopPropagation();deleteChar(ch.id)};
-    list.appendChild(d);
-  });
-}
-
-/* ---------- ACTIONS ---------- */
-function selectScene(id){selectedId=id;renderInspector();}
-
-function update(id,field,val){
-  const sc=byId(id);if(!sc)return;
-  sc[field]=val;
-  document.getElementById("saveState").textContent="saving…";
-  // live preview if board not busy
-  if(field==="title"){
-    const card=[...document.querySelectorAll(".card")].find(c=>c.dataset.id===id);
-    if(card){const t=card.querySelector(".ttl");t.innerHTML=val?"<b>"+esc(val)+"</b>":"<em>Untitled scene</em>";}
-    document.getElementById("inspTitle").textContent=val||"Untitled";
-  }
-  scheduleSave();
-}
-
-function deleteScene(id){
-  state.scenes=state.scenes.filter(s=>s.id!==id);
-  if(selectedId===id)selectedId=null;
-  render();save();
-}
-function deleteChar(id){
-  state.characters=state.characters.filter(c=>c.id!==id);
-  state.scenes.forEach(s=>{if(s.pov===id)s.pov="";});
-  render();save();
-}
-
-function addChar(){
-  const inp=document.getElementById("newChar");
-  const name=inp.value.trim();
-  if(!name)return;
-  state.characters.push({id:uid(),name,notes:""});
-  inp.value="";render();save();
-}
-
-/* ---------- IMPORT / EXPORT ---------- */
-function exportData(){
-  const blob=new Blob([JSON.stringify(state,null,2)],{type:"application/json"});
-  const a=document.createElement("a");
-  a.href=URL.createObjectURL(blob);
-  a.download=(state.title||"novel").replace(/\s+/g,"_")+".json";
-  a.click();URL.revokeObjectURL(a.href);
-}
-function importData(file){
-  const r=new FileReader();
-  r.onload=()=>{
-    try{
-      const d=JSON.parse(r.result);
-      if(!d||!Array.isArray(d.scenes))throw new Error("bad file");
-      // merge characters by name if id missing
-      if(!d.characters)d.characters=[];
-      state=d;selectedId=null;render();save();
-      document.getElementById("saveState").textContent="imported";
-    }catch(e){alert("Could not import: "+e.message)}
+// surfaces: board, header, header text, ink, muted, card
+// chrome: line, sidebar, inspector, accent, danger, act badge
+// statuses: badge fills in STATUSES order
+const COLOR_SCHEMES = [
+  ["parchment", "Parchment", false,
+    ["#c9b79c","#3a2c1e","#f4ead6","#2b2118","#7a6a52","#fdfaf2"],
+    ["#d8cdb6","#f2ecdd","#faf6ec","#8a5a2b","#b04030","#cfe0e8"],
+    ["#cfe0e8","#e8dcc0","#f3e0c0","#d5ecd0","#e2e2e2"]],
+  ["linen", "Linen", false,
+    ["#d6d3cc","#33363b","#f1efe9","#24262a","#6b6e74","#ffffff"],
+    ["#d9d6cf","#efede8","#f7f6f2","#3f6e8c","#b3413a","#dbe6ee"],
+    ["#dbe6ee","#ece4d2","#f2dfc8","#d8ead6","#e4e4e4"]],
+  ["sage", "Sage", false,
+    ["#a9b8a0","#2f3d2c","#eef2e6","#1f2a1d","#5d6b58","#fbfcf7"],
+    ["#cdd6c4","#e9eee2","#f4f7ef","#4c7a3d","#a8453a","#d6e4d0"],
+    ["#d3e2ea","#e8e2c4","#f0dcc0","#cfe8c8","#e0e2dc"]],
+  ["harbor", "Harbor", false,
+    ["#9fb4c7","#1e2f40","#e8f0f7","#18232e","#586a7c","#fbfdff"],
+    ["#cbd7e2","#e6edf4","#f2f6fa","#2f6690","#b03f3f","#d3e3f0"],
+    ["#d3e3f0","#e6e0cc","#f0dcc4","#d2eadb","#e1e4e8"]],
+  ["rosewood", "Rosewood", false,
+    ["#c7a9a6","#3d2428","#f7e9ea","#2e1a1d","#7a5c60","#fffafa"],
+    ["#e2cfd0","#f4e9e9","#fbf4f4","#9c3d54","#b3402e","#e9d6e4"],
+    ["#dcdcef","#efe0cc","#f5d9cc","#d9ead3","#e6e1e2"]],
+  ["lavender", "Lavender", false,
+    ["#b3aac8","#2c2640","#eeeaf7","#221d30","#655d7a","#fdfcff"],
+    ["#d8d2e6","#ece8f4","#f6f4fa","#6a4fa3","#b0434a","#dcd6f0"],
+    ["#d6dcf2","#ece2cf","#f2dccb","#d6ebd8","#e3e1e8"]],
+  ["slate", "Slate", true,
+    ["#2b3036","#1b1e22","#e6e8eb","#e4e6e9","#9aa1a9","#3a4048"],
+    ["#4c535c","#23272c","#262a30","#6ea8d8","#c0503f","#2f4a5c"],
+    ["#2f4a5c","#524a33","#5c4630","#2f5238","#474b51"]],
+  ["midnight", "Midnight", true,
+    ["#141b2d","#0b1020","#dde4f5","#e1e7f5","#8b96b3","#1f2840"],
+    ["#323d5c","#111829","#151d31","#8ca8ff","#c4574b","#2a3a66"],
+    ["#2a3a66","#4d4530","#5a4030","#24503e","#3a3f4f"]],
+  ["ember", "Ember", true,
+    ["#2a201b","#17110e","#f2e3d3","#f0e2d2","#ab9682","#3a2d26"],
+    ["#54433a","#211915","#251c18","#e08a4a","#c44a3a","#3d4650"],
+    ["#3a4a58","#5a4a2e","#66442c","#3a5030","#4a423d"]],
+  ["forest-night", "Forest Night", true,
+    ["#1c2620","#101712","#dfeadf","#e0ebe0","#92a596","#28352c"],
+    ["#3b4b3f","#172019","#1a241d","#7cc48a","#bf5646","#2d4a4f"],
+    ["#2d4a4f","#4f4a2c","#5a442c","#2f5a35","#3c4540"]],
+].map(([key, name, dark, surfaces, chrome, statuses]) => {
+  const [board, header, headerText, ink, muted, card] = surfaces;
+  const [line, sidebar, inspector, accent, danger, act] = chrome;
+  return {
+    key, name, dark, board, header, headerText, ink, muted, card,
+    line, sidebar, inspector, accent, danger, act, statuses,
+    // Dark schemes use light accents, which need dark text on top.
+    onAccent: dark ? header : "#ffffff",
+    field: dark ? card : "#ffffff",
   };
-  r.readAsText(file);
+});
+const DEFAULT_SCHEME = "parchment";
+
+/* ---------- model ---------- */
+
+function generateId() {
+  if (globalThis.crypto?.randomUUID) return crypto.randomUUID().replaceAll("-", "");
+  return Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join("");
 }
 
-/* ---------- DRAG & DROP REORDER ---------- */
-let dragId=null;
-function addDrag(card,id){
-  card.addEventListener("dragstart",e=>{
-    dragId=id;card.classList.add("dragging");
-    e.dataTransfer.effectAllowed="move";
+function defaultBoard() {
+  return {title: DEFAULT_TITLE, characters: [], scenes: []};
+}
+
+function isPlainObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function textField(value, what, fallback = "") {
+  if (value === undefined) return fallback;
+  if (typeof value !== "string") throw new Error(`${what} must be text`);
+  return value;
+}
+
+function requiredTextField(value, what) {
+  if (value === undefined) throw new Error(`${what} is missing`);
+  return textField(value, what);
+}
+
+function choiceField(value, what, choices, fallback) {
+  if (value === undefined || value === null) return fallback;
+  if (value === "" && fallback === "") return "";
+  if (!choices.includes(value)) throw new Error(`${what}: unknown value ${JSON.stringify(value)}`);
+  return value;
+}
+
+function parseCharacter(raw, index) {
+  const what = `character ${index + 1}`;
+  if (!isPlainObject(raw)) throw new Error(`${what} must be an object`);
+  return {
+    id: requiredTextField(raw.id, `${what} id`),
+    name: requiredTextField(raw.name, `${what} name`),
+    notes: textField(raw.notes, `${what} notes`),
+  };
+}
+
+function parseScene(raw, index) {
+  const what = `scene ${index + 1}`;
+  if (!isPlainObject(raw)) throw new Error(`${what} must be an object`);
+  return {
+    id: requiredTextField(raw.id, `${what} id`),
+    title: textField(raw.title, `${what} title`),
+    summary: textField(raw.summary, `${what} summary`),
+    status: raw.status === undefined ? "Outline" : choiceField(raw.status, `${what} status`, STATUSES, "Outline"),
+    pov: raw.pov === null ? "" : textField(raw.pov, `${what} pov`),
+    act: choiceField(raw.act, `${what} act`, ACTS, ""),
+  };
+}
+
+function parseBoard(text) {
+  const data = JSON.parse(text);
+  if (!isPlainObject(data)) throw new Error("expected a JSON object");
+  if (!Array.isArray(data.scenes)) throw new Error("missing the scenes list");
+  const characters = data.characters ?? [];
+  if (!Array.isArray(characters)) throw new Error("characters must be a list");
+  return {
+    title: textField(data.title, "title"),
+    characters: characters.map(parseCharacter),
+    scenes: data.scenes.map(parseScene),
+  };
+}
+
+function sceneIndex(id) { return board.scenes.findIndex(s => s.id === id); }
+function characterIndex(id) { return board.characters.findIndex(c => c.id === id); }
+function findCharacter(id) { return id ? board.characters.find(c => c.id === id) : undefined; }
+function povSceneCount(id) { return board.scenes.filter(s => s.pov === id).length; }
+
+function addSceneToBoard() {
+  const scene = {id: generateId(), title: "", summary: "", status: "Outline", pov: "", act: ""};
+  board.scenes.push(scene);
+  return scene.id;
+}
+
+function duplicateSceneOnBoard(id) {
+  const index = sceneIndex(id);
+  if (index < 0) return null;
+  const original = board.scenes[index];
+  const copy = {
+    ...original,
+    id: generateId(),
+    title: original.title ? `${original.title} (copy)` : "",
+  };
+  board.scenes.splice(index + 1, 0, copy);
+  return copy.id;
+}
+
+function shiftBy(items, id, offset) {
+  const from = items.findIndex(item => item.id === id);
+  const to = from + offset;
+  if (from < 0 || to < 0 || to >= items.length || to === from) return false;
+  const [item] = items.splice(from, 1);
+  items.splice(to, 0, item);
+  return true;
+}
+
+function moveScene(from, to) {
+  const count = board.scenes.length;
+  if (from >= count || to >= count || from === to) return;
+  const [scene] = board.scenes.splice(from, 1);
+  board.scenes.splice(to, 0, scene);
+}
+
+function addCharacterToBoard(name) {
+  const trimmed = name.trim();
+  if (!trimmed) return false;
+  board.characters.push({id: generateId(), name: trimmed, notes: ""});
+  return true;
+}
+
+function deleteCharacterFromBoard(id) {
+  board.characters = board.characters.filter(c => c.id !== id);
+  for (const scene of board.scenes) if (scene.pov === id) scene.pov = "";
+}
+
+function matchingIndices() {
+  const needle = filters.query.trim().toLowerCase();
+  const indices = [];
+  board.scenes.forEach((scene, index) => {
+    if (filters.status && scene.status !== filters.status) return;
+    if (filters.act && scene.act !== filters.act) return;
+    if (filters.pov && scene.pov !== filters.pov) return;
+    if (needle) {
+      const povName = findCharacter(scene.pov)?.name ?? "";
+      const haystack = [scene.title, scene.summary, scene.status, scene.act, povName].join(" ").toLowerCase();
+      if (!haystack.includes(needle)) return;
+    }
+    indices.push(index);
   });
-  card.addEventListener("dragover",e=>{
+  return indices;
+}
+
+/* ---------- history ---------- */
+
+// Snapshots are compared as JSON; a burst of edits between two commits
+// becomes a single undo step.
+class History {
+  constructor(initial, limit) {
+    this.checkpoint = JSON.stringify(initial);
+    this.undoStack = [];
+    this.redoStack = [];
+    this.limit = Math.max(1, limit);
+  }
+  commit(current) {
+    const snapshot = JSON.stringify(current);
+    if (snapshot === this.checkpoint) return false;
+    this.undoStack.push(this.checkpoint);
+    if (this.undoStack.length > this.limit) this.undoStack.shift();
+    this.checkpoint = snapshot;
+    this.redoStack = [];
+    return true;
+  }
+  undo(current) {
+    this.commit(current);
+    const previous = this.undoStack.pop();
+    if (previous === undefined) return null;
+    this.redoStack.push(this.checkpoint);
+    this.checkpoint = previous;
+    return JSON.parse(previous);
+  }
+  redo(current) {
+    if (JSON.stringify(current) !== this.checkpoint) return null;
+    const next = this.redoStack.pop();
+    if (next === undefined) return null;
+    this.undoStack.push(this.checkpoint);
+    this.checkpoint = next;
+    return JSON.parse(next);
+  }
+  canUndo(current) {
+    return this.undoStack.length > 0 || JSON.stringify(current) !== this.checkpoint;
+  }
+  canRedo(current) {
+    return this.redoStack.length > 0 && JSON.stringify(current) === this.checkpoint;
+  }
+}
+
+/* ---------- outline / export ---------- */
+
+function sceneNumber(index) {
+  return `SCENE ${String(index + 1).padStart(2, "0")}`;
+}
+
+// Archived scenes are cut material, so they stay out of the outline; the
+// remaining scenes keep their board numbers so they match the cards.
+function toMarkdown(b) {
+  let out = `# ${b.title.trim() || DEFAULT_TITLE}\n\n`;
+  b.scenes.forEach((scene, index) => {
+    if (scene.status === "Archived") return;
+    out += `## Scene ${String(index + 1).padStart(2, "0")}: ${scene.title.trim() || "Untitled"}\n\n`;
+    const facts = [scene.status];
+    if (scene.act) facts.push(scene.act);
+    const pov = b.characters.find(c => c.id === scene.pov && scene.pov);
+    if (pov) facts.push(`POV: ${pov.name.trim()}`);
+    out += `_${facts.join(" · ")}_\n\n`;
+    const summary = scene.summary.trim();
+    if (summary) out += `${summary}\n\n`;
+  });
+  if (b.characters.length) {
+    out += "## Characters\n\n";
+    for (const character of b.characters) {
+      out += `### ${character.name.trim()}\n\n`;
+      const notes = character.notes.trim();
+      if (notes) out += `${notes}\n\n`;
+    }
+  }
+  return out.trimEnd() + "\n";
+}
+
+function exportFileName(extension) {
+  const stem = board.title.trim() || "novel";
+  return `${stem.split(/\s+/).join("_")}.${extension}`;
+}
+
+function download(name, text, type) {
+  const url = URL.createObjectURL(new Blob([text], {type}));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+/* ---------- storage ---------- */
+
+function migrateLegacyBoard() {
+  if (localStorage.getItem(BOARD_KEY) !== null) return;
+  for (const key of LEGACY_BOARD_KEYS) {
+    const raw = localStorage.getItem(key);
+    if (raw === null) continue;
+    localStorage.setItem(BOARD_KEY, raw);
+    localStorage.removeItem(key);
+    return;
+  }
+}
+
+// An unreadable board is moved aside rather than silently overwritten by the
+// next autosave.
+function loadBoard() {
+  let migrationAlert = null;
+  try { migrateLegacyBoard(); }
+  catch (e) { migrationAlert = `Could not carry over data from before the rename: ${e.message}`; }
+
+  let raw;
+  try { raw = localStorage.getItem(BOARD_KEY); }
+  catch (e) { return {board: defaultBoard(), alert: `Could not open your board: ${e.message}`}; }
+  if (raw === null) return {board: defaultBoard(), alert: migrationAlert};
+
+  try {
+    return {board: parseBoard(raw), alert: migrationAlert};
+  } catch (err) {
+    const backupKey = `${BOARD_KEY}.corrupt`;
+    let note;
+    try {
+      localStorage.setItem(backupKey, raw);
+      localStorage.removeItem(BOARD_KEY);
+      note = `It was moved to "${backupKey}" in this browser's storage.`;
+    } catch (e) {
+      note = `Moving it aside also failed: ${e.message}.`;
+    }
+    return {
+      board: defaultBoard(),
+      alert: `Could not open your board: ${err.message}\n\n${note} Starting with an empty board.`,
+    };
+  }
+}
+
+function loadSettings() {
+  const defaults = {colorScheme: DEFAULT_SCHEME};
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    if (raw === null) return {settings: defaults, alert: null};
+    const data = JSON.parse(raw);
+    if (!isPlainObject(data)) throw new Error("expected a JSON object");
+    const scheme = data["color-scheme"] ?? DEFAULT_SCHEME;
+    if (!COLOR_SCHEMES.some(s => s.key === scheme)) throw new Error(`unknown color scheme ${JSON.stringify(scheme)}`);
+    return {settings: {colorScheme: scheme}, alert: null};
+  } catch (e) {
+    return {settings: defaults, alert: `Could not read settings, using defaults: ${e.message}`};
+  }
+}
+
+function persistSettings() {
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify({"color-scheme": settings.colorScheme}, null, 2));
+}
+
+/* ---------- app state ---------- */
+
+const $ = id => document.getElementById(id);
+
+const settingsLoad = loadSettings();
+let settings = settingsLoad.settings;
+let settingsSaveError = null;
+
+const boardLoad = loadBoard();
+let board = boardLoad.board;
+const history = new History(board, UNDO_LIMIT);
+
+let selected = null;
+let saveState = {kind: "saved"};
+let saveTimer = null;
+let focusSceneTitle = false;
+let showStats = false;
+const filters = {query: "", status: "", act: "", pov: ""};
+let dragFrom = null;
+const modalStack = [];
+
+function isSelected(kind, id) {
+  return selected?.kind === kind && selected.id === id;
+}
+
+function schemeByKey(key) {
+  return COLOR_SCHEMES.find(s => s.key === key) ?? COLOR_SCHEMES[0];
+}
+
+function applyTheme(p) {
+  const style = document.documentElement.style;
+  const vars = {
+    board: p.board, header: p.header, "header-text": p.headerText, ink: p.ink, muted: p.muted,
+    card: p.card, line: p.line, sidebar: p.sidebar, inspector: p.inspector, accent: p.accent,
+    "on-accent": p.onAccent, danger: p.danger, act: p.act, field: p.field,
+  };
+  for (const [name, value] of Object.entries(vars)) style.setProperty(`--${name}`, value);
+  STATUSES.forEach((status, i) => style.setProperty(`--status-${status}`, p.statuses[i]));
+  style.colorScheme = p.dark ? "dark" : "light";
+}
+
+function setColorScheme(key) {
+  settings.colorScheme = key;
+  applyTheme(schemeByKey(key));
+  try {
+    persistSettings();
+    settingsSaveError = null;
+  } catch (e) {
+    settingsSaveError = `Could not save settings: ${e.message}`;
+  }
+}
+
+/* ---------- saving ---------- */
+
+function saveNow() {
+  clearTimeout(saveTimer);
+  saveTimer = null;
+  history.commit(board);
+  try {
+    localStorage.setItem(BOARD_KEY, JSON.stringify(board, null, 2));
+    saveState = {kind: "saved"};
+  } catch (e) {
+    saveState = {kind: "failed", reason: e.message};
+  }
+  render();
+}
+
+function markDirty() {
+  saveState = {kind: "pending"};
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveNow, SAVE_DEBOUNCE_MS);
+  render();
+}
+
+/* ---------- actions ---------- */
+
+function undo() {
+  const restored = history.undo(board);
+  if (restored) { board = restored; saveNow(); }
+}
+
+function redo() {
+  const restored = history.redo(board);
+  if (restored) { board = restored; saveNow(); }
+}
+
+function addScene() {
+  selected = {kind: "scene", id: addSceneToBoard()};
+  focusSceneTitle = true;
+  saveNow();
+}
+
+function duplicateSelectedScene() {
+  if (selected?.kind !== "scene") return;
+  const copy = duplicateSceneOnBoard(selected.id);
+  if (copy) { selected = {kind: "scene", id: copy}; saveNow(); }
+}
+
+function shiftSelection(offset) {
+  if (!selected) return;
+  const items = selected.kind === "scene" ? board.scenes : board.characters;
+  if (shiftBy(items, selected.id, offset)) saveNow();
+}
+
+function deleteCharacter(id) {
+  deleteCharacterFromBoard(id);
+  if (isSelected("character", id)) selected = null;
+  saveNow();
+}
+
+function confirmDeleteScene(id) {
+  confirmDialog("Delete this scene?", () => {
+    board.scenes = board.scenes.filter(s => s.id !== id);
+    if (isSelected("scene", id)) selected = null;
+    saveNow();
+  });
+}
+
+function confirmReset() {
+  confirmDialog("Delete ALL scenes and characters? You can still undo this.", () => {
+    board = defaultBoard();
+    selected = null;
+    saveNow();
+  });
+}
+
+function closeInspector() {
+  selected = null;
+  render();
+}
+
+function filtersActive() {
+  return filters.query.trim() !== "" || filters.status !== "" || filters.act !== "" || filters.pov !== "";
+}
+
+// Deleting, resetting or undoing can remove the character a filter points
+// at, which would otherwise hide every card.
+function dropStalePovFilter() {
+  if (filters.pov && !findCharacter(filters.pov)) filters.pov = "";
+}
+
+async function importBoard(file) {
+  try {
+    board = parseBoard(await file.text());
+  } catch (e) {
+    alertDialog(`Could not import: ${e.message}`);
+    return;
+  }
+  selected = null;
+  saveNow();
+  if (saveState.kind === "saved") { saveState = {kind: "imported"}; render(); }
+}
+
+function exportBoard() {
+  try { download(exportFileName("json"), JSON.stringify(board, null, 2), "application/json"); }
+  catch (e) { alertDialog(`Could not export: ${e.message}`); }
+}
+
+function exportOutline() {
+  try { download(exportFileName("md"), toMarkdown(board), "text/markdown"); }
+  catch (e) { alertDialog(`Could not export outline: ${e.message}`); }
+}
+
+/* ---------- rendering ---------- */
+
+function esc(value) {
+  return String(value).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+}
+
+function characterDisplayName(name) {
+  return name.trim() ? name : "Unnamed";
+}
+
+function preview(text) {
+  const chars = Array.from(text);
+  if (chars.length <= SUMMARY_PREVIEW_CHARS) return text;
+  return chars.slice(0, SUMMARY_PREVIEW_CHARS).join("").trimEnd() + "…";
+}
+
+function plural(count, noun) {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+// Leaves a field alone while the user is typing in it, so re-rendering on
+// every keystroke never moves the caret.
+function syncValue(input, value) {
+  if (document.activeElement !== input && input.value !== value) input.value = value;
+}
+
+function syncOptions(select, options, value) {
+  const html = options.map(([v, label]) => `<option value="${esc(v)}">${esc(label)}</option>`).join("");
+  if (select.dataset.options !== html) {
+    select.innerHTML = html;
+    select.dataset.options = html;
+  }
+  select.value = value;
+}
+
+function render() {
+  dropStalePovFilter();
+  renderHeader();
+  renderFilters();
+  renderCharacters();
+  renderBoard();
+  renderInspector();
+  renderStats();
+  const failed = saveState.kind === "failed" ? " (save failed)" : "";
+  document.title = `${board.title.trim() || DEFAULT_TITLE} — StorySquish${failed}`;
+}
+
+function renderHeader() {
+  syncValue($("bookTitle"), board.title);
+  $("statsToggle").checked = showStats;
+  const label = $("saveState");
+  label.textContent = {saved: "saved", pending: "saving…", imported: "imported", failed: "save failed"}[saveState.kind];
+  label.classList.toggle("failed", saveState.kind === "failed");
+  label.title = saveState.kind === "failed" ? saveState.reason : "";
+  $("undoBtn").disabled = !history.canUndo(board);
+  $("redoBtn").disabled = !history.canRedo(board);
+}
+
+function renderFilters() {
+  syncValue($("search"), filters.query);
+  syncOptions($("filterStatus"), [["", "All"], ...STATUSES.map(s => [s, s])], filters.status);
+  syncOptions($("filterAct"), [["", "All"], ...ACTS.map(a => [a, a])], filters.act);
+  syncOptions($("filterPov"),
+    [["", "All"], ...board.characters.map(c => [c.id, characterDisplayName(c.name)])], filters.pov);
+  $("matchCount").textContent = plural(matchingIndices().length, "scene");
+  $("clearFilters").hidden = !filtersActive();
+}
+
+function renderCharacters() {
+  const list = $("charList");
+  if (!board.characters.length) {
+    list.innerHTML = '<div class="hint" style="margin-bottom:6px">No characters yet.</div>';
+    return;
+  }
+  list.innerHTML = board.characters.map(c => `
+    <div class="char${isSelected("character", c.id) ? " selected" : ""}" data-id="${esc(c.id)}">
+      <div class="cname"><span>${esc(characterDisplayName(c.name))}</span><span class="x" title="Remove character">×</span></div>
+      <div class="hint">${plural(povSceneCount(c.id), "POV scene")}</div>
+      ${c.notes ? `<div class="cnotes">${esc(preview(c.notes))}</div>` : ""}
+    </div>`).join("");
+}
+
+function sceneCard(scene, index) {
+  const pov = findCharacter(scene.pov);
+  const classes = ["card"];
+  if (isSelected("scene", scene.id)) classes.push("selected");
+  if (dragFrom === index) classes.push("dragging");
+  return `
+    <div class="${classes.join(" ")}" draggable="true" data-index="${index}" data-id="${esc(scene.id)}">
+      <div class="num">${sceneNumber(index)}</div>
+      ${scene.title
+        ? `<div class="ttl">${esc(scene.title)}</div>`
+        : '<div class="ttl untitled">Untitled scene</div>'}
+      <div class="sum">${esc(preview(scene.summary || "No summary yet."))}</div>
+      <div class="badges">
+        <span class="badge status-${scene.status}">${esc(scene.status)}</span>
+        ${scene.act ? `<span class="badge act">${esc(scene.act)}</span>` : ""}
+        ${pov ? `<span class="badge pov">${esc(characterDisplayName(pov.name))}</span>` : ""}
+      </div>
+    </div>`;
+}
+
+function renderBoard() {
+  const host = $("board");
+  if (!board.scenes.length) {
+    host.innerHTML = '<div class="empty"><strong>No scenes yet</strong>Click “+ Scene” to pin your first index card.</div>';
+    return;
+  }
+  const indices = matchingIndices();
+  if (!indices.length) {
+    host.innerHTML = '<div class="empty"><strong>No matching scenes</strong>Clear the search or filters to show cards.</div>';
+    return;
+  }
+  host.innerHTML = `<div class="grid">${indices.map(i => sceneCard(board.scenes[i], i)).join("")}</div>`;
+}
+
+function renderInspector() {
+  const panel = $("inspector");
+  if (selected?.kind === "scene" && sceneIndex(selected.id) < 0) selected = null;
+  if (selected?.kind === "character" && characterIndex(selected.id) < 0) selected = null;
+  panel.hidden = !selected;
+  if (!selected) return;
+
+  $("sceneInspector").hidden = selected.kind !== "scene";
+  $("characterInspector").hidden = selected.kind !== "character";
+  if (selected.kind === "scene") renderSceneInspector();
+  else renderCharacterInspector();
+}
+
+function renderSceneInspector() {
+  const index = sceneIndex(selected.id);
+  const scene = board.scenes[index];
+  $("sNum").textContent = sceneNumber(index);
+  $("sHeading").textContent = scene.title || "Untitled";
+  syncValue($("sTitle"), scene.title);
+  syncValue($("sSum"), scene.summary);
+  syncOptions($("sStatus"), STATUSES.map(s => [s, s]), scene.status);
+  syncOptions($("sPov"),
+    [["", NONE_LABEL], ...board.characters.map(c => [c.id, characterDisplayName(c.name)])], scene.pov);
+  syncOptions($("sAct"), [["", NONE_LABEL], ...ACTS.map(a => [a, a])], scene.act);
+  $("sEarlier").disabled = index === 0;
+  $("sLater").disabled = index === board.scenes.length - 1;
+  if (focusSceneTitle) {
+    focusSceneTitle = false;
+    $("sTitle").focus();
+  }
+}
+
+function renderCharacterInspector() {
+  const index = characterIndex(selected.id);
+  const character = board.characters[index];
+  $("cHeading").textContent = characterDisplayName(character.name);
+  syncValue($("cName"), character.name);
+  syncValue($("cNotes"), character.notes);
+  $("cPovCount").textContent = `POV in ${plural(povSceneCount(character.id), "scene")}`;
+  $("cUp").disabled = index === 0;
+  $("cDown").disabled = index === board.characters.length - 1;
+}
+
+function renderStats() {
+  $("stats").hidden = !showStats;
+  if (!showStats) return;
+  const rows = [
+    ...STATUSES.map(s => [s, board.scenes.filter(sc => sc.status === s).length]),
+    ...ACTS.map(a => [a, board.scenes.filter(sc => sc.act === a).length]),
+  ];
+  $("statsBody").innerHTML =
+    rows.map(([label, count]) => `<tr><td>${esc(label)}</td><td>${count}</td></tr>`).join("") +
+    `<tr class="total"><td>Total</td><td>${board.scenes.length}</td></tr>`;
+}
+
+/* ---------- dialogs ---------- */
+
+function modalOpen() {
+  return modalStack.length > 0;
+}
+
+function openModal(dialog) {
+  modalStack.push(dialog);
+  drawModal();
+}
+
+function closeModal() {
+  modalStack.pop();
+  drawModal();
+}
+
+function dismissModal() {
+  const top = modalStack.at(-1);
+  if (!top) return;
+  closeModal();
+  top.onDismiss?.();
+}
+
+function drawModal() {
+  const host = $("modalHost");
+  const top = modalStack.at(-1);
+  host.replaceChildren();
+  host.hidden = !top;
+  if (!top) return;
+  const box = document.createElement("div");
+  box.className = "modal";
+  box.setAttribute("role", "dialog");
+  box.setAttribute("aria-modal", "true");
+  host.append(box);
+  top.draw(box);
+}
+
+function button(label, className, onClick) {
+  const b = document.createElement("button");
+  b.textContent = label;
+  if (className) b.className = className;
+  b.addEventListener("click", onClick);
+  return b;
+}
+
+function message(text) {
+  const p = document.createElement("p");
+  p.className = "message";
+  p.textContent = text;
+  return p;
+}
+
+function alertDialog(text) {
+  openModal({
+    draw(box) {
+      const ok = button("OK", "", closeModal);
+      box.append(message(text), ok);
+      ok.focus();
+    },
+  });
+}
+
+function confirmDialog(prompt, onAccept) {
+  openModal({
+    draw(box) {
+      const actions = document.createElement("div");
+      actions.className = "row";
+      const cancel = button("Cancel", "", closeModal);
+      actions.append(button("Delete", "danger", () => { closeModal(); onAccept(); }), cancel);
+      box.append(message(prompt), actions);
+      cancel.focus();
+    },
+  });
+}
+
+function settingsDialog() {
+  openModal({
+    draw(box) {
+      const heading = document.createElement("h2");
+      heading.textContent = "Settings";
+      const label = document.createElement("div");
+      label.className = "field-label";
+      label.textContent = "Color scheme";
+      const list = document.createElement("div");
+      list.className = "scheme-list";
+      list.setAttribute("role", "listbox");
+      list.setAttribute("aria-label", "Color scheme");
+      for (const scheme of COLOR_SCHEMES) {
+        const chosen = scheme.key === settings.colorScheme;
+        const option = button("", `scheme${chosen ? " selected" : ""}`, () => {
+          setColorScheme(scheme.key);
+          drawModal();
+          box.ownerDocument.querySelector(".scheme.selected")?.focus();
+        });
+        option.setAttribute("role", "option");
+        option.setAttribute("aria-selected", String(chosen));
+        option.innerHTML = `<span class="swatch">${[scheme.header, scheme.board, scheme.card, scheme.accent]
+          .map(fill => `<span style="background:${fill}"></span>`).join("")}</span>${esc(scheme.name)}`;
+        list.append(option);
+      }
+      const status = document.createElement("div");
+      status.className = "hint";
+      status.style.margin = "8px 0 12px";
+      status.textContent = settingsSaveError ?? "Saved in this browser's storage.";
+      if (settingsSaveError) status.style.color = "var(--danger)";
+      box.append(heading, label, list, status, button("Close", "", closeModal));
+    },
+  });
+}
+
+/* ---------- wiring ---------- */
+
+function withSelectedScene(fn) {
+  return e => {
+    if (selected?.kind !== "scene") return;
+    const scene = board.scenes[sceneIndex(selected.id)];
+    if (scene) { fn(scene, e.target.value); markDirty(); }
+  };
+}
+
+function withSelectedCharacter(fn) {
+  return e => {
+    if (selected?.kind !== "character") return;
+    const character = findCharacter(selected.id);
+    if (character) { fn(character, e.target.value); markDirty(); }
+  };
+}
+
+$("bookTitle").addEventListener("input", e => { board.title = e.target.value; markDirty(); });
+$("statsToggle").addEventListener("change", e => { showStats = e.target.checked; render(); });
+$("settingsBtn").addEventListener("click", settingsDialog);
+$("outlineBtn").addEventListener("click", exportOutline);
+$("exportBtn").addEventListener("click", exportBoard);
+$("importBtn").addEventListener("click", () => $("importFile").click());
+$("importFile").addEventListener("change", e => {
+  const [file] = e.target.files;
+  e.target.value = "";
+  if (file) importBoard(file);
+});
+$("resetBtn").addEventListener("click", confirmReset);
+$("undoBtn").addEventListener("click", undo);
+$("redoBtn").addEventListener("click", redo);
+$("addBtn").addEventListener("click", addScene);
+
+$("search").addEventListener("input", e => { filters.query = e.target.value; render(); });
+$("filterStatus").addEventListener("change", e => { filters.status = e.target.value; render(); });
+$("filterAct").addEventListener("change", e => { filters.act = e.target.value; render(); });
+$("filterPov").addEventListener("change", e => { filters.pov = e.target.value; render(); });
+$("clearFilters").addEventListener("click", () => {
+  Object.assign(filters, {query: "", status: "", act: "", pov: ""});
+  render();
+});
+
+$("charList").addEventListener("click", e => {
+  const card = e.target.closest(".char");
+  if (!card) return;
+  if (e.target.closest(".x")) deleteCharacter(card.dataset.id);
+  else { selected = {kind: "character", id: card.dataset.id}; render(); }
+});
+$("newChar").addEventListener("keydown", e => {
+  if (e.key !== "Enter") return;
+  e.preventDefault();
+  if (addCharacterToBoard(e.target.value)) {
+    e.target.value = "";
+    saveNow();
+  }
+});
+
+const boardHost = $("board");
+boardHost.addEventListener("click", e => {
+  const card = e.target.closest(".card");
+  if (card) { selected = {kind: "scene", id: card.dataset.id}; render(); }
+});
+boardHost.addEventListener("dragstart", e => {
+  const card = e.target.closest(".card");
+  if (!card) return;
+  dragFrom = Number(card.dataset.index);
+  card.classList.add("dragging");
+  e.dataTransfer.effectAllowed = "move";
+  e.dataTransfer.setData("text/plain", card.dataset.id);
+});
+boardHost.addEventListener("dragover", e => {
+  const card = e.target.closest(".card");
+  if (dragFrom === null || !card) return;
+  e.preventDefault();
+  const isOther = Number(card.dataset.index) !== dragFrom;
+  e.dataTransfer.dropEffect = "move";
+  for (const c of boardHost.querySelectorAll(".drop-target")) if (c !== card) c.classList.remove("drop-target");
+  card.classList.toggle("drop-target", isOther);
+});
+boardHost.addEventListener("drop", e => {
+  const card = e.target.closest(".card");
+  if (dragFrom === null || !card) return;
+  e.preventDefault();
+  const from = dragFrom;
+  const to = Number(card.dataset.index);
+  dragFrom = null;
+  if (from === to) { render(); return; }
+  moveScene(from, to);
+  saveNow();
+});
+boardHost.addEventListener("dragend", () => {
+  if (dragFrom === null) return;
+  dragFrom = null;
+  render();
+});
+
+$("sTitle").addEventListener("input", withSelectedScene((s, v) => { s.title = v; }));
+$("sSum").addEventListener("input", withSelectedScene((s, v) => { s.summary = v; }));
+$("sStatus").addEventListener("change", withSelectedScene((s, v) => { s.status = v; }));
+$("sPov").addEventListener("change", withSelectedScene((s, v) => { s.pov = v; }));
+$("sAct").addEventListener("change", withSelectedScene((s, v) => { s.act = v; }));
+$("sClose").addEventListener("click", closeInspector);
+$("sEarlier").addEventListener("click", () => shiftSelection(-1));
+$("sLater").addEventListener("click", () => shiftSelection(1));
+$("sDuplicate").addEventListener("click", duplicateSelectedScene);
+$("sDelete").addEventListener("click", () => { if (selected?.kind === "scene") confirmDeleteScene(selected.id); });
+
+$("cName").addEventListener("input", withSelectedCharacter((c, v) => { c.name = v; }));
+$("cNotes").addEventListener("input", withSelectedCharacter((c, v) => { c.notes = v; }));
+$("cClose").addEventListener("click", closeInspector);
+$("cUp").addEventListener("click", () => shiftSelection(-1));
+$("cDown").addEventListener("click", () => shiftSelection(1));
+$("cDelete").addEventListener("click", () => { if (selected?.kind === "character") deleteCharacter(selected.id); });
+
+$("modalHost").addEventListener("click", e => { if (e.target === e.currentTarget) dismissModal(); });
+
+$("addBtn").title = SHORTCUT_LABELS.newScene;
+$("undoBtn").title = SHORTCUT_LABELS.undo;
+$("redoBtn").title = SHORTCUT_LABELS.redo;
+$("sDuplicate").title = SHORTCUT_LABELS.duplicate;
+$("sEarlier").title = SHORTCUT_LABELS.earlier;
+$("sLater").title = SHORTCUT_LABELS.later;
+$("cUp").title = SHORTCUT_LABELS.up;
+$("cDown").title = SHORTCUT_LABELS.down;
+
+function isTextEntry(el) {
+  return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement
+    || el instanceof HTMLSelectElement || el?.isContentEditable;
+}
+
+// Undo, Escape and Delete mean something different inside a text field, so
+// those only act on the board when no field holds keyboard focus.
+document.addEventListener("keydown", e => {
+  if (modalOpen()) {
+    if (e.key === "Escape") { e.preventDefault(); dismissModal(); }
+    return;
+  }
+  const command = IS_MAC ? e.metaKey : e.ctrlKey;
+  const key = e.key.toLowerCase();
+  const plainCommand = command && !e.shiftKey && !e.altKey;
+
+  if (plainCommand && key === "n") { e.preventDefault(); addScene(); return; }
+  if (plainCommand && key === "f") { e.preventDefault(); $("search").focus(); $("search").select(); return; }
+  if (plainCommand && key === "d") { e.preventDefault(); duplicateSelectedScene(); return; }
+
+  if (isTextEntry(document.activeElement)) {
+    if (e.key === "Escape") document.activeElement.blur();
+    return;
+  }
+  if (command && !e.altKey && key === "z") {
     e.preventDefault();
-    const after=dragAt(card,e.clientY);
-    const dragging=document.querySelector(".card.dragging");
-    if(!dragging)return;
-    if(after===null)grid.appendChild(dragging);
-    else grid.insertBefore(dragging,after);
-  });
-  card.addEventListener("dragend",()=>{
-    card.classList.remove("dragging");dragId=null;commitReorder();
-  });
-}
-function dragAt(card,y){
-  const siblings=[...grid.children].filter(c=>c.classList.contains("card"));
-  let empty=null;
-  const before=siblings.filter(s=>{
-    const box=s.getBoundingClientRect();return y<box.top+box.height/2;
-  });
-  if(!before.length)empty=grid.lastElementChild;
-  else empty=before[before.length-1].nextElementSibling;
-  return empty;
-}
-function commitReorder(){
-  const order=[...grid.querySelectorAll(".card")].map(c=>c.dataset.id);
-  state.scenes.sort((a,b)=>order.indexOf(a.id)-order.indexOf(b.id));
-  save();
-}
+    if (e.shiftKey) redo(); else undo();
+    return;
+  }
+  const noModifiers = !command && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey;
+  if (e.altKey && !command && !e.shiftKey) {
+    if (e.key === "ArrowLeft" || e.key === "ArrowUp") { e.preventDefault(); shiftSelection(-1); }
+    if (e.key === "ArrowRight" || e.key === "ArrowDown") { e.preventDefault(); shiftSelection(1); }
+    return;
+  }
+  if (noModifiers && e.key === "Escape") { closeInspector(); return; }
+  if (noModifiers && (e.key === "Delete" || e.key === "Backspace") && selected?.kind === "scene") {
+    e.preventDefault();
+    confirmDeleteScene(selected.id);
+  }
+});
 
-function esc(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
+window.addEventListener("pagehide", () => { if (saveState.kind === "pending") saveNow(); });
 
-/* ---------- WIRE UP ---------- */
-document.getElementById("addBtn").onclick=newScene;
-document.getElementById("inspClose").onclick=()=>{selectedId=null;document.getElementById("inspector").classList.remove("open");};
-document.getElementById("delBtn").onclick=()=>{if(selectedId!==null&&confirm("Delete this scene?"))deleteScene(selectedId)};
-
-document.getElementById("sTitle").oninput=e=>{if(selectedId!==null)update(selectedId,"title",e.target.value)};
-document.getElementById("sSum").oninput=e=>{if(selectedId!==null)update(selectedId,"summary",e.target.value)};
-document.getElementById("sStatus").onchange=e=>{if(selectedId!==null)update(selectedId,"status",e.target.value)};
-document.getElementById("sPov").onchange=e=>{if(selectedId!==null)update(selectedId,"pov",e.target.value)};
-document.getElementById("sAct").onchange=e=>{if(selectedId!==null)update(selectedId,"act",e.target.value)};
-
-document.getElementById("bookTitle").oninput=e=>{state.title=e.target.value;scheduleSave();};
-document.getElementById("newChar").addEventListener("keydown",e=>{if(e.key==="Enter"){addChar();e.preventDefault()}});
-document.getElementById("exportBtn").onclick=exportData;
-document.getElementById("resetBtn").onclick=()=>{if(confirm("Delete ALL scenes and characters? This clears the page.")){state={title:"Untitled Novel",characters:[],scenes:[],next:0};selectedId=null;render();save();}};
-document.getElementById("importBtn").onclick=()=>document.getElementById("importFile").click();
-document.getElementById("importFile").onchange=e=>{if(e.target.files[0])importData(e.target.files[0]);e.target.value=""};
-
-document.getElementById("sAct").addEventListener("change",e=>{update(selectedId,"act",e.target.value)});
-
-render();save();
+applyTheme(schemeByKey(settings.colorScheme));
+render();
+const startupAlert = boardLoad.alert ?? settingsLoad.alert;
+if (startupAlert) alertDialog(startupAlert);
 </script>
 </body>
 </html>
-
