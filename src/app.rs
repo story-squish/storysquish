@@ -685,6 +685,25 @@ impl PlannerApp {
         }
     }
 
+    /// The next backup then starts a new gist, leaving the old one and its
+    /// history untouched on GitHub.
+    fn unlink_gist(&mut self) {
+        if matches!(
+            self.gist.in_flight,
+            Some((GistTask::AutoPush | GistTask::ManualPush, _))
+        ) {
+            self.gist.in_flight = None;
+            self.gist.pushed_board = None;
+        }
+        self.settings.set_gist_id(&self.path, None);
+        self.save_settings_reporting_errors();
+        self.gist.gist_id_draft.clear();
+        self.gist.gist_id_invalid = false;
+        self.gist.last_pushed_json = None;
+        self.gist.last_success = None;
+        self.gist.error = None;
+    }
+
     fn set_gist_auto_backup(&mut self, enabled: bool) {
         self.settings.gist_auto_backup = enabled;
         self.save_settings_reporting_errors();
@@ -2459,6 +2478,7 @@ impl PlannerApp {
             Confirm::Reset => {
                 self.board = Board::default();
                 self.selected = None;
+                self.unlink_gist();
             }
         }
         self.save_now();

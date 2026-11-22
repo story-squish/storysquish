@@ -609,6 +609,34 @@ fn pasting_a_gist_url_stores_its_id() {
 }
 
 #[test]
+fn reset_unlinks_the_boards_gist() {
+    let (mut harness, dir) = launch_connected(board_with_scenes(&["Opening"]));
+    open_settings(&mut harness);
+    gist_field(&harness).focus();
+    harness.run();
+    gist_field(&harness).type_text("aa5a315d61ae9438b18d");
+    harness.run();
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+
+    harness.get_by_label("Reset").click();
+    harness.run();
+    harness.get_by_label("Delete").click();
+    harness.run();
+
+    assert!(harness.state().board().is_empty());
+    assert_eq!(
+        harness
+            .state()
+            .settings()
+            .gist_id(harness.state().board_path()),
+        None
+    );
+    let saved = storysquish::settings::load(&dir.path().join("settings.json")).unwrap();
+    assert_eq!(saved.gist_id(&dir.path().join("board.json")), None);
+}
+
+#[test]
 fn text_that_is_not_a_gist_is_flagged_and_not_saved() {
     let (mut harness, _dir) = launch_connected(Board::default());
     open_settings(&mut harness);
