@@ -91,7 +91,7 @@ impl View {
 enum BoardFileAction {
     Open,
     Move,
-    RestoreBackup,
+    RecoverFromLocal,
 }
 
 #[derive(Clone, Copy)]
@@ -158,6 +158,12 @@ struct CloudPicker {
     error: Option<String>,
 }
 
+struct LocalRecovery {
+    backups: Vec<storage::LocalBackup>,
+    selected: Option<usize>,
+    error: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct DraggedScene(usize);
 
@@ -213,6 +219,7 @@ pub struct PlannerApp {
     settings: Settings,
     settings_path: PathBuf,
     settings_dialog: Option<SettingsDialog>,
+    local_recovery: Option<LocalRecovery>,
     gist: GistState,
     colors: Palette,
 }
@@ -280,6 +287,7 @@ impl PlannerApp {
             settings,
             settings_path,
             settings_dialog: None,
+            local_recovery: None,
             gist,
             colors,
         };
@@ -484,6 +492,7 @@ impl PlannerApp {
         self.alert.is_some()
             || self.scene_to_delete.is_some()
             || self.settings_dialog.is_some()
+            || self.local_recovery.is_some()
             || self.gist.restore.is_some()
             || self.gist.cloud.is_some()
     }
@@ -598,13 +607,125 @@ impl PlannerApp {
         }
     }
 
-    fn restore_backup(&mut self) {
+    fn open_local_recovery(&mut self) {
+        match storage::list_backups(&self.path) {
+            Ok(backups) => {
+                let selected = backups.iter().position(|b| b.scene_count.is_some());
+                self.local_recovery = Some(LocalRecovery {
+                    backups,
+                    selected,
+                    error: None,
+                });
+            }
+            Err(e) => self.alert = Some(format!("Could not list backups: {e:#}")),
+        }
+    }
+
+    fn recover_from_local(&mut self, path: &Path) {
+        match storage::load(path) {
+            Ok(board) => {
+                self.replace_board(board);
+                self.local_recovery = None;
+            }
+            Err(e) => {
+                if let Some(recovery) = &mut self.local_recovery {
+                    recovery.error = Some(format!("Could not recover: {e:#}"));
+                }
+            }
+        }
+    }
+
+    /// Starts in the backups directory, or beside the board before its first
+    /// backup, since a missing start directory sends the picker elsewhere.
+    fn browse_for_local_backup(&mut self) {
+        let backups = storage::backups_dir(&self.path);
+        let start = if backups.is_dir() {
+            backups
+        } else {
+            self.path.parent().unwrap_or(Path::new(".")).to_path_buf()
+        };
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("JSON", &["json"])
-            .set_directory(storage::backups_dir(&self.path))
+            .set_directory(start)
             .pick_file()
         {
-            self.replace_board_from(&path);
+            self.recover_from_local(&path);
+        }
+    }
+
+    fn local_recovery_dialog(&mut self, ctx: &egui::Context) {
+        let Some(recovery) = &mut self.local_recovery else {
+            return;
+        };
+        let colors = self.colors;
+        let backups_dir = storage::backups_dir(&self.path);
+        let now = SystemTime::now();
+        let mut recover = false;
+        let mut browse = false;
+        let mut close = false;
+        let modal = egui::Modal::new(egui::Id::unique("local_recovery")).show(ctx, |ui| {
+            ui.set_width(380.0);
+            ui.heading("Recover from local");
+            ui.label(
+                RichText::new(backups_dir.display().to_string())
+                    .small()
+                    .color(colors.muted),
+            );
+            if let Some(error) = &recovery.error {
+                ui.label(RichText::new(error).small().color(colors.danger));
+            }
+            if recovery.backups.is_empty() {
+                ui.label("This board has no backups yet.");
+            } else {
+                ui.label(
+                    RichText::new("Newest first. Recovering can be undone.")
+                        .small()
+                        .color(colors.muted),
+                );
+                egui::ScrollArea::vertical()
+                    .max_height(320.0)
+                    .show(ui, |ui| {
+                        for (index, backup) in recovery.backups.iter().enumerate() {
+                            let row = ui
+                                .add_enabled(
+                                    backup.scene_count.is_some(),
+                                    egui::Button::selectable(
+                                        recovery.selected == Some(index),
+                                        local_backup_label(backup, now),
+                                    ),
+                                )
+                                .on_hover_text(backup.path.display().to_string());
+                            if row.clicked() {
+                                recovery.selected = Some(index);
+                            }
+                            if row.double_clicked() {
+                                recover = true;
+                            }
+                        }
+                    });
+            }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                recover |= ui
+                    .add_enabled(recovery.selected.is_some(), egui::Button::new("Recover"))
+                    .clicked();
+                browse = ui
+                    .button("Browse…")
+                    .on_hover_text("Recover from any board file")
+                    .clicked();
+                close = ui.button("Cancel").clicked();
+            });
+        });
+        let chosen = recovery
+            .selected
+            .filter(|_| recover)
+            .map(|index| recovery.backups[index].path.clone());
+        if let Some(path) = chosen {
+            self.recover_from_local(&path);
+        } else if browse {
+            self.browse_for_local_backup();
+        } else if close || modal.should_close() {
+            self.local_recovery = None;
         }
     }
 
@@ -2674,7 +2795,7 @@ impl PlannerApp {
         }
     }
 
-    /// True when "Restore backup…" was clicked.
+    /// True when "Recover from local…" was clicked.
     fn backups_section(&self, ui: &mut Ui) -> bool {
         let backups_label = field_label(ui, self.colors, "Backups");
         ui.label(
@@ -2685,7 +2806,7 @@ impl PlannerApp {
             .small(),
         )
         .labelled_by(backups_label);
-        ui.button("Restore backup…").clicked()
+        ui.button("Recover from local…").clicked()
     }
 
     fn settings_dialog(&mut self, ctx: &egui::Context) {
@@ -2751,7 +2872,7 @@ impl PlannerApp {
             );
 
             if self.backups_section(ui) {
-                board_file_action = Some(BoardFileAction::RestoreBackup);
+                board_file_action = Some(BoardFileAction::RecoverFromLocal);
             }
 
             gist_action = self.gist_section(ui);
@@ -2780,13 +2901,16 @@ impl PlannerApp {
         match board_file_action {
             Some(BoardFileAction::Open) => self.open_board_file(),
             Some(BoardFileAction::Move) => self.move_board_file(),
-            Some(BoardFileAction::RestoreBackup) => self.restore_backup(),
+            Some(BoardFileAction::RecoverFromLocal) => self.open_local_recovery(),
             None => {}
         }
         if let Some(action) = gist_action {
             self.handle_gist_action(action);
         }
-        if (close || modal.should_close()) && self.gist.restore.is_none() {
+        if (close || modal.should_close())
+            && self.gist.restore.is_none()
+            && self.local_recovery.is_none()
+        {
             self.settings_dialog = None;
         }
     }
@@ -2912,6 +3036,7 @@ impl eframe::App for PlannerApp {
             });
 
         self.settings_dialog(&ctx);
+        self.local_recovery_dialog(&ctx);
         self.gist_restore_dialog(&ctx);
         self.cloud_open_dialog(&ctx);
         self.dialogs(&ctx);
@@ -3407,11 +3532,37 @@ fn window_title(novel_title: &str, save_failed: bool) -> String {
 }
 
 fn elapsed_description(elapsed: Duration) -> String {
+    const HOUR: u64 = 60;
+    const TWO_HOURS: u64 = 2 * HOUR;
+    const DAY: u64 = 24 * HOUR;
+    const TWO_DAYS: u64 = 2 * DAY;
     match elapsed.as_secs() / 60 {
         0 => "just now".to_owned(),
         1 => "a minute ago".to_owned(),
-        minutes => format!("{minutes} minutes ago"),
+        minutes @ 2..HOUR => format!("{minutes} minutes ago"),
+        HOUR..TWO_HOURS => "an hour ago".to_owned(),
+        minutes @ TWO_HOURS..DAY => format!("{} hours ago", minutes / HOUR),
+        DAY..TWO_DAYS => "a day ago".to_owned(),
+        minutes => format!("{} days ago", minutes / DAY),
     }
+}
+
+fn local_backup_label(backup: &storage::LocalBackup, now: SystemTime) -> String {
+    let age = backup.saved_at.map_or_else(
+        || "unknown time".to_owned(),
+        |at| elapsed_description(now.duration_since(at).unwrap_or_default()),
+    );
+    let contents = match backup.scene_count {
+        None => "unreadable".to_owned(),
+        Some(1) => "1 scene".to_owned(),
+        Some(count) => format!("{count} scenes"),
+    };
+    let origin = match backup.tag.as_str() {
+        "" => String::new(),
+        "conflict" => "  ·  changed elsewhere".to_owned(),
+        tag => format!("  ·  {tag}"),
+    };
+    format!("{age}  ·  {contents}{origin}")
 }
 
 /// GitHub's `2026-11-22T09:41:07Z` as `2026-11-22 09:41 UTC`.
@@ -3555,6 +3706,33 @@ mod tests {
         assert_eq!(
             elapsed_description(Duration::from_mins(12)),
             "12 minutes ago"
+        );
+        assert_eq!(elapsed_description(Duration::from_mins(75)), "an hour ago");
+        assert_eq!(elapsed_description(Duration::from_hours(5)), "5 hours ago");
+        assert_eq!(elapsed_description(Duration::from_hours(30)), "a day ago");
+        assert_eq!(elapsed_description(Duration::from_hours(80)), "3 days ago");
+    }
+
+    #[test]
+    fn local_backup_label_names_age_contents_and_origin() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_hours(100);
+        let backup = |hours_ago, tag: &str, scene_count| storage::LocalBackup {
+            path: PathBuf::from("board-backups/x.json"),
+            saved_at: Some(now - Duration::from_hours(hours_ago)),
+            tag: tag.to_owned(),
+            scene_count,
+        };
+        assert_eq!(
+            local_backup_label(&backup(2, "", Some(1)), now),
+            "2 hours ago  ·  1 scene"
+        );
+        assert_eq!(
+            local_backup_label(&backup(5, "conflict", Some(3)), now),
+            "5 hours ago  ·  3 scenes  ·  changed elsewhere"
+        );
+        assert_eq!(
+            local_backup_label(&backup(0, "", None), now),
+            "just now  ·  unreadable"
         );
     }
 

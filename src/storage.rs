@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 
@@ -79,6 +79,69 @@ fn backup_file_name(board_path: &Path, at: SystemTime, tag: &str) -> String {
     };
     // Zero-padded so lexical order is chronological order when pruning.
     format!("{stem}-{millis:015}{suffix}.json")
+}
+
+pub struct LocalBackup {
+    pub path: PathBuf,
+    pub saved_at: Option<SystemTime>,
+    /// Empty for a routine backup; `conflict` for a copy kept because the
+    /// file was changed elsewhere while there were unsaved edits.
+    pub tag: String,
+    /// `None` when the file is not a readable board.
+    pub scene_count: Option<usize>,
+}
+
+/// Newest first. A board that has never been backed up has no backups
+/// directory, which is not an error.
+pub fn list_backups(board_path: &Path) -> Result<Vec<LocalBackup>> {
+    let dir = backups_dir(board_path);
+    if !dir.try_exists()? {
+        return Ok(Vec::new());
+    }
+    let stem = board_stem(board_path);
+    let mut backups: Vec<LocalBackup> = fs::read_dir(&dir)
+        .with_context(|| format!("listing {}", dir.display()))?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+        .map(|path| describe_backup(&stem, path))
+        .collect();
+    backups.sort_by(|a, b| {
+        b.saved_at
+            .cmp(&a.saved_at)
+            .then_with(|| b.path.cmp(&a.path))
+    });
+    Ok(backups)
+}
+
+fn describe_backup(board_stem: &str, path: PathBuf) -> LocalBackup {
+    let (saved_at, tag) = match parse_backup_name(board_stem, &path) {
+        Some((at, tag)) => (Some(at), tag),
+        None => (modified_time(&path), String::new()),
+    };
+    let scene_count = load(&path).ok().map(|board| board.scenes.len());
+    LocalBackup {
+        path,
+        saved_at,
+        tag,
+        scene_count,
+    }
+}
+
+/// Inverse of `backup_file_name`.
+fn parse_backup_name(board_stem: &str, path: &Path) -> Option<(SystemTime, String)> {
+    let name = path.file_stem()?.to_str()?;
+    let rest = name.strip_prefix(board_stem)?.strip_prefix('-')?;
+    let (digits, suffix) = rest.split_at_checked(15)?;
+    if !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let tag = match suffix {
+        "" => "",
+        suffix => suffix.strip_prefix('-')?,
+    };
+    let at = UNIX_EPOCH + Duration::from_millis(digits.parse().ok()?);
+    Some((at, tag.to_owned()))
 }
 
 fn prune_backups(dir: &Path, keep: usize) -> Result<()> {
@@ -209,6 +272,79 @@ mod tests {
         left.sort();
         assert_eq!(left.len(), 2);
         assert_eq!(left[0], "novel-000000000000003.json");
+    }
+
+    #[test]
+    fn board_without_backups_lists_none() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            list_backups(&dir.path().join("novel.json"))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn backups_list_newest_first_with_tags_and_unreadable_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("my-novel.json");
+        let backups = backups_dir(&path);
+        let at = |millis| UNIX_EPOCH + Duration::from_millis(millis);
+        let mut board = Board::default();
+        board.add_scene();
+        save(&backups.join(backup_file_name(&path, at(1), "")), &board).unwrap();
+        board.add_scene();
+        save(
+            &backups.join(backup_file_name(&path, at(2), "conflict")),
+            &board,
+        )
+        .unwrap();
+        fs::write(
+            backups.join(backup_file_name(&path, at(3), "")),
+            "{not json",
+        )
+        .unwrap();
+        fs::write(backups.join("notes.txt"), "ignored").unwrap();
+
+        let listed = list_backups(&path).unwrap();
+
+        let summary: Vec<_> = listed
+            .iter()
+            .map(|b| (b.saved_at, b.tag.as_str(), b.scene_count))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                (Some(at(3)), "", None),
+                (Some(at(2)), "conflict", Some(2)),
+                (Some(at(1)), "", Some(1)),
+            ]
+        );
+    }
+
+    #[test]
+    fn backup_names_parse_back_to_time_and_tag() {
+        let path = Path::new("novel.json");
+        let at = UNIX_EPOCH + Duration::from_millis(42);
+        assert_eq!(
+            parse_backup_name(
+                "novel",
+                &path.with_file_name(backup_file_name(path, at, "x"))
+            ),
+            Some((at, "x".to_owned()))
+        );
+        assert_eq!(
+            parse_backup_name("novel", Path::new("other-000000000000042.json")),
+            None
+        );
+        assert_eq!(
+            parse_backup_name("novel", Path::new("novel-00000000000004x.json")),
+            None
+        );
+        assert_eq!(
+            parse_backup_name("novel", Path::new("novel-000000000000042x.json")),
+            None
+        );
     }
 
     #[test]
