@@ -54,12 +54,6 @@ enum SaveState {
     Failed(String),
 }
 
-#[derive(Debug, Clone)]
-enum Confirm {
-    DeleteScene(Id),
-    Reset,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Selection {
     Scene(Id),
@@ -199,7 +193,7 @@ pub struct PlannerApp {
     last_backup: Option<Instant>,
     save_state: SaveState,
     focus_seen: FocusSnapshot,
-    confirm: Option<Confirm>,
+    scene_to_delete: Option<Id>,
     alert: Option<String>,
     focus_scene_title: bool,
     focus_search: bool,
@@ -266,7 +260,7 @@ impl PlannerApp {
             last_backup: None,
             save_state: SaveState::Saved,
             focus_seen: FocusSnapshot::default(),
-            confirm: None,
+            scene_to_delete: None,
             alert: startup_alert.or(settings_alert).or(token_alert),
             focus_scene_title: false,
             focus_search: false,
@@ -475,7 +469,7 @@ impl PlannerApp {
 
     fn dialog_open(&self) -> bool {
         self.alert.is_some()
-            || self.confirm.is_some()
+            || self.scene_to_delete.is_some()
             || self.settings_dialog.is_some()
             || self.gist.restore.is_some()
             || self.gist.cloud.is_some()
@@ -519,7 +513,7 @@ impl PlannerApp {
         if (pressed(&DELETE_SCENE) || pressed(&DELETE_SCENE_BACKSPACE))
             && let Some(Selection::Scene(id)) = self.selected.clone()
         {
-            self.confirm = Some(Confirm::DeleteScene(id));
+            self.scene_to_delete = Some(id);
         }
     }
 
@@ -647,6 +641,19 @@ impl PlannerApp {
                 false
             }
         }
+    }
+
+    /// The current board stays in its own file, with its gist link, and
+    /// becomes the previous board.
+    fn new_board_file(&mut self) {
+        let board = Board::default();
+        let dir = self.path.parent().unwrap_or(Path::new("."));
+        let path = storage::unused_board_path(dir, &board);
+        if let Err(e) = storage::save(&path, &board) {
+            self.alert = Some(format!("Could not create a new board: {e:#}"));
+            return;
+        }
+        self.switch_to_board_file(path);
     }
 
     fn open_cloud_picker(&mut self) {
@@ -814,25 +821,6 @@ impl PlannerApp {
         }
     }
 
-    /// The next backup then starts a new gist, leaving the old one and its
-    /// history untouched on GitHub.
-    fn unlink_gist(&mut self) {
-        if matches!(
-            self.gist.in_flight,
-            Some((GistTask::AutoPush | GistTask::ManualPush, _))
-        ) {
-            self.gist.in_flight = None;
-            self.gist.pushed_board = None;
-        }
-        self.settings.set_gist_id(&self.path, None);
-        self.save_settings_reporting_errors();
-        self.gist.gist_id_draft.clear();
-        self.gist.gist_id_invalid = false;
-        self.gist.last_pushed_json = None;
-        self.gist.last_success = None;
-        self.gist.error = None;
-    }
-
     fn set_gist_auto_backup(&mut self, enabled: bool) {
         self.settings.gist_auto_backup = enabled;
         self.save_settings_reporting_errors();
@@ -857,7 +845,7 @@ impl PlannerApp {
         }
     }
 
-    /// An empty board is almost always a reset or a fresh start, and pushing
+    /// An empty board is almost always a fresh start, and pushing
     /// it would make the gist's latest revision a blank board.
     fn back_up_to_gist(&mut self, task: GistTask) {
         if self.board.is_empty() {
@@ -1461,8 +1449,12 @@ impl PlannerApp {
                 {
                     self.undo();
                 }
-                if ui.button("Reset").clicked() {
-                    self.confirm = Some(Confirm::Reset);
+                if ui
+                    .button("New")
+                    .on_hover_text("Start an empty board in a new file")
+                    .clicked()
+                {
+                    self.new_board_file();
                 }
                 if ui.button("Import").clicked() {
                     self.import();
@@ -1759,7 +1751,7 @@ impl PlannerApp {
         self.save_now();
     }
 
-    /// Deleting, resetting or undoing can remove the character a filter
+    /// Deleting, switching boards or undoing can remove the character a filter
     /// points at, which would otherwise hide every card.
     fn drop_stale_pov_filter(&mut self) {
         if let Some(id) = &self.filter_pov
@@ -2163,7 +2155,7 @@ impl PlannerApp {
                 )
                 .clicked()
             {
-                self.confirm = Some(Confirm::DeleteScene(id));
+                self.scene_to_delete = Some(id);
             }
         });
 
@@ -2744,19 +2736,13 @@ impl PlannerApp {
             }
         }
 
-        let Some(confirm) = self.confirm.clone() else {
+        let Some(id) = self.scene_to_delete.clone() else {
             return;
-        };
-        let prompt = match confirm {
-            Confirm::DeleteScene(_) => "Delete this scene?",
-            Confirm::Reset => {
-                "Delete ALL scenes, characters and locations? You can still undo this."
-            }
         };
         let mut decision = None;
         let modal = egui::Modal::new(egui::Id::unique("confirm")).show(ctx, |ui| {
             ui.set_max_width(380.0);
-            ui.label(prompt);
+            ui.label("Delete this scene?");
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if ui
@@ -2779,22 +2765,13 @@ impl PlannerApp {
         let Some(accepted) = decision else {
             return;
         };
-        self.confirm = None;
+        self.scene_to_delete = None;
         if !accepted {
             return;
         }
-        match confirm {
-            Confirm::DeleteScene(id) => {
-                self.board.delete_scene(&id);
-                if self.selected == Some(Selection::Scene(id.clone())) {
-                    self.selected = None;
-                }
-            }
-            Confirm::Reset => {
-                self.board = Board::default();
-                self.selected = None;
-                self.unlink_gist();
-            }
+        self.board.delete_scene(&id);
+        if self.selected == Some(Selection::Scene(id)) {
+            self.selected = None;
         }
         self.save_now();
     }
