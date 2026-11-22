@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use eframe::egui::{
-    self, Align, Color32, ComboBox, CornerRadius, Frame, Grid, Key, KeyboardShortcut, Layout,
-    Margin, Modifiers, RichText, Sense, Stroke, TextEdit, Ui, Vec2,
+    self, Align, Color32, ComboBox, CornerRadius, Frame, Grid, Key, KeyboardShortcut, Label,
+    Layout, Margin, Modifiers, RichText, Sense, Stroke, TextEdit, Ui, Vec2,
 };
 
 use crate::gist::{self, CloudBoard, Revision};
@@ -1843,7 +1843,6 @@ impl PlannerApp {
                 ("from", &relationship.from)
             };
             ui.horizontal(|ui| {
-                ui.label(format!("{arrow} {}", name_of(other)));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui
                         .small_button("×")
@@ -1861,15 +1860,18 @@ impl PlannerApp {
                     {
                         to_reverse = Some(relationship.id.clone());
                     }
-                    edited |= ui
-                        .add(
-                            TextEdit::singleline(&mut relationship.label)
-                                .hint_text("how they relate")
-                                .desired_width(ui.available_width()),
-                        )
-                        .changed();
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        ui.add(Label::new(format!("{arrow} {}", name_of(other))).truncate());
+                    });
                 });
             });
+            edited |= ui
+                .add(
+                    TextEdit::singleline(&mut relationship.label)
+                        .hint_text("how they relate")
+                        .desired_width(f32::INFINITY),
+                )
+                .changed();
         }
         if !any {
             ui.label(RichText::new("None yet.").small().color(colors.muted));
@@ -1926,24 +1928,25 @@ impl PlannerApp {
                 })
                 .response
                 .labelled_by(label);
-            ui.add(
-                TextEdit::singleline(&mut self.new_relationship_label)
-                    .hint_text("mentor, sister…")
-                    .desired_width(ui.available_width() - 50.0),
-            );
-            if ui
-                .add_enabled(
-                    self.new_relationship_target.is_some(),
-                    egui::Button::new("Add"),
-                )
-                .clicked()
-                && let Some(target) = self.new_relationship_target.take()
-            {
-                added = self
-                    .board
-                    .add_relationship(id, &target, &self.new_relationship_label);
-                self.new_relationship_label.clear();
-            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let add_clicked = ui
+                    .add_enabled(
+                        self.new_relationship_target.is_some(),
+                        egui::Button::new("Add"),
+                    )
+                    .clicked();
+                ui.add(
+                    TextEdit::singleline(&mut self.new_relationship_label)
+                        .hint_text("mentor, sister…")
+                        .desired_width(f32::INFINITY),
+                );
+                if add_clicked && let Some(target) = self.new_relationship_target.take() {
+                    added = self
+                        .board
+                        .add_relationship(id, &target, &self.new_relationship_label);
+                    self.new_relationship_label.clear();
+                }
+            });
         });
         added
     }
