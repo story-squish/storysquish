@@ -130,6 +130,13 @@ struct GistState {
     /// The board file a push in flight belongs to, which can differ from the
     /// open one if another board was opened meanwhile.
     pushed_board: Option<PathBuf>,
+    /// Pushes for boards switched away from before their edits reached
+    /// the gist; they go ahead of cloud requests so a reopen fetches them.
+    queued_pushes: Vec<(PathBuf, gist::Job)>,
+    /// Boards edited here whose latest version is not yet in their gist,
+    /// so the cloud copy must not overwrite them.
+    unpushed_boards: HashSet<PathBuf>,
+    api_base: Option<String>,
     error: Option<String>,
     restore: Option<GistRestore>,
     cloud: Option<CloudPicker>,
@@ -280,6 +287,12 @@ impl PlannerApp {
             app.save_settings_reporting_errors();
         }
         app
+    }
+
+    #[must_use]
+    pub fn with_gist_api_base(mut self, api_base: &str) -> Self {
+        self.gist.api_base = Some(api_base.to_owned());
+        self
     }
 
     pub fn board(&self) -> &Board {
@@ -627,6 +640,7 @@ impl PlannerApp {
         match storage::load(&path) {
             Ok(board) => {
                 self.flush_pending_edits();
+                self.queue_gist_push_of_open_board();
                 self.history = History::new(board.clone(), UNDO_LIMIT);
                 self.board = board;
                 self.selected = None;
@@ -664,7 +678,7 @@ impl PlannerApp {
     }
 
     fn start_queued_cloud_job(&mut self) {
-        if self.gist.in_flight.is_some() {
+        if self.gist.in_flight.is_some() || !self.gist.queued_pushes.is_empty() {
             return;
         }
         let Some((task, job)) = self.gist.cloud.as_mut().and_then(|c| c.queued.take()) else {
@@ -686,7 +700,13 @@ impl PlannerApp {
                 .map(Path::to_owned)
         };
         if let Some(path) = linked {
+            let local_is_newer = self.gist.unpushed_boards.contains(&path);
             if path != self.path && !self.switch_to_board_file(path) {
+                return;
+            }
+            if local_is_newer {
+                self.gist.board_changed = true;
+                self.gist.push_now = true;
                 return;
             }
             self.replace_board(board);
@@ -826,15 +846,65 @@ impl PlannerApp {
         self.save_settings_reporting_errors();
     }
 
+    fn gist_client(&self) -> Option<gist::Client> {
+        let token = self.gist.token.as_deref()?;
+        Some(match &self.gist.api_base {
+            Some(api_base) => gist::Client::with_api_base(token, api_base),
+            None => gist::Client::new(token),
+        })
+    }
+
     fn start_gist_job(&mut self, task: GistTask, job: gist::Job) {
-        let Some(token) = &self.gist.token else {
-            return;
-        };
         if self.gist.in_flight.is_some() {
             return;
         }
-        let pending = gist::Pending::start(gist::Client::new(token), job);
+        let Some(client) = self.gist_client() else {
+            return;
+        };
+        let pending = gist::Pending::start(client, job);
         self.gist.in_flight = Some((task, pending));
+    }
+
+    /// `None` when the gist already holds the board as it is now.
+    fn unpushed_job(&self) -> Option<gist::Job> {
+        let job = self.push_job();
+        match &job {
+            gist::Job::Push { board_json, .. }
+                if self.gist.last_pushed_json.as_ref() == Some(board_json) =>
+            {
+                None
+            }
+            _ => Some(job),
+        }
+    }
+
+    fn queue_gist_push_of_open_board(&mut self) {
+        if !self.settings.gist_auto_backup
+            || self.gist.token.is_none()
+            || !self.gist.board_changed
+            || self.board.is_empty()
+        {
+            return;
+        }
+        let Some(job) = self.unpushed_job() else {
+            return;
+        };
+        self.gist
+            .queued_pushes
+            .retain(|(board, _)| *board != self.path);
+        self.gist.queued_pushes.push((self.path.clone(), job));
+        self.gist.unpushed_boards.insert(self.path.clone());
+    }
+
+    fn start_queued_push(&mut self) {
+        if self.gist.in_flight.is_some() || self.gist.queued_pushes.is_empty() {
+            return;
+        }
+        let (board, job) = self.gist.queued_pushes.remove(0);
+        self.start_gist_job(GistTask::AutoPush, job);
+        if self.gist.in_flight.is_some() {
+            self.gist.pushed_board = Some(board);
+        }
     }
 
     fn push_job(&self) -> gist::Job {
@@ -879,9 +949,7 @@ impl PlannerApp {
             ctx.request_repaint_after(wait);
             return;
         }
-        if let gist::Job::Push { board_json, .. } = self.push_job()
-            && self.gist.last_pushed_json.as_ref() == Some(&board_json)
-        {
+        if self.unpushed_job().is_none() {
             self.gist.board_changed = false;
             return;
         }
@@ -928,6 +996,14 @@ impl PlannerApp {
                     .take()
                     .unwrap_or_else(|| self.path.clone());
                 self.gist.error = None;
+                if !self
+                    .gist
+                    .queued_pushes
+                    .iter()
+                    .any(|(queued, _)| *queued == board)
+                {
+                    self.gist.unpushed_boards.remove(&board);
+                }
                 if board == self.path {
                     self.gist.last_pushed_json = Some(board_json);
                     self.gist.last_success = Some(Instant::now());
@@ -1017,21 +1093,15 @@ impl PlannerApp {
             let reply = pending.wait();
             self.handle_gist_reply(task, reply);
         }
-        if !self.settings.gist_auto_backup || !self.gist.board_changed || self.board.is_empty() {
-            return;
-        }
-        let Some(token) = &self.gist.token else {
+        self.queue_gist_push_of_open_board();
+        let Some(client) = self.gist_client() else {
             return;
         };
-        let job = self.push_job();
-        if let gist::Job::Push { board_json, .. } = &job
-            && self.gist.last_pushed_json.as_ref() == Some(board_json)
-        {
-            return;
+        for (board, job) in std::mem::take(&mut self.gist.queued_pushes) {
+            let reply = gist::run(&client, job);
+            self.gist.pushed_board = Some(board);
+            self.handle_gist_reply(GistTask::ManualPush, reply);
         }
-        let reply = gist::run(&gist::Client::new(token), job);
-        self.gist.pushed_board = Some(self.path.clone());
-        self.handle_gist_reply(GistTask::ManualPush, reply);
     }
 
     fn gist_section(&mut self, ui: &mut Ui) -> Option<GistAction> {
@@ -2782,6 +2852,7 @@ impl eframe::App for PlannerApp {
         self.flush_if_due(ctx);
         self.reload_if_changed_elsewhere(ctx);
         self.receive_gist_reply(ctx);
+        self.start_queued_push();
         self.start_queued_cloud_job();
         self.back_up_to_gist_if_due(ctx);
     }
