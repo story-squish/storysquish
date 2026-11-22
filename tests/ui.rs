@@ -196,6 +196,47 @@ fn character_gender_is_editable_from_inspector() {
     assert_eq!(harness.state().board().characters[0].gender, "Woman");
 }
 
+fn type_character_notes(harness: &mut Harness<'_, PlannerApp>, notes: &str) {
+    harness.get_by_label("Ada").click();
+    harness.run();
+    labelled_text_input(harness, "NOTES").focus();
+    harness.run();
+    labelled_text_input(harness, "NOTES").type_text(notes);
+    harness.run();
+}
+
+fn saved_character_notes(dir: &TempDir) -> String {
+    storysquish::storage::load(&dir.path().join("board.json"))
+        .map_or_default(|board| board.characters[0].notes.clone())
+}
+
+#[test]
+fn leaving_a_text_field_saves_its_edits() {
+    let mut board = Board::default();
+    board.add_character("Ada");
+    let Fixture { mut harness, dir } = launch(board);
+
+    type_character_notes(&mut harness, "Wants revenge");
+    labelled_text_input(&harness, "GENDER").focus();
+    harness.run();
+
+    assert_eq!(saved_character_notes(&dir), "Wants revenge");
+}
+
+#[test]
+fn switching_away_from_the_window_saves_pending_edits() {
+    let mut board = Board::default();
+    board.add_character("Ada");
+    let Fixture { mut harness, dir } = launch(board);
+
+    type_character_notes(&mut harness, "Wants revenge");
+    harness.input_mut().focused = false;
+    harness.event(egui::Event::WindowFocused(false));
+    harness.run();
+
+    assert_eq!(saved_character_notes(&dir), "Wants revenge");
+}
+
 #[test]
 fn searching_does_not_mark_board_unsaved() {
     let Fixture { mut harness, .. } = launch(board_with_scenes(&["Rain", "Sun"]));

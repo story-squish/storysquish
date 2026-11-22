@@ -160,6 +160,30 @@ struct CloudPicker {
 #[derive(Debug, Clone, Copy)]
 struct DraggedScene(usize);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FocusSnapshot {
+    widget: Option<egui::Id>,
+    window: bool,
+}
+
+impl Default for FocusSnapshot {
+    fn default() -> Self {
+        Self {
+            widget: None,
+            window: true,
+        }
+    }
+}
+
+impl FocusSnapshot {
+    fn of(ctx: &egui::Context) -> Self {
+        Self {
+            widget: ctx.memory(egui::Memory::focused),
+            window: ctx.input(|i| i.focused),
+        }
+    }
+}
+
 pub struct PlannerApp {
     board: Board,
     history: History<Board>,
@@ -174,6 +198,7 @@ pub struct PlannerApp {
     last_disk_check: Instant,
     last_backup: Option<Instant>,
     save_state: SaveState,
+    focus_seen: FocusSnapshot,
     confirm: Option<Confirm>,
     alert: Option<String>,
     focus_scene_title: bool,
@@ -240,6 +265,7 @@ impl PlannerApp {
             last_disk_check: Instant::now(),
             last_backup: None,
             save_state: SaveState::Saved,
+            focus_seen: FocusSnapshot::default(),
             confirm: None,
             alert: startup_alert.or(settings_alert).or(token_alert),
             focus_scene_title: false,
@@ -413,6 +439,14 @@ impl PlannerApp {
             } else {
                 ctx.request_repaint_after(SAVE_DEBOUNCE.saturating_sub(elapsed));
             }
+        }
+    }
+
+    fn flush_on_focus_change(&mut self, ctx: &egui::Context) {
+        let focus = FocusSnapshot::of(ctx);
+        if focus != self.focus_seen {
+            self.focus_seen = focus;
+            self.flush_pending_edits();
         }
     }
 
@@ -1377,9 +1411,6 @@ impl PlannerApp {
             if title.changed() {
                 self.gist.title_changed = true;
                 self.mark_dirty();
-            }
-            if title.lost_focus() {
-                self.flush_pending_edits();
             }
 
             ui.checkbox(
@@ -2827,6 +2858,7 @@ impl eframe::App for PlannerApp {
         self.gist_restore_dialog(&ctx);
         self.cloud_open_dialog(&ctx);
         self.dialogs(&ctx);
+        self.flush_on_focus_change(&ctx);
         self.sync_window_title(&ctx);
     }
 
