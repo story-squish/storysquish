@@ -17,9 +17,12 @@ fn main() -> Result<()> {
     let (board, board_alert) = load_board(&path);
     let startup_alert = board_alert.or(migration_alert);
 
+    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png"))
+        .context("decoding the app icon")?;
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("StorySquish")
+            .with_icon(icon)
             .with_inner_size([1200.0, 780.0])
             .with_min_inner_size([720.0, 480.0]),
         ..Default::default()
