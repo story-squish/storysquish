@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/icon.png" alt="StorySquish logo" width="160"></p>
+
 # StorySquish
 
 A desktop scene board for planning and drafting novels. Lay out scenes as
