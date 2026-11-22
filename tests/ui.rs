@@ -181,6 +181,22 @@ fn character_notes_are_editable_from_inspector() {
 }
 
 #[test]
+fn character_gender_is_editable_from_inspector() {
+    let mut board = Board::default();
+    board.add_character("Ada");
+    let Fixture { mut harness, .. } = launch(board);
+
+    harness.get_by_label("Ada").click();
+    harness.run();
+    labelled_text_input(&harness, "GENDER").focus();
+    harness.run();
+    labelled_text_input(&harness, "GENDER").type_text("Woman");
+    harness.run();
+
+    assert_eq!(harness.state().board().characters[0].gender, "Woman");
+}
+
+#[test]
 fn searching_does_not_mark_board_unsaved() {
     let Fixture { mut harness, .. } = launch(board_with_scenes(&["Rain", "Sun"]));
 

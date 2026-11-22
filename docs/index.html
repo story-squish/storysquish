@@ -279,6 +279,8 @@
       <input id="cName">
       <label class="field-label" for="cRole">Role</label>
       <input id="cRole" placeholder="Protagonist, mentor, antagonist…">
+      <label class="field-label" for="cGender">Gender</label>
+      <input id="cGender" placeholder="Woman, man, nonbinary…">
       <label class="field-label" for="cGoal">Goal</label>
       <textarea id="cGoal" rows="2" placeholder="What they want, and what stands in the way."></textarea>
       <label class="field-label" for="cNotes">Notes</label>
@@ -470,6 +472,7 @@ function parseCharacter(raw, index) {
     id: requiredTextField(raw.id, `${what} id`),
     name: requiredTextField(raw.name, `${what} name`),
     role: textField(raw.role, `${what} role`),
+    gender: textField(raw.gender, `${what} gender`),
     goal: textField(raw.goal, `${what} goal`),
     notes: textField(raw.notes, `${what} notes`),
   };
@@ -597,7 +600,7 @@ function moveScene(from, to) {
 function addCharacterToBoard(name) {
   const trimmed = name.trim();
   if (!trimmed) return false;
-  board.characters.push({id: generateId(), name: trimmed, role: "", goal: "", notes: ""});
+  board.characters.push({id: generateId(), name: trimmed, role: "", gender: "", goal: "", notes: ""});
   return true;
 }
 
@@ -726,7 +729,7 @@ function toMarkdown(b) {
     out += "## Characters\n\n";
     for (const character of b.characters) {
       out += `### ${character.name.trim()}\n\n`;
-      for (const [field, value] of [["Role", character.role], ["Goal", character.goal]]) {
+      for (const [field, value] of [["Role", character.role], ["Gender", character.gender], ["Goal", character.goal]]) {
         if (value.trim()) out += `**${field}:** ${value.trim()}\n\n`;
       }
       const outgoing = b.relationships.filter(r => r.from === character.id);
@@ -1641,6 +1644,7 @@ function renderCharacterInspector() {
   $("cHeading").textContent = characterDisplayName(character.name);
   syncValue($("cName"), character.name);
   syncValue($("cRole"), character.role);
+  syncValue($("cGender"), character.gender);
   syncValue($("cGoal"), character.goal);
   syncValue($("cNotes"), character.notes);
   $("cPovCount").textContent = `POV in ${plural(povSceneCount(character.id), "scene")}`;
@@ -2376,6 +2380,7 @@ $("sDelete").addEventListener("click", () => { if (selected?.kind === "scene") c
 
 $("cName").addEventListener("input", withSelectedCharacter((c, v) => { c.name = v; }));
 $("cRole").addEventListener("input", withSelectedCharacter((c, v) => { c.role = v; }));
+$("cGender").addEventListener("input", withSelectedCharacter((c, v) => { c.gender = v; }));
 $("cGoal").addEventListener("input", withSelectedCharacter((c, v) => { c.goal = v; }));
 $("cNotes").addEventListener("input", withSelectedCharacter((c, v) => { c.notes = v; }));
 $("relTarget").addEventListener("change", render);
