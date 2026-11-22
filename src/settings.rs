@@ -7,10 +7,14 @@ use serde::{Deserialize, Serialize};
 use crate::theme::ColorScheme;
 use crate::{APP_NAME, storage};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Settings {
     pub color_scheme: ColorScheme,
+    /// Where the board lives when no path is given on the command line,
+    /// e.g. a folder synced by iCloud Drive, Dropbox or Syncthing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub board_path: Option<PathBuf>,
 }
 
 /// `~/.config/storysquish/settings.json` on every platform, honouring
@@ -64,6 +68,7 @@ mod tests {
         let path = dir.path().join("storysquish/settings.json");
         let settings = Settings {
             color_scheme: ColorScheme::ForestNight,
+            board_path: Some(dir.path().join("Dropbox/novel.json")),
         };
         save(&path, &settings).unwrap();
         assert!(

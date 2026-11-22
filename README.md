@@ -1,13 +1,15 @@
 # StorySquish
 
-A desktop scene board for planning novels. Lay out scenes as cards, track
-their status, act and point-of-view character, and keep character notes
-alongside. Built in Rust with [egui/eframe](https://github.com/emilk/egui).
+A desktop scene board for planning and drafting novels. Lay out scenes as
+cards, track their status, act, point-of-view character, location and story
+day, write each scene's prose, and keep characters, relationships and
+locations alongside. Built in Rust with [egui/eframe](https://github.com/emilk/egui).
 
 A browser version lives in [`docs/index.html`](docs/index.html) and is
 published at <https://story-squish.github.io/storysquish/>. It stores its board
 in the browser's `localStorage` and uses the same JSON format, so boards move
-between the two through Export and Import.
+between the two through Export and Import. It does not yet have prose,
+locations, story days or relationships, and drops them on import.
 
 ## Quick start
 
@@ -27,14 +29,23 @@ sudo apt-get install libxcb-render0-dev libxcb-shape0-dev \
 ## Features
 
 - Scene cards with title, summary, status (Outline, Draft, Revision, Final,
-  Archived), act (I–III) and POV character
-- Character list with notes
-- Reorder scenes by drag or keyboard, characters by keyboard or ↑/↓ buttons
-- Search plus filters by status, act and POV
+  Archived), act (I–III), POV character, location and story day
+- **Write** view: a prose editor per scene with previous/next navigation and
+  scene and manuscript word counts
+- **Timeline** view: scenes in story-day order, so flashbacks and parallel
+  threads show up next to their place in the story's chronology
+- **Relationships** view: a graph of directed, labelled relationships between
+  characters (added in the character inspector)
+- Characters with role, goal and notes; locations with notes
+- Reorder scenes by drag or keyboard, characters and locations by keyboard or
+  buttons
+- Search (including prose) plus filters by status, act and POV
 - Undo/redo across all board edits
-- Autosave after every change
-- Import/export the board as JSON, export an outline as Markdown
-  (archived scenes are left out; the rest keep their board numbers)
+- Autosave after every change, rolling backups, and pick-up of changes synced
+  in from other devices (see [Files](#files))
+- Import/export the board as JSON; export an outline or the manuscript as
+  Markdown (archived scenes are left out; outline scenes keep their board
+  numbers)
 - Ten color schemes, light and dark
 
 ## Keyboard shortcuts
@@ -48,7 +59,7 @@ sudo apt-get install libxcb-render0-dev libxcb-shape0-dev \
 | `Cmd+F`                      | Focus search                   |
 | `Cmd+Z` / `Cmd+Shift+Z`      | Undo / redo                    |
 | `Alt+←` / `Alt+→`            | Move selected scene            |
-| `Alt+↑` / `Alt+↓`            | Move selected character        |
+| `Alt+↑` / `Alt+↓`            | Move selected character or location |
 | `Delete` / `Backspace`       | Delete selected scene          |
 | `Esc`                        | Close inspector                |
 
@@ -59,7 +70,8 @@ has focus, so they keep their usual meaning while typing.
 
 | What     | Location                                                        |
 | -------- | --------------------------------------------------------------- |
-| Board    | `board.json` in the platform data dir (below), or the path given on the command line |
+| Board    | The path given on the command line, else the one chosen in Settings, else `board.json` in the platform data dir (below) |
+| Backups  | `<board>-backups/` next to the board file, e.g. `board-backups/` |
 | Settings | `$XDG_CONFIG_HOME/storysquish/settings.json`, falling back to `~/.config/storysquish/settings.json` on every platform |
 
 Platform data dir:
@@ -69,7 +81,18 @@ Platform data dir:
 - Windows: `%APPDATA%\storysquish\data\`
 
 Writes go through a temp file and rename, so a crash never leaves a
-half-written board. If the board can't be parsed at startup, it is moved to
+half-written board. Before the first save of a session, and every 30 minutes
+of editing after that, the board file is copied into the backups directory;
+the newest 30 copies are kept. **Settings → Restore backup…** loads one
+(undoably).
+
+To use a board on several computers, use **Settings → Move…** to put it in a
+folder synced by iCloud Drive, Dropbox, OneDrive or Syncthing, and
+**Settings → Open…** to pick it on the other machines; the choice is
+remembered. The app checks the file every two seconds and reloads it when it
+changed elsewhere and there are no unsaved edits (the reload can be undone).
+If it changed while there were unsaved edits, the local version is saved and
+the other one is kept as a `-conflict` backup. If the board can't be parsed at startup, it is moved to
 `board.json.corrupt` and the app starts with an empty board instead of
 overwriting it on the next autosave.
 
@@ -94,11 +117,11 @@ drive the app headlessly with `egui_kittest`.
 
 | Module                                   | Responsibility                                   |
 | ---------------------------------------- | ------------------------------------------------ |
-| [`model`](src/model.rs)                  | Board, scenes, characters; JSON schema           |
+| [`model`](src/model.rs)                  | Board, scenes, characters, locations, relationships; JSON schema |
 | [`app`](src/app.rs)                      | egui UI, shortcuts, dialogs                      |
 | [`history`](src/history.rs)              | Snapshot-based undo/redo                         |
-| [`storage`](src/storage.rs)              | Board load/save, atomic writes, export names     |
-| [`settings`](src/settings.rs)            | Color scheme persistence                         |
-| [`outline`](src/outline.rs)              | Markdown outline export                          |
+| [`storage`](src/storage.rs)              | Board load/save, atomic writes, backups, export names |
+| [`settings`](src/settings.rs)            | Color scheme and board location persistence      |
+| [`outline`](src/outline.rs)              | Markdown outline and manuscript export           |
 | [`theme`](src/theme.rs)                  | Color schemes and palettes                       |
 | [`migration`](src/migration.rs)          | Move data from pre-rename directories            |

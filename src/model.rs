@@ -67,7 +67,29 @@ pub struct Character {
     pub id: Id,
     pub name: String,
     #[serde(default)]
+    pub role: String,
+    #[serde(default)]
+    pub goal: String,
+    #[serde(default)]
     pub notes: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Location {
+    pub id: Id,
+    pub name: String,
+    #[serde(default)]
+    pub notes: String,
+}
+
+/// Directed, so "Ada → Bo: mentor" and "Bo → Ada: rival" can differ.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Relationship {
+    pub id: Id,
+    pub from: Id,
+    pub to: Id,
+    #[serde(default)]
+    pub label: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,6 +105,13 @@ pub struct Scene {
     pub pov: Option<Id>,
     #[serde(default, with = "empty_string_as_none")]
     pub act: Option<Act>,
+    #[serde(default, with = "empty_string_as_none")]
+    pub location: Option<Id>,
+    /// In-story chronology, independent of the scene's place on the board.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub day: Option<i32>,
+    #[serde(default)]
+    pub text: String,
 }
 
 impl Scene {
@@ -94,7 +123,14 @@ impl Scene {
             status: Status::default(),
             pov: None,
             act: None,
+            location: None,
+            day: None,
+            text: String::new(),
         }
+    }
+
+    pub fn word_count(&self) -> usize {
+        self.text.split_whitespace().count()
     }
 }
 
@@ -107,6 +143,10 @@ pub struct Board {
     #[serde(default)]
     pub characters: Vec<Character>,
     pub scenes: Vec<Scene>,
+    #[serde(default)]
+    pub locations: Vec<Location>,
+    #[serde(default)]
+    pub relationships: Vec<Relationship>,
 }
 
 impl Default for Board {
@@ -115,6 +155,8 @@ impl Default for Board {
             title: "Untitled Novel".to_owned(),
             characters: Vec::new(),
             scenes: Vec::new(),
+            locations: Vec::new(),
+            relationships: Vec::new(),
         }
     }
 }
@@ -190,6 +232,8 @@ impl Board {
         self.characters.push(Character {
             id: Id::generate(),
             name: name.to_owned(),
+            role: String::new(),
+            goal: String::new(),
             notes: String::new(),
         });
         true
@@ -197,11 +241,107 @@ impl Board {
 
     pub fn delete_character(&mut self, id: &Id) {
         self.characters.retain(|c| &c.id != id);
+        self.relationships.retain(|r| &r.from != id && &r.to != id);
         for scene in &mut self.scenes {
             if scene.pov.as_ref() == Some(id) {
                 scene.pov = None;
             }
         }
+    }
+
+    /// Returns `false` when the trimmed name is empty.
+    pub fn add_location(&mut self, name: &str) -> bool {
+        let name = name.trim();
+        if name.is_empty() {
+            return false;
+        }
+        self.locations.push(Location {
+            id: Id::generate(),
+            name: name.to_owned(),
+            notes: String::new(),
+        });
+        true
+    }
+
+    pub fn delete_location(&mut self, id: &Id) {
+        self.locations.retain(|l| &l.id != id);
+        for scene in &mut self.scenes {
+            if scene.location.as_ref() == Some(id) {
+                scene.location = None;
+            }
+        }
+    }
+
+    pub fn location(&self, id: &Id) -> Option<&Location> {
+        self.locations.iter().find(|l| &l.id == id)
+    }
+
+    pub fn location_mut(&mut self, id: &Id) -> Option<&mut Location> {
+        self.locations.iter_mut().find(|l| &l.id == id)
+    }
+
+    pub fn location_index(&self, id: &Id) -> Option<usize> {
+        self.locations.iter().position(|l| &l.id == id)
+    }
+
+    /// Moves a location one slot up (`-1`) or down (`1`); returns `false`
+    /// at either end of the list.
+    pub fn shift_location(&mut self, id: &Id, offset: isize) -> bool {
+        shift_by(&mut self.locations, |l| &l.id == id, offset)
+    }
+
+    pub fn location_scene_count(&self, id: &Id) -> usize {
+        self.scenes
+            .iter()
+            .filter(|s| s.location.as_ref() == Some(id))
+            .count()
+    }
+
+    /// Returns `false` for self-links and unknown characters.
+    pub fn add_relationship(&mut self, from: &Id, to: &Id, label: &str) -> bool {
+        if from == to || self.character(from).is_none() || self.character(to).is_none() {
+            return false;
+        }
+        self.relationships.push(Relationship {
+            id: Id::generate(),
+            from: from.clone(),
+            to: to.clone(),
+            label: label.trim().to_owned(),
+        });
+        true
+    }
+
+    pub fn delete_relationship(&mut self, id: &Id) {
+        self.relationships.retain(|r| &r.id != id);
+    }
+
+    pub fn relationships_of<'a>(&'a self, id: &'a Id) -> impl Iterator<Item = &'a Relationship> {
+        self.relationships
+            .iter()
+            .filter(move |r| &r.from == id || &r.to == id)
+    }
+
+    /// Words of prose across every scene that is not archived.
+    pub fn manuscript_word_count(&self) -> usize {
+        self.scenes
+            .iter()
+            .filter(|s| s.status != Status::Archived)
+            .map(Scene::word_count)
+            .sum()
+    }
+
+    /// Indices of dated, non-archived scenes in story order; scenes on the
+    /// same day keep their board order.
+    pub fn chronological_indices(&self) -> Vec<usize> {
+        let mut dated: Vec<(i32, usize)> = self
+            .scenes
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.status != Status::Archived)
+            .filter_map(|(i, s)| s.day.map(|day| (day, i)))
+            .collect();
+        dated.sort_unstable();
+        dated.into_iter().map(|(_, i)| i).collect()
     }
 
     pub fn character(&self, id: &Id) -> Option<&Character> {
@@ -280,13 +420,20 @@ impl Board {
                         .as_ref()
                         .and_then(|id| self.character(id))
                         .map_or("", |c| c.name.as_str());
+                    let location_name = scene
+                        .location
+                        .as_ref()
+                        .and_then(|id| self.location(id))
+                        .map_or("", |l| l.name.as_str());
                     let haystack = format!(
-                        "{} {} {} {} {}",
+                        "{} {} {} {} {} {} {}",
                         scene.title,
                         scene.summary,
                         scene.status,
                         scene.act.map_or_else(String::new, |a| a.to_string()),
                         pov_name,
+                        location_name,
+                        scene.text,
                     )
                     .to_lowercase();
                     if !haystack.contains(&needle) {
@@ -387,6 +534,84 @@ mod tests {
     #[test]
     fn rejects_file_without_scenes() {
         assert!(serde_json::from_str::<Board>(r#"{"title":"x"}"#).is_err());
+    }
+
+    #[test]
+    fn html_export_without_new_fields_gets_empty_defaults() {
+        let board: Board = serde_json::from_str(HTML_EXPORT).unwrap();
+        assert_eq!(board.locations, vec![]);
+        assert_eq!(board.relationships, vec![]);
+        assert_eq!(board.scenes[0].location, None);
+        assert_eq!(board.scenes[0].day, None);
+        assert_eq!(board.scenes[0].text, "");
+        assert_eq!(board.characters[0].role, "");
+        let json = serde_json::to_string(&board).unwrap();
+        assert!(!json.contains("\"day\""));
+    }
+
+    #[test]
+    fn deleting_location_clears_scene_location() {
+        let mut board = Board::default();
+        assert!(board.add_location(" Harbor "));
+        assert!(!board.add_location("  "));
+        let harbor = board.locations[0].id.clone();
+        assert_eq!(board.locations[0].name, "Harbor");
+        let scene = board.add_scene();
+        board.scene_mut(&scene).unwrap().location = Some(harbor.clone());
+        assert_eq!(board.location_scene_count(&harbor), 1);
+        assert_eq!(board.matching_indices("harb", None, None, None), vec![0]);
+
+        board.delete_location(&harbor);
+        assert_eq!(board.locations, vec![]);
+        assert_eq!(board.scenes[0].location, None);
+    }
+
+    #[test]
+    fn relationships_reject_self_links_and_die_with_their_characters() {
+        let mut board = Board::default();
+        board.add_character("Ada");
+        board.add_character("Bo");
+        board.add_character("Cy");
+        let [ada, bo, cy] = [0, 1, 2].map(|i| board.characters[i].id.clone());
+
+        assert!(!board.add_relationship(&ada, &ada, "self"));
+        assert!(!board.add_relationship(&ada, &Id("missing".into()), "x"));
+        assert!(board.add_relationship(&ada, &bo, " mentor "));
+        assert!(board.add_relationship(&cy, &bo, "rival"));
+        assert_eq!(board.relationships[0].label, "mentor");
+        assert_eq!(board.relationships_of(&bo).count(), 2);
+
+        board.delete_character(&ada);
+        assert_eq!(board.relationships_of(&bo).count(), 1);
+        let rival = board.relationships[0].id.clone();
+        board.delete_relationship(&rival);
+        assert_eq!(board.relationships, vec![]);
+    }
+
+    #[test]
+    fn manuscript_word_count_skips_archived_scenes() {
+        let mut board = Board::default();
+        let kept = board.add_scene();
+        board.scene_mut(&kept).unwrap().text = "It was  a dark\nnight.".into();
+        let cut = board.add_scene();
+        let scene = board.scene_mut(&cut).unwrap();
+        scene.text = "cut words here".into();
+        scene.status = Status::Archived;
+        assert_eq!(board.scenes[0].word_count(), 5);
+        assert_eq!(board.manuscript_word_count(), 5);
+        assert_eq!(board.matching_indices("dark", None, None, None), vec![0]);
+    }
+
+    #[test]
+    fn chronological_order_sorts_by_day_then_board_order() {
+        let mut board = Board::default();
+        let days = [Some(3), None, Some(1), Some(3), Some(-2)];
+        for day in days {
+            let id = board.add_scene();
+            board.scene_mut(&id).unwrap().day = day;
+        }
+        board.scenes[4].status = Status::Archived;
+        assert_eq!(board.chronological_indices(), vec![2, 0, 3]);
     }
 
     #[test]

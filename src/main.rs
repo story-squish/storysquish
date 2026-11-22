@@ -7,11 +7,13 @@ fn main() -> Result<()> {
     let migration_alert = migration::migrate_legacy_dirs()
         .err()
         .map(|err| format!("Could not carry over data from before the rename: {err:#}"));
-    let path = std::env::args_os()
-        .nth(1)
-        .map(PathBuf::from)
-        .map_or_else(storage::default_board_path, Ok)?;
     let settings_path = settings::default_settings_path()?;
+    let path = match std::env::args_os().nth(1) {
+        Some(arg) => PathBuf::from(arg),
+        None => {
+            configured_board_path(&settings_path).map_or_else(storage::default_board_path, Ok)?
+        }
+    };
     let (board, board_alert) = load_board(&path);
     let startup_alert = board_alert.or(migration_alert);
 
@@ -37,6 +39,12 @@ fn main() -> Result<()> {
     )
     .map_err(|e| anyhow::anyhow!("{e}"))
     .context("running the UI")
+}
+
+/// Unreadable settings are reported by the app itself, which then falls back
+/// to defaults, so here they just mean "no configured path".
+fn configured_board_path(settings_path: &Path) -> Option<PathBuf> {
+    settings::load(settings_path).ok()?.board_path
 }
 
 /// An unreadable board is moved aside rather than silently overwritten by the
