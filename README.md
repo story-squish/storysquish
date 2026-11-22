@@ -131,9 +131,10 @@ the `gist` scope) and click **Connect**.
 
 - **Back up now** pushes the board as `storysquish-board.json`. The first push
   creates a secret gist; later ones add revisions to it.
-- **Back up automatically** pushes at most every five minutes while the board
-  changes, and once more when you quit (the desktop app) or leave the page
-  (the web version).
+- **Back up automatically**, in the desktop app, pushes 5 seconds after you
+  stop editing, right away when you edit the title or move focus to another
+  field or window, and once more when you quit. The web version pushes at most
+  every five minutes while the board changes, and when you leave the page.
 - **Restore from gist…** lists the last 30 revisions; restoring can be undone.
 - In the desktop app each board file gets its own gist, so every novel keeps
   a separate history, and the restore list is headed by that gist's title.

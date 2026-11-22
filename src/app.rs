@@ -15,11 +15,11 @@ use crate::settings::{self, Settings};
 use crate::theme::{ColorScheme, Palette};
 use crate::{outline, storage};
 
-const SAVE_DEBOUNCE: Duration = Duration::from_millis(400);
+const SAVE_DEBOUNCE: Duration = Duration::from_secs(2);
 const DISK_POLL: Duration = Duration::from_secs(2);
 const BACKUP_INTERVAL: Duration = Duration::from_mins(30);
 const BACKUPS_KEPT: usize = 30;
-const GIST_BACKUP_INTERVAL: Duration = Duration::from_mins(5);
+const GIST_PUSH_DELAY: Duration = Duration::from_secs(5);
 const GIST_POLL: Duration = Duration::from_millis(100);
 const NODE_RADIUS: f32 = 26.0;
 /// Short of the midpoint, so the labels of A→B and B→A land apart.
@@ -127,10 +127,10 @@ struct GistState {
     gist_id_invalid: bool,
     in_flight: Option<(GistTask, gist::Pending)>,
     board_changed: bool,
-    /// The title names the gist in GitHub's list, so a rename is pushed
-    /// without waiting out the interval.
-    title_changed: bool,
-    last_attempt: Option<Instant>,
+    /// Set by a title edit or a focus change, which push without waiting
+    /// out `GIST_PUSH_DELAY`.
+    push_now: bool,
+    last_edit: Option<Instant>,
     last_success: Option<Instant>,
     last_pushed_json: Option<String>,
     /// The board file a push in flight belongs to, which can differ from the
@@ -339,6 +339,10 @@ impl PlannerApp {
 
     fn save_now(&mut self) {
         self.gist.board_changed = true;
+        self.gist.last_edit = Some(match self.save_state {
+            SaveState::Pending(edited_at) => edited_at,
+            _ => Instant::now(),
+        });
         self.history.commit(&self.board);
         if let Err(reason) = self.keep_copy_of_external_edit() {
             self.save_state = SaveState::Failed(reason);
@@ -428,6 +432,7 @@ impl PlannerApp {
             self.history.commit(&self.board);
             self.save_state = SaveState::Reloaded;
             self.gist.board_changed = true;
+            self.gist.last_edit = Some(Instant::now());
         }
     }
 
@@ -447,6 +452,10 @@ impl PlannerApp {
         if focus != self.focus_seen {
             self.focus_seen = focus;
             self.flush_pending_edits();
+            if self.gist.board_changed {
+                self.gist.push_now = true;
+                ctx.request_repaint();
+            }
         }
     }
 
@@ -735,7 +744,7 @@ impl PlannerApp {
         self.gist.last_pushed_json = None;
         self.gist.last_success = None;
         self.gist.board_changed = false;
-        self.gist.title_changed = false;
+        self.gist.push_now = false;
     }
 
     fn gist_id(&self) -> Option<String> {
@@ -854,9 +863,8 @@ impl PlannerApp {
         if self.board.is_empty() {
             return;
         }
-        self.gist.last_attempt = Some(Instant::now());
         self.gist.board_changed = false;
-        self.gist.title_changed = false;
+        self.gist.push_now = false;
         let job = self.push_job();
         self.start_gist_job(task, job);
         if self.gist.in_flight.is_some() {
@@ -864,10 +872,8 @@ impl PlannerApp {
         }
     }
 
-    /// Pushes at most once per interval and only after the board changed,
-    /// so a long writing session leaves a revision every few minutes rather
-    /// than one per keystroke. A title edit skips the interval but still
-    /// waits for the save debounce or for the field to lose focus.
+    /// Pushes once the board has gone unedited for `GIST_PUSH_DELAY`, so a
+    /// burst of typing leaves one revision rather than one per keystroke.
     fn back_up_to_gist_if_due(&mut self, ctx: &egui::Context) {
         if !self.settings.gist_auto_backup
             || self.gist.token.is_none()
@@ -879,8 +885,8 @@ impl PlannerApp {
             return;
         }
         if let Some(wait) = gist_push_wait(
-            self.gist.last_attempt.map(|at| at.elapsed()),
-            self.gist.title_changed,
+            self.gist.last_edit.map(|at| at.elapsed()),
+            self.gist.push_now,
         ) {
             ctx.request_repaint_after(wait);
             return;
@@ -1017,7 +1023,7 @@ impl PlannerApp {
     }
 
     /// Blocks shutdown on one last push so the gist ends the session with
-    /// the final state rather than one up to five minutes old.
+    /// the final state rather than one from before the last few edits.
     fn back_up_to_gist_before_exit(&mut self) {
         if let Some((task, pending)) = self.gist.in_flight.take() {
             let reply = pending.wait();
@@ -1111,7 +1117,10 @@ impl PlannerApp {
         let mut auto = self.settings.gist_auto_backup;
         if ui
             .checkbox(&mut auto, "Back up automatically")
-            .on_hover_text("At most every five minutes while you edit, and when you quit")
+            .on_hover_text(
+                "5 seconds after you stop editing, right away on a title edit or \
+                     focus change, and when you quit",
+            )
             .changed()
         {
             self.set_gist_auto_backup(auto);
@@ -1409,8 +1418,8 @@ impl PlannerApp {
                     .desired_width(360.0),
             );
             if title.changed() {
-                self.gist.title_changed = true;
-                self.mark_dirty();
+                self.gist.push_now = true;
+                self.save_now();
             }
 
             ui.checkbox(
@@ -3391,13 +3400,13 @@ fn preview(summary: &str) -> String {
     }
 }
 
-fn gist_push_wait(since_last_attempt: Option<Duration>, title_changed: bool) -> Option<Duration> {
-    if title_changed {
+fn gist_push_wait(since_last_edit: Option<Duration>, push_now: bool) -> Option<Duration> {
+    if push_now {
         return None;
     }
-    since_last_attempt
-        .filter(|&elapsed| elapsed < GIST_BACKUP_INTERVAL)
-        .map(|elapsed| GIST_BACKUP_INTERVAL.saturating_sub(elapsed))
+    since_last_edit
+        .filter(|&elapsed| elapsed < GIST_PUSH_DELAY)
+        .map(|elapsed| GIST_PUSH_DELAY.saturating_sub(elapsed))
 }
 
 fn boards_other_than<'a>(
@@ -3433,15 +3442,12 @@ mod tests {
     }
 
     #[test]
-    fn title_change_skips_the_gist_interval() {
-        let recent = Some(Duration::from_secs(10));
-        assert_eq!(
-            gist_push_wait(recent, false),
-            Some(Duration::from_secs(290))
-        );
+    fn gist_push_waits_for_a_pause_unless_pushed_now() {
+        let recent = Some(Duration::from_secs(1));
+        assert_eq!(gist_push_wait(recent, false), Some(Duration::from_secs(4)));
         assert_eq!(gist_push_wait(recent, true), None);
         assert_eq!(gist_push_wait(None, false), None);
-        assert_eq!(gist_push_wait(Some(GIST_BACKUP_INTERVAL), false), None);
+        assert_eq!(gist_push_wait(Some(GIST_PUSH_DELAY), false), None);
     }
 
     #[test]

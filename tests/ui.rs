@@ -238,6 +238,23 @@ fn switching_away_from_the_window_saves_pending_edits() {
 }
 
 #[test]
+fn editing_the_title_saves_without_waiting() {
+    let board = Board {
+        title: "Dune".to_owned(),
+        ..Board::default()
+    };
+    let Fixture { mut harness, dir } = launch(board);
+
+    harness.get_all_by_value("Dune").next().unwrap().focus();
+    harness.run();
+    harness.event(egui::Event::Text(" Messiah".to_owned()));
+    harness.run();
+
+    let saved = storysquish::storage::load(&dir.path().join("board.json")).unwrap();
+    assert_eq!(saved.title, "Dune Messiah");
+}
+
+#[test]
 fn searching_does_not_mark_board_unsaved() {
     let Fixture { mut harness, .. } = launch(board_with_scenes(&["Rain", "Sun"]));
 
