@@ -25,8 +25,16 @@ for a week.
 ```sh
 cargo run -r                      # open the default board
 cargo run -r -- path/to/board.json # open a specific board file
-make install                      # release build, stripped, copied to ~/.local/bin
+make install                      # release build, installed for the current OS
 ```
+
+`make install` puts the app where each OS expects it:
+
+- macOS: `/Applications/StorySquish.app` (override with `APP_DIR=~/Applications`).
+- Linux: `~/.local/bin/storysquish` plus a launcher entry in
+  `~/.local/share/applications` (override with `PREFIX=/usr/local`).
+
+`make uninstall` removes the same files.
 
 On Linux, eframe needs these system libraries:
 
