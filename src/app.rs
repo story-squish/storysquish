@@ -966,9 +966,6 @@ impl PlannerApp {
                 if matches!(task, GistTask::AutoPush | GistTask::ManualPush) {
                     self.gist.pushed_board = None;
                 }
-                if matches!(task, GistTask::AutoPush | GistTask::ManualPush) {
-                    self.gist.pushed_board = None;
-                }
             }
         }
     }
