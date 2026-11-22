@@ -673,3 +673,65 @@ fn empty_board_is_not_backed_up_to_gist() {
             .is_some()
     );
 }
+
+#[test]
+fn open_local_switches_back_to_the_previous_board() {
+    let dir = tempfile::tempdir().unwrap();
+    let settings_path = dir.path().join("settings.json");
+    let previous = dir.path().join("emma.json");
+    storysquish::storage::save(&previous, &board_with_scenes(&["Ball"])).unwrap();
+    let mut settings = storysquish::settings::Settings::default();
+    settings.previous_board_path = Some(previous.clone());
+    storysquish::settings::save(&settings_path, &settings).unwrap();
+    let current = dir.path().join("dune.json");
+    let open_path = current.clone();
+    let mut harness = Harness::builder()
+        .with_size(WINDOW)
+        .build_eframe(move |cc| {
+            PlannerApp::new(
+                cc,
+                board_with_scenes(&["Arrakis"]),
+                open_path,
+                settings_path,
+                None,
+            )
+        });
+    harness.run();
+
+    harness.get_by_label("Open").click();
+    harness.run();
+    harness.get_by_label("Local").hover();
+    harness.run();
+    harness.get_by_label("emma.json").click();
+    harness.run();
+
+    assert_eq!(harness.state().board_path(), previous);
+    assert_eq!(scene_titles(&harness), ["Ball"]);
+    assert_eq!(
+        harness.state().settings().previous_board_path.as_deref(),
+        Some(current.as_path())
+    );
+}
+
+#[test]
+fn open_cloud_needs_a_github_connection() {
+    let Fixture { mut harness, .. } = launch(Board::default());
+    harness.get_by_label("Open").click();
+    harness.run();
+    assert!(
+        harness
+            .get_by_label("Cloud…")
+            .accesskit_node()
+            .is_disabled()
+    );
+
+    let (mut harness, _dir) = launch_connected(Board::default());
+    harness.get_by_label("Open").click();
+    harness.run();
+    assert!(
+        !harness
+            .get_by_label("Cloud…")
+            .accesskit_node()
+            .is_disabled()
+    );
+}

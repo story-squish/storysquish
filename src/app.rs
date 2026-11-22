@@ -7,7 +7,7 @@ use eframe::egui::{
     Margin, Modifiers, RichText, Sense, Stroke, TextEdit, Ui, Vec2,
 };
 
-use crate::gist::{self, Revision};
+use crate::gist::{self, CloudBoard, Revision};
 use crate::history::History;
 use crate::model::{Act, Board, Character, Id, Location, Scene, Status};
 use crate::settings::{self, Settings};
@@ -114,6 +114,8 @@ enum GistTask {
     AutoPush,
     ListRevisions,
     Fetch,
+    ListCloudBoards,
+    OpenCloudBoard,
 }
 
 #[derive(Default)]
@@ -132,12 +134,22 @@ struct GistState {
     pushed_board: Option<PathBuf>,
     error: Option<String>,
     restore: Option<GistRestore>,
+    cloud: Option<CloudPicker>,
 }
 
 #[derive(Default)]
 struct GistRestore {
     title: Option<String>,
     revisions: Option<Vec<Revision>>,
+    error: Option<String>,
+}
+
+/// The request waits in `queued` while another one, such as an automatic
+/// backup, still holds the single GitHub slot.
+#[derive(Default)]
+struct CloudPicker {
+    boards: Option<Vec<CloudBoard>>,
+    queued: Option<(GistTask, gist::Job)>,
     error: Option<String>,
 }
 
@@ -419,6 +431,7 @@ impl PlannerApp {
             || self.confirm.is_some()
             || self.settings_dialog.is_some()
             || self.gist.restore.is_some()
+            || self.gist.cloud.is_some()
     }
 
     /// Undo, Escape and Delete mean something different inside a text field,
@@ -554,23 +567,86 @@ impl PlannerApp {
     }
 
     fn open_board_file(&mut self) {
-        let Some(path) = rfd::FileDialog::new()
+        if let Some(path) = rfd::FileDialog::new()
             .add_filter("JSON", &["json"])
             .set_directory(self.path.parent().unwrap_or(Path::new(".")))
             .pick_file()
-        else {
-            return;
-        };
+        {
+            self.switch_to_board_file(path);
+        }
+    }
+
+    /// Returns whether the board at `path` is now the open one.
+    fn switch_to_board_file(&mut self, path: PathBuf) -> bool {
         match storage::load(&path) {
             Ok(board) => {
                 self.flush_pending_edits();
                 self.history = History::new(board.clone(), UNDO_LIMIT);
                 self.board = board;
                 self.selected = None;
+                if path != self.path {
+                    self.settings.previous_board_path = Some(self.path.clone());
+                }
                 self.use_board_path(path);
+                true
             }
-            Err(e) => self.alert = Some(format!("Could not open: {e:#}")),
+            Err(e) => {
+                self.alert = Some(format!("Could not open: {e:#}"));
+                false
+            }
         }
+    }
+
+    fn open_cloud_picker(&mut self) {
+        self.gist.cloud = Some(CloudPicker {
+            queued: Some((GistTask::ListCloudBoards, gist::Job::ListBoards)),
+            ..CloudPicker::default()
+        });
+    }
+
+    fn start_queued_cloud_job(&mut self) {
+        if self.gist.in_flight.is_some() {
+            return;
+        }
+        let Some((task, job)) = self.gist.cloud.as_mut().and_then(|c| c.queued.take()) else {
+            return;
+        };
+        self.start_gist_job(task, job);
+    }
+
+    /// A gist already linked to a local file reopens that file, with the
+    /// cloud version applied as an undoable change; otherwise the board
+    /// gets a new file beside the current one.
+    fn open_cloud_board(&mut self, gist_id: String, board: Board) {
+        let linked = if self.gist_id().as_deref() == Some(gist_id.as_str()) {
+            Some(self.path.clone())
+        } else {
+            self.settings
+                .boards_linked_to(&gist_id)
+                .find(|path| path.exists())
+                .map(Path::to_owned)
+        };
+        if let Some(path) = linked {
+            if path != self.path && !self.switch_to_board_file(path) {
+                return;
+            }
+            self.replace_board(board);
+        } else {
+            let dir = self.path.parent().unwrap_or(Path::new("."));
+            let path = storage::unused_board_path(dir, &board);
+            if let Err(e) = storage::save(&path, &board) {
+                self.alert = Some(format!("Could not save the cloud board: {e:#}"));
+                return;
+            }
+            self.settings.set_gist_id(&path, Some(gist_id));
+            if !self.switch_to_board_file(path) {
+                return;
+            }
+        }
+        if let gist::Job::Push { board_json, .. } = self.push_job() {
+            self.gist.last_pushed_json = Some(board_json);
+        }
+        self.gist.board_changed = false;
     }
 
     fn move_board_file(&mut self) {
@@ -840,6 +916,35 @@ impl PlannerApp {
                     }
                 }
             },
+            gist::Reply::Boards(boards) => {
+                if let Some(cloud) = &mut self.gist.cloud {
+                    cloud.boards = Some(boards);
+                }
+            }
+            gist::Reply::FetchedLatest {
+                gist_id,
+                board_json,
+            } => {
+                if self.gist.cloud.is_none() {
+                    return;
+                }
+                match serde_json::from_str::<Board>(&board_json) {
+                    Ok(board) => {
+                        self.gist.cloud = None;
+                        self.open_cloud_board(gist_id, board);
+                    }
+                    Err(e) => {
+                        if let Some(cloud) = &mut self.gist.cloud {
+                            cloud.error = Some(format!("That gist is not a valid board: {e}"));
+                        }
+                    }
+                }
+            }
+            gist::Reply::Failed(reason) if is_cloud_task(task) => {
+                if let Some(cloud) = &mut self.gist.cloud {
+                    cloud.error = Some(format!("Could not reach GitHub: {reason}"));
+                }
+            }
             gist::Reply::Failed(reason) => {
                 let message = format!("GitHub backup failed: {reason}");
                 match task {
@@ -856,6 +961,10 @@ impl PlannerApp {
                         self.gist.error = Some(message);
                     }
                     GistTask::AutoPush | GistTask::ManualPush => self.gist.error = Some(message),
+                    GistTask::ListCloudBoards | GistTask::OpenCloudBoard => {}
+                }
+                if matches!(task, GistTask::AutoPush | GistTask::ManualPush) {
+                    self.gist.pushed_board = None;
                 }
                 if matches!(task, GistTask::AutoPush | GistTask::ManualPush) {
                     self.gist.pushed_board = None;
@@ -1097,6 +1206,114 @@ impl PlannerApp {
         }
     }
 
+    fn cloud_open_dialog(&mut self, ctx: &egui::Context) {
+        let Some(cloud) = &self.gist.cloud else {
+            return;
+        };
+        let colors = self.colors;
+        let busy = cloud.queued.is_some()
+            || matches!(&self.gist.in_flight, Some((task, _)) if is_cloud_task(*task));
+        let open_gist_id = self.gist_id();
+        let mut chosen = None;
+        let mut close = false;
+        let modal = egui::Modal::new(egui::Id::unique("cloud_open")).show(ctx, |ui| {
+            ui.set_width(380.0);
+            ui.heading("Open from cloud");
+            if let Some(error) = &cloud.error {
+                ui.label(RichText::new(error).small().color(colors.danger));
+            }
+            match &cloud.boards {
+                None if busy => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Loading boards…");
+                    });
+                }
+                None => {}
+                Some(boards) if boards.is_empty() => {
+                    ui.label("No boards backed up to your gists yet.");
+                }
+                Some(boards) => {
+                    ui.label(
+                        RichText::new("Each opens at its latest version.")
+                            .small()
+                            .color(colors.muted),
+                    );
+                    egui::ScrollArea::vertical()
+                        .max_height(320.0)
+                        .show(ui, |ui| {
+                            for board in boards {
+                                let title = display_cloud_title(&board.title);
+                                let label = if open_gist_id.as_deref() == Some(&board.gist_id) {
+                                    format!("{title} (open)")
+                                } else {
+                                    title.to_owned()
+                                };
+                                if ui
+                                    .add_enabled(!busy, egui::Button::new(label))
+                                    .on_hover_text(format!(
+                                        "Last saved {}",
+                                        display_timestamp(&board.updated_at)
+                                    ))
+                                    .clicked()
+                                {
+                                    chosen = Some(board.gist_id.clone());
+                                }
+                            }
+                        });
+                    if busy {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label("Downloading…");
+                        });
+                    }
+                }
+            }
+            ui.add_space(8.0);
+            close = ui.button("Cancel").clicked();
+        });
+        if let Some(gist_id) = chosen
+            && let Some(cloud) = &mut self.gist.cloud
+        {
+            cloud.error = None;
+            cloud.queued = Some((GistTask::OpenCloudBoard, gist::Job::FetchLatest { gist_id }));
+            self.start_queued_cloud_job();
+        }
+        if close || modal.should_close() {
+            self.gist.cloud = None;
+        }
+    }
+
+    fn open_menu(&mut self, ui: &mut Ui) {
+        ui.menu_button("Local", |ui| {
+            match self.settings.previous_board_path.clone() {
+                Some(path) => {
+                    let name = path
+                        .file_name()
+                        .map_or_else(|| path.display().to_string(), |n| n.display().to_string());
+                    if ui
+                        .button(name)
+                        .on_hover_text(path.display().to_string())
+                        .clicked()
+                    {
+                        self.switch_to_board_file(path);
+                    }
+                }
+                None => {
+                    ui.label(RichText::new("No other board opened yet").color(self.colors.muted));
+                }
+            }
+        });
+        if ui
+            .add_enabled(self.gist.token.is_some(), egui::Button::new("Cloud…"))
+            .on_hover_text("Boards backed up to your GitHub gists")
+            .on_disabled_hover_text("Connect GitHub in Settings first")
+            .clicked()
+        {
+            self.open_cloud_picker();
+        }
+    }
+
     fn header(&mut self, ui: &mut Ui) {
         let colors = self.colors;
         ui.horizontal(|ui| {
@@ -1162,6 +1379,7 @@ impl PlannerApp {
                 if ui.button("Import").clicked() {
                     self.import();
                 }
+                ui.menu_button("Open", |ui| self.open_menu(ui));
                 ui.menu_button("Export", |ui| {
                     if ui.button("Board (JSON)").clicked() {
                         self.export();
@@ -2490,6 +2708,7 @@ impl eframe::App for PlannerApp {
         self.flush_if_due(ctx);
         self.reload_if_changed_elsewhere(ctx);
         self.receive_gist_reply(ctx);
+        self.start_queued_cloud_job();
         self.back_up_to_gist_if_due(ctx);
     }
 
@@ -2549,6 +2768,7 @@ impl eframe::App for PlannerApp {
 
         self.settings_dialog(&ctx);
         self.gist_restore_dialog(&ctx);
+        self.cloud_open_dialog(&ctx);
         self.dialogs(&ctx);
         self.sync_window_title(&ctx);
     }
@@ -3044,6 +3264,14 @@ fn display_timestamp(iso: &str) -> String {
         (Some(date), Some(time)) if iso.ends_with('Z') => format!("{date} {time} UTC"),
         _ => iso.to_owned(),
     }
+}
+
+fn is_cloud_task(task: GistTask) -> bool {
+    matches!(task, GistTask::ListCloudBoards | GistTask::OpenCloudBoard)
+}
+
+fn display_cloud_title(title: &str) -> &str {
+    if title.is_empty() { "Untitled" } else { title }
 }
 
 fn short_version(version: &str) -> &str {

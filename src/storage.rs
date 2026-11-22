@@ -116,6 +116,29 @@ pub fn export_file_name(board: &Board, extension: &str) -> String {
     )
 }
 
+/// A file in `dir` named after the board's title that does not exist yet.
+pub fn unused_board_path(dir: &Path, board: &Board) -> PathBuf {
+    let name = export_file_name(board, "json");
+    let stem: String = name
+        .trim_end_matches(".json")
+        .trim_start_matches('.')
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            c if c.is_control() => '_',
+            c => c,
+        })
+        .collect();
+    let stem = if stem.is_empty() { "novel" } else { &stem };
+    let mut path = dir.join(format!("{stem}.json"));
+    let mut number = 1;
+    while path.exists() {
+        number += 1;
+        path = dir.join(format!("{stem}_{number}.json"));
+    }
+    path
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,5 +219,29 @@ mod tests {
         assert_eq!(export_file_name(&board, "json"), "The_Long_Night.json");
         board.title.clear();
         assert_eq!(export_file_name(&board, "md"), "novel.md");
+    }
+
+    #[test]
+    fn unused_board_path_avoids_existing_files_and_separators() {
+        let dir = tempfile::tempdir().unwrap();
+        let board = Board {
+            title: "Dune / Messiah".into(),
+            ..Board::default()
+        };
+        let first = unused_board_path(dir.path(), &board);
+        assert_eq!(first, dir.path().join("Dune___Messiah.json"));
+        fs::write(&first, "{}").unwrap();
+        assert_eq!(
+            unused_board_path(dir.path(), &board),
+            dir.path().join("Dune___Messiah_2.json")
+        );
+        let hidden = Board {
+            title: "..".into(),
+            ..Board::default()
+        };
+        assert_eq!(
+            unused_board_path(dir.path(), &hidden),
+            dir.path().join("novel.json")
+        );
     }
 }

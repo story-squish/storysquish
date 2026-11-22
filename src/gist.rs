@@ -16,6 +16,8 @@ pub const TOKEN_FILE_NAME: &str = "github-token";
 const UNTITLED_DESCRIPTION: &str = "StorySquish board";
 const TITLED_DESCRIPTION_PREFIX: &str = "StorySquish board: ";
 const REVISIONS_LISTED: usize = 30;
+const GISTS_PER_PAGE: usize = 100;
+const MAX_GIST_PAGES: usize = 10;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_RESPONSE_BYTES: u64 = 100 * 1024 * 1024;
 
@@ -23,6 +25,13 @@ const MAX_RESPONSE_BYTES: u64 = 100 * 1024 * 1024;
 pub struct Revision {
     pub version: String,
     pub committed_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloudBoard {
+    pub gist_id: String,
+    pub title: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +48,16 @@ struct GistResponse {
     description: Option<String>,
     #[serde(default)]
     files: std::collections::HashMap<String, Option<GistFile>>,
+}
+
+#[derive(Deserialize)]
+struct GistSummary {
+    id: String,
+    #[serde(default)]
+    description: Option<String>,
+    updated_at: String,
+    #[serde(default)]
+    files: std::collections::HashMap<String, serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -124,12 +143,51 @@ impl Client {
         ))
     }
 
+    /// The account's gists that hold a board, most recently updated first,
+    /// each named by its latest title.
+    pub fn boards(&self) -> Result<Vec<CloudBoard>> {
+        let mut boards = Vec::new();
+        for page in 1..=MAX_GIST_PAGES {
+            let response = self
+                .authorized(self.agent.get(format!(
+                    "{}/gists?per_page={GISTS_PER_PAGE}&page={page}",
+                    self.api_base
+                )))
+                .call()
+                .context("contacting GitHub")?;
+            let gists: Vec<GistSummary> = read_json(response)?;
+            let last_page = gists.len() < GISTS_PER_PAGE;
+            boards.extend(
+                gists
+                    .into_iter()
+                    .filter(|gist| gist.files.contains_key(BOARD_FILE_NAME))
+                    .map(|gist| CloudBoard {
+                        title: title_from_description(
+                            gist.description.as_deref().unwrap_or_default(),
+                        ),
+                        gist_id: gist.id,
+                        updated_at: gist.updated_at,
+                    }),
+            );
+            if last_page {
+                break;
+            }
+        }
+        boards.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(boards)
+    }
+
+    pub fn latest_board(&self, gist_id: &str) -> Result<String> {
+        self.board_from(&format!("{}/gists/{gist_id}", self.api_base))
+    }
+
     pub fn board_at(&self, gist_id: &str, version: &str) -> Result<String> {
+        self.board_from(&format!("{}/gists/{gist_id}/{version}", self.api_base))
+    }
+
+    fn board_from(&self, gist_url: &str) -> Result<String> {
         let response = self
-            .authorized(
-                self.agent
-                    .get(format!("{}/gists/{gist_id}/{version}", self.api_base)),
-            )
+            .authorized(self.agent.get(gist_url))
             .call()
             .context("contacting GitHub")?;
         let mut gist: GistResponse = read_json(response)?;
@@ -295,6 +353,10 @@ pub enum Job {
         gist_id: String,
         version: String,
     },
+    ListBoards,
+    FetchLatest {
+        gist_id: String,
+    },
 }
 
 #[derive(Debug)]
@@ -308,6 +370,11 @@ pub enum Reply {
         revisions: Vec<Revision>,
     },
     Fetched(String),
+    Boards(Vec<CloudBoard>),
+    FetchedLatest {
+        gist_id: String,
+        board_json: String,
+    },
     Failed(String),
 }
 
@@ -357,6 +424,15 @@ pub fn run(client: &Client, job: Job) -> Reply {
             })
         }),
         Job::Fetch { gist_id, version } => client.board_at(&gist_id, &version).map(Reply::Fetched),
+        Job::ListBoards => client.boards().map(Reply::Boards),
+        Job::FetchLatest { gist_id } => {
+            client
+                .latest_board(&gist_id)
+                .map(|board_json| Reply::FetchedLatest {
+                    gist_id,
+                    board_json,
+                })
+        }
     };
     result.unwrap_or_else(|e| Reply::Failed(format!("{e:#}")))
 }

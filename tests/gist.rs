@@ -3,7 +3,7 @@ use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use storysquish::gist::{BOARD_FILE_NAME, Client, Revision};
+use storysquish::gist::{BOARD_FILE_NAME, Client, CloudBoard, Revision};
 
 #[derive(Debug, Clone)]
 struct Recorded {
@@ -217,4 +217,60 @@ fn title_comes_from_the_gist_description() {
 
     assert_eq!(client.title("titled").unwrap(), "Dune");
     assert_eq!(client.title("untitled").unwrap(), "");
+}
+
+#[test]
+fn cloud_boards_are_gists_holding_a_board_newest_first() {
+    let (base, recorded) = mock_github(|_, path| match path {
+        "/gists?per_page=100&page=1" => (
+            200,
+            serde_json::json!([
+                {"id": "old", "description": "StorySquish board: Emma",
+                 "updated_at": "2026-01-01T00:00:00Z", "files": {BOARD_FILE_NAME: {}}},
+                {"id": "notes", "description": "shopping list",
+                 "updated_at": "2026-12-01T00:00:00Z", "files": {"list.md": {}}},
+                {"id": "new", "description": "StorySquish board",
+                 "updated_at": "2026-11-22T00:00:00Z", "files": {BOARD_FILE_NAME: {}}},
+            ])
+            .to_string(),
+        ),
+        _ => (404, String::new()),
+    });
+    let client = Client::with_api_base("tok", &base);
+
+    assert_eq!(
+        client.boards().unwrap(),
+        vec![
+            CloudBoard {
+                gist_id: "new".into(),
+                title: String::new(),
+                updated_at: "2026-11-22T00:00:00Z".into()
+            },
+            CloudBoard {
+                gist_id: "old".into(),
+                title: "Emma".into(),
+                updated_at: "2026-01-01T00:00:00Z".into()
+            },
+        ]
+    );
+    assert_eq!(recorded.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn latest_board_comes_from_the_gist_itself() {
+    let (base, _) = mock_github(|_, path| match path {
+        "/gists/abc123" => (
+            200,
+            gist_json(
+                "abc123",
+                &serde_json::json!({ BOARD_FILE_NAME: {
+                    "content": "{\"title\":\"New\"}", "truncated": false, "raw_url": "unused"
+                }}),
+            ),
+        ),
+        _ => (404, String::new()),
+    });
+    let client = Client::with_api_base("tok", &base);
+
+    assert_eq!(client.latest_board("abc123").unwrap(), r#"{"title":"New"}"#);
 }
