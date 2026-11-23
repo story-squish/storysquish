@@ -54,8 +54,9 @@ pub fn backups_dir(board_path: &Path) -> PathBuf {
 }
 
 /// Copies the board file into its backups directory under a timestamped
-/// name and prunes all but the newest `keep` copies. Returns `None` when
-/// there is no board file to copy yet.
+/// name and prunes all but the newest `keep` copies with each tag, so routine
+/// backups never push out a conflict copy. Returns `None` when there is no
+/// board file to copy yet.
 pub fn back_up(board_path: &Path, tag: &str, keep: usize) -> Result<Option<PathBuf>> {
     if !board_path.try_exists()? {
         return Ok(None);
@@ -65,7 +66,7 @@ pub fn back_up(board_path: &Path, tag: &str, keep: usize) -> Result<Option<PathB
     let backup = dir.join(backup_file_name(board_path, SystemTime::now(), tag));
     fs::copy(board_path, &backup)
         .with_context(|| format!("copying {} to {}", board_path.display(), backup.display()))?;
-    prune_backups(&dir, keep)?;
+    prune_backups(&dir, &board_stem(board_path), keep)?;
     Ok(Some(backup))
 }
 
@@ -153,17 +154,24 @@ fn parse_backup_name(board_stem: &str, path: &Path) -> Option<(SystemTime, Strin
     Some((at, tag.to_owned()))
 }
 
-fn prune_backups(dir: &Path, keep: usize) -> Result<()> {
-    let mut backups: Vec<PathBuf> = fs::read_dir(dir)
+/// Files whose names `parse_backup_name` rejects were not written by
+/// `back_up` and are left alone.
+fn prune_backups(dir: &Path, board_stem: &str, keep: usize) -> Result<()> {
+    let mut backups: Vec<(String, SystemTime, PathBuf)> = fs::read_dir(dir)
         .with_context(|| format!("listing {}", dir.display()))?
         .filter_map(Result::ok)
         .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+        .filter_map(|path| {
+            let (at, tag) = parse_backup_name(board_stem, &path)?;
+            Some((tag, at, path))
+        })
         .collect();
     backups.sort();
-    let excess = backups.len().saturating_sub(keep);
-    for old in &backups[..excess] {
-        fs::remove_file(old).with_context(|| format!("removing {}", old.display()))?;
+    for same_tag in backups.chunk_by(|a, b| a.0 == b.0) {
+        let excess = same_tag.len().saturating_sub(keep);
+        for (_, _, old) in &same_tag[..excess] {
+            fs::remove_file(old).with_context(|| format!("removing {}", old.display()))?;
+        }
     }
     Ok(())
 }
@@ -257,30 +265,69 @@ mod tests {
         assert!(!dir.path().join("board-backups").exists());
     }
 
+    fn backup_names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<_> = fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+
     #[test]
-    fn backups_keep_only_the_newest_copies() {
+    fn backups_keep_only_the_newest_copies_with_each_tag() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("novel.json");
         let backups = backups_dir(&path);
         assert_eq!(backups, dir.path().join("novel-backups"));
         fs::create_dir_all(&backups).unwrap();
-        for millis in [1_u64, 2, 3] {
-            let at = UNIX_EPOCH + std::time::Duration::from_millis(millis);
-            fs::write(backups.join(backup_file_name(&path, at, "")), "old").unwrap();
+        let at = |millis| UNIX_EPOCH + Duration::from_millis(millis);
+        for (millis, tag) in [(1, "conflict"), (2, ""), (3, "conflict"), (4, "")] {
+            fs::write(
+                backups.join(backup_file_name(&path, at(millis), tag)),
+                "old",
+            )
+            .unwrap();
         }
         save(&path, &Board::default()).unwrap();
 
-        let latest = back_up(&path, "conflict", 2).unwrap().unwrap();
+        let latest = back_up(&path, "", 2).unwrap().unwrap();
 
-        assert!(latest.to_string_lossy().ends_with("-conflict.json"));
         assert_eq!(load(&latest).unwrap(), Board::default());
-        let mut left: Vec<_> = fs::read_dir(&backups)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().into_string().unwrap())
-            .collect();
-        left.sort();
-        assert_eq!(left.len(), 2);
-        assert_eq!(left[0], "novel-000000000000003.json");
+        let latest_name = latest.file_name().unwrap().to_str().unwrap().to_owned();
+        assert_eq!(
+            backup_names(&backups),
+            [
+                "novel-000000000000001-conflict.json".to_owned(),
+                "novel-000000000000003-conflict.json".to_owned(),
+                "novel-000000000000004.json".to_owned(),
+                latest_name,
+            ]
+        );
+    }
+
+    #[test]
+    fn pruning_leaves_files_it_did_not_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("novel.json");
+        let backups = backups_dir(&path);
+        fs::create_dir_all(&backups).unwrap();
+        let foreign = [
+            "a-notes.json",
+            "novel-final.json",
+            "other-000000000000001.json",
+        ];
+        for name in foreign {
+            fs::write(backups.join(name), "{}").unwrap();
+        }
+        save(&path, &Board::default()).unwrap();
+
+        back_up(&path, "", 1).unwrap();
+        back_up(&path, "", 1).unwrap();
+
+        let names = backup_names(&backups);
+        assert_eq!(names.len(), foreign.len() + 1);
+        assert!(foreign.iter().all(|f| names.iter().any(|n| n == f)));
     }
 
     #[test]

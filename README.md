@@ -115,8 +115,12 @@ Platform data dir:
 Writes go through a temp file and rename, so a crash never leaves a
 half-written board. Before the first save of a session, and every 30 minutes
 of editing after that, the board file is copied into the backups directory;
-the newest 30 copies are kept. **Settings → Restore backup…** loads one
-(undoably).
+the newest 30 copies are kept. Import, **Recover from local…** and loading
+from GitHub first copy the current board there too, tagged
+`-before-import`, `-before-recover` or `-before-github`. Each tag keeps its
+own newest 30, so routine backups never push out a conflict copy, and files
+in the folder that the app didn't write are left alone.
+**Settings → Recover from local…** loads one (undoably).
 
 To use a board on several computers, use **Settings → Move…** to put it in a
 folder synced by iCloud Drive, Dropbox, OneDrive or Syncthing, and

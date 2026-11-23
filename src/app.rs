@@ -19,6 +19,9 @@ const SAVE_DEBOUNCE: Duration = Duration::from_secs(2);
 const DISK_POLL: Duration = Duration::from_secs(2);
 const BACKUP_INTERVAL: Duration = Duration::from_mins(30);
 const BACKUPS_KEPT: usize = 30;
+const BEFORE_IMPORT: &str = "before-import";
+const BEFORE_RECOVER: &str = "before-recover";
+const BEFORE_GITHUB: &str = "before-github";
 const BACKUP_PUSH_DELAY: Duration = Duration::from_secs(5);
 const BACKUP_POLL: Duration = Duration::from_millis(100);
 const NOVEL_TITLE_FIELD: &str = "novel_title";
@@ -672,10 +675,14 @@ impl PlannerApp {
 
     fn recover_from_local(&mut self, path: &Path) {
         match storage::load(path) {
-            Ok(board) => {
-                self.replace_board(board);
-                self.local_recovery = None;
-            }
+            Ok(board) => match self.replace_board(board, BEFORE_RECOVER) {
+                Ok(()) => self.local_recovery = None,
+                Err(e) => {
+                    if let Some(recovery) = &mut self.local_recovery {
+                        recovery.error = Some(e);
+                    }
+                }
+            },
             Err(e) => {
                 if let Some(recovery) = &mut self.local_recovery {
                     recovery.error = Some(format!("Could not recover: {e:#}"));
@@ -780,18 +787,31 @@ impl PlannerApp {
 
     fn replace_board_from(&mut self, path: &Path) {
         match storage::load(path) {
-            Ok(board) => self.replace_board(board),
+            Ok(board) => self.replace_board_or_alert(board, BEFORE_IMPORT),
             Err(e) => self.alert = Some(format!("Could not import: {e:#}")),
         }
     }
 
-    /// Undoable: the current board stays in history.
-    fn replace_board(&mut self, board: Board) {
+    /// Undoable: the current board stays in history, and its file is also
+    /// copied into the backups under `backup_tag` because history ends with
+    /// the session. Refuses to replace the board if that copy fails.
+    fn replace_board(&mut self, board: Board, backup_tag: &str) -> Result<(), String> {
+        self.flush_pending_edits();
+        storage::back_up(&self.path, backup_tag, BACKUPS_KEPT).map_err(|e| {
+            format!("Could not back up the current board before replacing it: {e:#}")
+        })?;
         self.board = board;
         self.selected = None;
         self.save_now();
         if self.save_state == SaveState::Saved {
             self.save_state = SaveState::Imported;
+        }
+        Ok(())
+    }
+
+    fn replace_board_or_alert(&mut self, board: Board, backup_tag: &str) {
+        if let Err(e) = self.replace_board(board, backup_tag) {
+            self.alert = Some(e);
         }
     }
 
@@ -891,7 +911,7 @@ impl PlannerApp {
                 self.backup.push_now = true;
                 return;
             }
-            self.replace_board(board);
+            self.replace_board_or_alert(board, BEFORE_GITHUB);
         } else {
             let dir = self.path.parent().unwrap_or(Path::new("."));
             let path = storage::unused_board_path(dir, &board);
@@ -1297,7 +1317,7 @@ impl PlannerApp {
                 Ok(board) => {
                     self.backup.restore = None;
                     self.settings_dialog = None;
-                    self.replace_board(board);
+                    self.replace_board_or_alert(board, BEFORE_GITHUB);
                 }
                 Err(e) => {
                     if let Some(restore) = &mut self.backup.restore {
@@ -3978,6 +3998,9 @@ fn local_backup_label(backup: &storage::LocalBackup, now: SystemTime) -> String 
     let origin = match backup.tag.as_str() {
         "" => String::new(),
         "conflict" => "  ·  changed elsewhere".to_owned(),
+        BEFORE_IMPORT => "  ·  before an import".to_owned(),
+        BEFORE_RECOVER => "  ·  before a recovery".to_owned(),
+        BEFORE_GITHUB => "  ·  before loading from GitHub".to_owned(),
         tag => format!("  ·  {tag}"),
     };
     format!("{age}  ·  {contents}{origin}")
@@ -4160,6 +4183,10 @@ mod tests {
         assert_eq!(
             local_backup_label(&backup(5, "conflict", contents("  ", 3)), now),
             "5 hours ago  ·  Untitled  ·  3 scenes  ·  changed elsewhere"
+        );
+        assert_eq!(
+            local_backup_label(&backup(1, BEFORE_RECOVER, contents("Dune", 2)), now),
+            "an hour ago  ·  Dune  ·  2 scenes  ·  before a recovery"
         );
         assert_eq!(
             local_backup_label(&backup(0, "", None), now),
