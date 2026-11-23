@@ -1755,6 +1755,24 @@ fn unused_local_address() -> std::net::SocketAddr {
 }
 
 #[test]
+fn open_from_cloud_offline_offers_boards_on_this_computer() {
+    let address = unused_local_address();
+    let (mut harness, dir) = launch_auto_backup(format!("http://{address}"), |_, _| {});
+
+    harness.get_by_label("Open").click();
+    harness.run();
+    harness.get_by_label("Cloud…").click();
+    step_until(&mut harness, |h| h.query_by_label("other.json").is_some());
+    assert!(harness.query_by_label("Dune.json").is_none());
+    harness.get_by_label("other.json").click();
+    harness.run();
+
+    assert_eq!(harness.state().board_path(), dir.path().join("other.json"));
+    assert_eq!(harness.state().board().title, "Other");
+    assert!(harness.query_by_label("Open from cloud").is_none());
+}
+
+#[test]
 fn an_offline_backup_stays_quiet_and_resumes_when_github_returns() {
     let address = unused_local_address();
     let (mut harness, dir) = launch_auto_backup(format!("http://{address}"), |_, _| {});

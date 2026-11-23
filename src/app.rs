@@ -232,6 +232,9 @@ struct BackupRestore {
 #[derive(Default)]
 struct CloudPicker {
     boards: Option<Vec<CloudBoard>>,
+    /// Filled when GitHub cannot be reached, so boards on this computer can
+    /// still be opened.
+    offline_boards: Option<Vec<PathBuf>>,
     queued: Option<(BackupTask, github::Job)>,
     error: Option<String>,
 }
@@ -1556,6 +1559,13 @@ impl PlannerApp {
                 }
             }
             BackupTask::AddRepoPrefix => self.backup.prefix_check = Some(self.path.clone()),
+            BackupTask::ListCloudBoards | BackupTask::OpenCloudBoard => {
+                let boards = self.local_boards();
+                if let Some(cloud) = &mut self.backup.cloud {
+                    cloud.error = None;
+                    cloud.offline_boards = Some(boards);
+                }
+            }
             _ => self.handle_github_failure(task, OFFLINE_REASON),
         }
     }
@@ -2060,12 +2070,19 @@ impl PlannerApp {
             || matches!(&self.backup.in_flight, Some((task, _)) if is_cloud_task(*task));
         let open_repo = self.repo();
         let mut chosen = None;
+        let mut chosen_offline = None;
         let mut close = false;
         let modal = egui::Modal::new(egui::Id::unique("cloud_open")).show(ctx, |ui| {
             ui.set_width(380.0);
             ui.heading("Open from cloud");
             if let Some(error) = &cloud.error {
                 ui.label(RichText::new(error).small().color(colors.danger));
+            }
+            if let Some(boards) = &cloud.offline_boards {
+                chosen_offline = offline_boards_list(ui, colors, boards);
+                ui.add_space(8.0);
+                close = ui.button("Cancel").clicked();
+                return;
             }
             let other_boards = cloud
                 .boards
@@ -2121,6 +2138,11 @@ impl PlannerApp {
             ui.add_space(8.0);
             close = ui.button("Cancel").clicked();
         });
+        if let Some(path) = chosen_offline
+            && self.switch_to_board_file(path)
+        {
+            close = true;
+        }
         if let Some(repo) = chosen
             && let Some(cloud) = &mut self.backup.cloud
         {
@@ -4331,6 +4353,24 @@ fn boards_other_than<'a>(boards: &'a [CloudBoard], open_repo: Option<&str>) -> V
         .iter()
         .filter(|board| open_repo != Some(board.repo.as_str()))
         .collect()
+}
+
+fn offline_boards_list(ui: &mut Ui, colors: Palette, boards: &[PathBuf]) -> Option<PathBuf> {
+    ui.label(
+        RichText::new(
+            "Offline: showing boards on this computer. Edits back up once GitHub is reachable.",
+        )
+        .small()
+        .color(colors.muted),
+    );
+    if boards.is_empty() {
+        ui.label("No other boards on this computer.");
+        return None;
+    }
+    egui::ScrollArea::vertical()
+        .max_height(320.0)
+        .show(ui, |ui| board_file_buttons(ui, boards))
+        .inner
 }
 
 fn board_file_buttons(ui: &mut Ui, boards: &[PathBuf]) -> Option<PathBuf> {
