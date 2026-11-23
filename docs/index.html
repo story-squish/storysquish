@@ -1955,6 +1955,32 @@ function repoDescription(title) {
   return trimmed ? `StorySquish board: ${trimmed}` : "StorySquish board";
 }
 
+// The title a push recorded in the description, or null when the
+// description was not written by StorySquish.
+function titleFromDescription(description) {
+  const trimmed = (description ?? "").trim();
+  if (trimmed === "StorySquish board") return "";
+  return trimmed.startsWith("StorySquish board: ") ? trimmed.slice("StorySquish board: ".length).trim() : null;
+}
+
+function numberedRepoName(baseName, attempt) {
+  return attempt === 1 ? baseName : `${baseName}-${attempt}`;
+}
+
+// The base name to rename `existing` to for `title`, or null when its name
+// does not follow the title it was backed up under, e.g. one the writer
+// chose, or when the new title gives the same name.
+function renamedRepoBase(existing, title) {
+  const previousTitle = titleFromDescription(existing.description);
+  if (previousTitle === null) return null;
+  const previousBase = repoNameFor(previousTitle);
+  const baseName = repoNameFor(title);
+  const name = existing.full_name.split("/").pop();
+  const followsPreviousTitle = Array.from({length: GITHUB_MAX_REPO_NAME_ATTEMPTS},
+    (_, i) => numberedRepoName(previousBase, i + 1)).includes(name);
+  return baseName !== previousBase && followsPreviousTitle ? baseName : null;
+}
+
 function repoNameFor(title) {
   let slug = "";
   for (const c of title) {
@@ -2062,22 +2088,38 @@ async function suggestRepoName(title) {
   const {login} = await github("/user");
   const baseName = repoNameFor(title);
   for (let attempt = 1; attempt <= GITHUB_MAX_REPO_NAME_ATTEMPTS; attempt++) {
-    const name = attempt === 1 ? baseName : `${baseName}-${attempt}`;
+    const name = numberedRepoName(baseName, attempt);
     if (await github(`/repos/${login}/${name}`, {absentOn: [404]}) === null) return name;
   }
   throw new Error(`every repository name tried for this board, from ${baseName}, is taken`);
 }
 
-// Refuses a public repository, so a pasted link can never publish the novel.
+// Tries `baseName` and its numbered variants, keeping the current name when
+// every one is taken, and returns the resulting owner/name.
+async function renameRepo(repo, baseName) {
+  for (let attempt = 1; attempt <= GITHUB_MAX_REPO_NAME_ATTEMPTS; attempt++) {
+    try {
+      const renamed = await github(`/repos/${repo}`, {method: "PATCH", body: {name: numberedRepoName(baseName, attempt)}});
+      return renamed.full_name;
+    } catch (e) {
+      if (!(e instanceof GithubError && e.status === 422 && e.body.includes("already exists"))) throw e;
+    }
+  }
+  return repo;
+}
+
+// Refuses a public repository, so a pasted link can never publish the novel,
+// and renames one named after the previous title to follow the new one.
 async function pushBoard(repo, title, json) {
   const existing = await github(`/repos/${repo}`, {absentOn: [404]});
   if (!existing) throw new MissingRepoError(repo);
   if (!existing.private) throw new Error(`${repo} is public; StorySquish backs up only to private repositories`);
+  const baseName = renamedRepoBase(existing, title);
+  repo = baseName ? await renameRepo(existing.full_name, baseName) : existing.full_name;
   const description = repoDescription(title);
   if (existing.description !== description) {
     await github(`/repos/${repo}`, {method: "PATCH", body: {description}});
   }
-  repo = existing.full_name;
   const current = await github(boardFilePath(repo), {absentOn: [404]});
   await github(boardFilePath(repo), {method: "PUT", body: {
     message: commitMessage(title),

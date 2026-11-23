@@ -1,5 +1,6 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -213,7 +214,7 @@ fn later_pushes_replace_the_file_and_keep_the_description_fresh() {
     let client = Client::with_api_base("tok", &base);
 
     client.push(REPO, "Dune", r#"{"title":"Dune 2"}"#).unwrap();
-    client.push(REPO, "Dune Messiah", "{}").unwrap();
+    client.push(REPO, "dune!", "{}").unwrap();
 
     let recorded = recorded.lock().unwrap();
     let calls: Vec<_> = recorded
@@ -235,8 +236,148 @@ fn later_pushes_replace_the_file_and_keep_the_description_fresh() {
     );
     assert_eq!(body_of(&recorded[2])["sha"], "f00d");
     assert_eq!(
-        body_of(&recorded[4])["description"],
-        "StorySquish board: Dune Messiah"
+        body_of(&recorded[4]),
+        serde_json::json!({ "description": "StorySquish board: dune!" })
+    );
+}
+
+const RENAMED: &str = "someone/storysquish-dune-messiah";
+
+fn renamed_json() -> String {
+    serde_json::json!({ "full_name": RENAMED, "private": true }).to_string()
+}
+
+#[test]
+fn a_new_title_renames_a_repo_named_after_the_old_one() {
+    let (base, recorded) = mock_github(|method, path| match (method, path) {
+        ("GET", path) if path == format!("/repos/{REPO}") => {
+            (200, repo_json(true, "StorySquish board: Dune"))
+        }
+        ("PATCH", path) if path == format!("/repos/{REPO}") => (200, renamed_json()),
+        ("GET", _) => not_found(),
+        _ => (200, "{}".to_owned()),
+    });
+    let client = Client::with_api_base("tok", &base);
+
+    let pushed = client.push(REPO, "Dune Messiah", "{}").unwrap();
+
+    assert_eq!(pushed.repo, RENAMED);
+    let recorded = recorded.lock().unwrap();
+    let calls: Vec<_> = recorded
+        .iter()
+        .map(|r| (r.method.as_str(), r.path.as_str()))
+        .collect();
+    let old_path = format!("/repos/{REPO}");
+    let new_path = format!("/repos/{RENAMED}");
+    let new_board_path = format!("{new_path}/contents/{BOARD_FILE_NAME}");
+    assert_eq!(
+        calls,
+        [
+            ("GET", old_path.as_str()),
+            ("PATCH", old_path.as_str()),
+            ("PATCH", new_path.as_str()),
+            ("GET", new_board_path.as_str()),
+            ("PUT", new_board_path.as_str()),
+        ]
+    );
+    assert_eq!(
+        body_of(&recorded[1]),
+        serde_json::json!({ "name": "storysquish-dune-messiah" })
+    );
+    assert_eq!(
+        body_of(&recorded[2]),
+        serde_json::json!({ "description": "StorySquish board: Dune Messiah" })
+    );
+}
+
+const NAME_TAKEN: &str = r#"{"message":"Repository creation failed.","errors":[{"message":"name already exists on this account"}]}"#;
+
+/// Answers the first `taken` rename requests as a taken name, then renames to
+/// `RENAMED` numbered 2.
+fn mock_with_taken_names(taken: usize) -> (String, Arc<Mutex<Vec<Recorded>>>) {
+    let patches = AtomicUsize::new(0);
+    mock_github(move |method, path| match (method, path) {
+        ("GET", path) if path == format!("/repos/{REPO}") => {
+            (200, repo_json(true, "StorySquish board: Dune"))
+        }
+        ("PATCH", _) if patches.fetch_add(1, Ordering::SeqCst) < taken => {
+            (422, NAME_TAKEN.to_owned())
+        }
+        ("PATCH", path) if path == format!("/repos/{REPO}") => (
+            200,
+            serde_json::json!({ "full_name": format!("{RENAMED}-2"), "private": true }).to_string(),
+        ),
+        ("GET", _) => not_found(),
+        _ => (200, "{}".to_owned()),
+    })
+}
+
+fn requested_names(recorded: &[Recorded]) -> Vec<String> {
+    recorded
+        .iter()
+        .filter(|r| r.body.contains("\"name\""))
+        .map(|r| body_of(r)["name"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn a_rename_skips_names_the_account_already_uses() {
+    let (base, recorded) = mock_with_taken_names(1);
+    let client = Client::with_api_base("tok", &base);
+
+    let pushed = client.push(REPO, "Dune Messiah", "{}").unwrap();
+
+    assert_eq!(pushed.repo, format!("{RENAMED}-2"));
+    assert_eq!(
+        requested_names(&recorded.lock().unwrap()),
+        ["storysquish-dune-messiah", "storysquish-dune-messiah-2"]
+    );
+}
+
+#[test]
+fn a_repo_keeps_its_name_when_every_new_one_is_taken() {
+    let (base, recorded) = mock_with_taken_names(20);
+    let client = Client::with_api_base("tok", &base);
+
+    let pushed = client.push(REPO, "Dune Messiah", "{}").unwrap();
+
+    assert_eq!(pushed.repo, REPO);
+    let recorded = recorded.lock().unwrap();
+    assert_eq!(requested_names(&recorded).len(), 20);
+    assert!(
+        recorded
+            .iter()
+            .any(|r| r.method == "PUT" && r.path == board_path()),
+        "{recorded:?}"
+    );
+}
+
+#[test]
+fn a_repo_named_by_the_writer_keeps_its_name() {
+    let (base, recorded) = mock_github(|method, path| match (method, path) {
+        ("GET", "/repos/someone/my-novel") => (
+            200,
+            serde_json::json!({
+                "full_name": "someone/my-novel",
+                "private": true,
+                "description": "StorySquish board: Dune",
+            })
+            .to_string(),
+        ),
+        ("GET", _) => not_found(),
+        _ => (200, "{}".to_owned()),
+    });
+    let client = Client::with_api_base("tok", &base);
+
+    let pushed = client
+        .push("someone/my-novel", "Dune Messiah", "{}")
+        .unwrap();
+
+    assert_eq!(pushed.repo, "someone/my-novel");
+    let recorded = recorded.lock().unwrap();
+    assert!(
+        recorded.iter().all(|r| !r.body.contains("\"name\"")),
+        "{recorded:?}"
     );
 }
 

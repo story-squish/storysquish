@@ -11,6 +11,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::Deserialize;
 use serde_json::json;
 use ureq::Agent;
+use ureq::config::RedirectAuthHeaders;
 
 pub const API_BASE: &str = "https://api.github.com";
 pub const BOARD_FILE_NAME: &str = "storysquish-board.json";
@@ -115,6 +116,9 @@ impl Client {
         let agent = Agent::config_builder()
             .timeout_global(Some(REQUEST_TIMEOUT))
             .http_status_as_error(false)
+            // GitHub answers a renamed repository's old name with a redirect
+            // that only resolves for private repositories when authorized.
+            .redirect_auth_headers(RedirectAuthHeaders::SameHost)
             .build()
             .into();
         Self {
@@ -124,7 +128,8 @@ impl Client {
         }
     }
 
-    /// Commits a new version to `repo`, which must be private.
+    /// Commits a new version to `repo`, which must be private, renaming it
+    /// to follow the title when its name came from the previous title.
     pub fn push(&self, repo: &str, title: &str, board_json: &str) -> Result<Pushed> {
         let existing = self
             .repo_info_if_visible(repo)?
@@ -132,11 +137,14 @@ impl Client {
         if !existing.private {
             bail!("{repo} is public; StorySquish backs up only to private repositories");
         }
+        let repo = match renamed_repo_base(&existing, title) {
+            Some(base_name) => self.rename_repo(&existing.full_name, &base_name)?,
+            None => existing.full_name,
+        };
         let description = repo_description(title);
         if existing.description.as_deref() != Some(description.as_str()) {
-            self.set_description(repo, &description)?;
+            self.set_description(&repo, &description)?;
         }
-        let repo = existing.full_name;
         let mut body = json!({
             "message": commit_message(title),
             "content": BASE64.encode(board_json),
@@ -225,6 +233,30 @@ impl Client {
             .call()
             .context("contacting GitHub")?;
         read_json(response)
+    }
+
+    /// Tries `base_name` and its numbered variants, keeping the current name
+    /// when every one is taken, and returns the resulting `owner/name`.
+    fn rename_repo(&self, repo: &str, base_name: &str) -> Result<String> {
+        for attempt in 1..=MAX_REPO_NAME_ATTEMPTS {
+            let name = numbered_repo_name(base_name, attempt);
+            let response = self
+                .authorized(self.agent.patch(format!("{}/repos/{repo}", self.api_base)))
+                .send_json(json!({ "name": name }))
+                .context("contacting GitHub")?;
+            let status = response.status().as_u16();
+            let text = read_body(response)?;
+            if status == 422 && text.contains("already exists") {
+                continue;
+            }
+            if !(200..300).contains(&status) {
+                bail!("{}", describe_failure(status, &text));
+            }
+            let renamed: RepoResponse =
+                serde_json::from_str(&text).context("GitHub sent an unexpected response")?;
+            return Ok(renamed.full_name);
+        }
+        Ok(repo.to_owned())
     }
 
     fn set_description(&self, repo: &str, description: &str) -> Result<()> {
@@ -448,6 +480,25 @@ pub fn suggested_repo_name(title: &str) -> String {
     let mut name = format!("{REPO_NAME_PREFIX}{slug}");
     name.truncate(MAX_SUGGESTED_REPO_NAME_LEN);
     name.trim_end_matches('-').to_owned()
+}
+
+/// The base name to rename `existing` to for `title`, or `None` when its name
+/// does not follow the title it was backed up under, e.g. one the writer
+/// chose, or when the new title gives the same name.
+fn renamed_repo_base(existing: &RepoResponse, title: &str) -> Option<String> {
+    let description = existing.description.as_deref().unwrap_or_default();
+    if !is_board_description(description) {
+        return None;
+    }
+    let previous_base = suggested_repo_name(&title_from_description(description));
+    let base_name = suggested_repo_name(title);
+    (base_name != previous_base
+        && is_numbered_repo_name(repo_name(&existing.full_name), &previous_base))
+    .then_some(base_name)
+}
+
+fn is_numbered_repo_name(name: &str, base_name: &str) -> bool {
+    (1..=MAX_REPO_NAME_ATTEMPTS).any(|attempt| numbered_repo_name(base_name, attempt) == name)
 }
 
 fn numbered_repo_name(base_name: &str, attempt: usize) -> String {
@@ -702,6 +753,45 @@ mod tests {
         assert!(long.len() <= MAX_SUGGESTED_REPO_NAME_LEN, "{long}");
         assert!(!long.ends_with('-'), "{long}");
         assert!(is_valid_repo_name(&numbered_repo_name(&long, 20)));
+    }
+
+    fn repo(full_name: &str, description: &str) -> RepoResponse {
+        RepoResponse {
+            full_name: full_name.to_owned(),
+            private: true,
+            description: Some(description.to_owned()),
+            pushed_at: None,
+            updated_at: None,
+        }
+    }
+
+    #[test]
+    fn only_repos_named_after_the_previous_title_follow_a_new_one() {
+        let dune = repo("someone/storysquish-dune", "StorySquish board: Dune");
+        assert_eq!(
+            renamed_repo_base(&dune, "Dune Messiah").as_deref(),
+            Some("storysquish-dune-messiah")
+        );
+        assert_eq!(renamed_repo_base(&dune, "Dune"), None);
+        assert_eq!(renamed_repo_base(&dune, "  DUNE!"), None);
+
+        let numbered = repo("someone/storysquish-dune-3", "StorySquish board: Dune");
+        assert_eq!(
+            renamed_repo_base(&numbered, "Arrakis").as_deref(),
+            Some("storysquish-arrakis")
+        );
+
+        let untitled = repo("someone/storysquish-board", "StorySquish board");
+        assert_eq!(
+            renamed_repo_base(&untitled, "Dune").as_deref(),
+            Some("storysquish-dune")
+        );
+
+        let chosen = repo("someone/my-novel", "StorySquish board: Dune");
+        assert_eq!(renamed_repo_base(&chosen, "Dune Messiah"), None);
+
+        let foreign = repo("someone/storysquish-dune", "my notes");
+        assert_eq!(renamed_repo_base(&foreign, "Dune Messiah"), None);
     }
 
     #[test]

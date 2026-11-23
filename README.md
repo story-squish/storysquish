@@ -152,6 +152,9 @@ permissions; replace it.
   keeps a separate history, and the restore list is headed by that board's
   title. Moving the board file keeps its repository; opening another board
   switches to that board's repository.
+- Changing the title renames the repository on the next push, numbering the
+  name if it is taken, unless you gave the repository a name of your own.
+  GitHub redirects the old name, so other devices keep backing up to it.
 - To back up to the same repository from another device or browser, paste
   `owner/name` or its URL into the repository field there. Clear the field to
   be offered a new repository next time.
