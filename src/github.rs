@@ -44,6 +44,13 @@ pub struct CloudBoard {
     pub updated_at: String,
 }
 
+/// A free name on the token's account for a new repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SuggestedRepo {
+    pub owner: String,
+    pub name: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pushed {
     pub repo: String,
@@ -193,16 +200,16 @@ impl Client {
     /// The name `create_repo` should offer for a board titled `title`: the
     /// title's slug, numbered when the account already has a repo by that
     /// name.
-    pub fn suggest_repo_name(&self, title: &str) -> Result<String> {
-        let login = self.login()?;
+    pub fn suggest_repo_name(&self, title: &str) -> Result<SuggestedRepo> {
+        let owner = self.login()?;
         let base_name = suggested_repo_name(title);
         for attempt in 1..=MAX_REPO_NAME_ATTEMPTS {
             let name = numbered_repo_name(&base_name, attempt);
             if self
-                .repo_info_if_visible(&format!("{login}/{name}"))?
+                .repo_info_if_visible(&format!("{owner}/{name}"))?
                 .is_none()
             {
-                return Ok(name);
+                return Ok(SuggestedRepo { owner, name });
             }
         }
         bail!("every repository name tried for this board, from {base_name}, is taken")
@@ -635,7 +642,10 @@ pub enum Reply {
     RepoMissing {
         repo: String,
     },
-    SuggestedRepoName(String),
+    SuggestedRepoName {
+        title: String,
+        suggested: SuggestedRepo,
+    },
     CreatedRepo(String),
     Fetched(String),
     Boards(Vec<CloudBoard>),
@@ -688,7 +698,7 @@ pub fn run(client: &Client, job: Job) -> Reply {
         },
         Job::SuggestRepoName { title } => client
             .suggest_repo_name(&title)
-            .map(Reply::SuggestedRepoName),
+            .map(|suggested| Reply::SuggestedRepoName { title, suggested }),
         Job::CreateRepo { name, title } => {
             client.create_repo(&name, &title).map(Reply::CreatedRepo)
         }

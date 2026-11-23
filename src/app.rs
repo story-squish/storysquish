@@ -21,6 +21,7 @@ const BACKUP_INTERVAL: Duration = Duration::from_mins(30);
 const BACKUPS_KEPT: usize = 30;
 const BACKUP_PUSH_DELAY: Duration = Duration::from_secs(5);
 const BACKUP_POLL: Duration = Duration::from_millis(100);
+const NOVEL_TITLE_FIELD: &str = "novel_title";
 const NODE_RADIUS: f32 = 26.0;
 /// Short of the midpoint, so the labels of A→B and B→A land apart.
 const EDGE_LABEL_POSITION: f32 = 0.4;
@@ -146,17 +147,40 @@ struct BackupState {
     /// Boards whose repo creation was cancelled, which automatic backup
     /// leaves alone for the rest of the session instead of asking again.
     declined_repo_creation: HashSet<PathBuf>,
+    /// A board made with New, whose first change offers it a repository.
+    new_board: Option<PathBuf>,
 }
 
 /// Confirms the name of the repository about to be created for `board`;
 /// `missing` is the linked repo it replaces, when that one is gone.
 struct RepoCreation {
     board: PathBuf,
+    owner: Option<String>,
     name: String,
     name_edited: bool,
+    /// The title being typed in, for a board that still has a placeholder
+    /// one; it becomes the board's title on Create.
+    title_draft: Option<String>,
+    focus_title: bool,
     missing: Option<String>,
     queued: Option<(BackupTask, github::Job)>,
     error: Option<String>,
+}
+
+impl RepoCreation {
+    fn title<'a>(&'a self, board_title: &'a str) -> &'a str {
+        self.title_draft.as_deref().unwrap_or(board_title)
+    }
+
+    fn suggest_name_for(&mut self, title: String) {
+        if !self.name_edited {
+            self.name = github::suggested_repo_name(&title);
+        }
+        self.queued = Some((
+            BackupTask::SuggestRepoName,
+            github::Job::SuggestRepoName { title },
+        ));
+    }
 }
 
 #[derive(Default)]
@@ -312,6 +336,14 @@ impl PlannerApp {
     #[must_use]
     pub fn with_github_api_base(mut self, api_base: &str) -> Self {
         self.backup.api_base = Some(api_base.to_owned());
+        self
+    }
+
+    /// For a board that has never been saved, e.g. on first launch, so its
+    /// first change offers a repository as one made with New would.
+    #[must_use]
+    pub fn offering_repo_on_first_change(mut self) -> Self {
+        self.backup.new_board = Some(self.path.clone());
         self
     }
 
@@ -800,7 +832,9 @@ impl PlannerApp {
             self.alert = Some(format!("Could not create a new board: {e:#}"));
             return;
         }
-        self.switch_to_board_file(path);
+        if self.switch_to_board_file(path.clone()) {
+            self.backup.new_board = Some(path);
+        }
     }
 
     fn open_cloud_picker(&mut self) {
@@ -1081,28 +1115,51 @@ impl PlannerApp {
     }
 
     /// Suggests a name from the board title, which a background check then
-    /// moves past names the account already uses unless it was edited.
+    /// moves past names the account already uses unless it was edited. A
+    /// placeholder title is asked for first, since the name comes from it.
     fn offer_repo_creation(&mut self, missing: Option<String>) {
-        let title = self.board.title.clone();
-        let (name, queued) = match &missing {
-            Some(repo) => (github::repo_name(repo).to_owned(), None),
-            None => (
-                github::suggested_repo_name(&title),
-                Some((
-                    BackupTask::SuggestRepoName,
-                    github::Job::SuggestRepoName { title },
-                )),
-            ),
-        };
-        self.backup.repo_creation = Some(RepoCreation {
+        let mut creation = RepoCreation {
             board: self.path.clone(),
-            name,
+            owner: None,
+            name: String::new(),
             name_edited: false,
-            missing,
-            queued,
+            title_draft: None,
+            focus_title: false,
+            missing: None,
+            queued: None,
             error: None,
-        });
+        };
+        if let Some(repo) = missing {
+            creation.owner = repo.split_once('/').map(|(owner, _)| owner.to_owned());
+            github::repo_name(&repo).clone_into(&mut creation.name);
+            creation.missing = Some(repo);
+        } else if self.board.has_placeholder_title() {
+            creation.title_draft = Some(String::new());
+            creation.focus_title = true;
+            creation.suggest_name_for(String::new());
+        } else {
+            creation.suggest_name_for(self.board.title.clone());
+        }
+        self.backup.repo_creation = Some(creation);
         self.start_queued_dialog_job();
+    }
+
+    /// Waits while the header title is being typed, which the dialog would
+    /// otherwise interrupt after the first keystroke.
+    fn offer_repo_for_new_board(&mut self, ctx: &egui::Context) {
+        let changed = self.backup.board_changed || matches!(self.save_state, SaveState::Pending(_));
+        if self.backup.token.is_none()
+            || self.backup.repo_creation.is_some()
+            || self.backup.new_board.as_ref() != Some(&self.path)
+            || !changed
+            || ctx.memory(|m| m.has_focus(egui::Id::unique(NOVEL_TITLE_FIELD)))
+        {
+            return;
+        }
+        self.backup.new_board = None;
+        if self.repo().is_none() {
+            self.offer_repo_creation(None);
+        }
     }
 
     /// Pushes once the board has gone unedited for `BACKUP_PUSH_DELAY`, so a
@@ -1192,11 +1249,12 @@ impl PlannerApp {
                 }
             }
             github::Reply::RepoMissing { repo } => self.handle_missing_repo(repo),
-            github::Reply::SuggestedRepoName(name) => {
-                if let Some(creation) = &mut self.backup.repo_creation
-                    && !creation.name_edited
-                {
-                    creation.name = name;
+            github::Reply::SuggestedRepoName { title, suggested } => {
+                if let Some(creation) = &mut self.backup.repo_creation {
+                    creation.owner = Some(suggested.owner);
+                    if !creation.name_edited && creation.title(&self.board.title) == title {
+                        creation.name = suggested.name;
+                    }
                 }
             }
             github::Reply::CreatedRepo(repo) => self.link_created_repo(repo),
@@ -1566,38 +1624,46 @@ impl PlannerApp {
         let queued = creation.queued.as_ref().map(|(task, _)| *task);
         let suggesting = [in_flight, queued].contains(&Some(BackupTask::SuggestRepoName));
         let creating = [in_flight, queued].contains(&Some(BackupTask::CreateRepo));
-        let title = display_cloud_title(&self.board.title).to_owned();
         let mut create = false;
         let mut cancel = false;
         let modal = egui::Modal::new(egui::Id::unique("repo_creation")).show(ctx, |ui| {
             ui.set_width(380.0);
-            ui.heading("Create a GitHub repository");
+            ui.heading("Save to a GitHub repository");
             if let Some(missing) = &creation.missing {
                 ui.label(format!(
                     "{missing} does not exist, or the token cannot see it."
                 ));
             }
-            ui.label(format!(
-                "Back up “{title}” to a new private repository on your GitHub account."
-            ));
-            ui.add_space(4.0);
-            let label = field_label(ui, colors, "Repository name");
-            let field = ui
-                .add_enabled(
-                    !creating,
-                    TextEdit::singleline(&mut creation.name).desired_width(f32::INFINITY),
-                )
-                .labelled_by(label);
-            if field.changed() {
-                creation.name_edited = true;
-                creation.error = None;
+            let title_field = creation
+                .title_draft
+                .as_mut()
+                .map(|draft| story_title_field(ui, colors, draft, !creating));
+            if let Some(field) = &title_field {
+                if std::mem::take(&mut creation.focus_title) {
+                    field.request_focus();
+                }
+                if field.changed() {
+                    creation.error = None;
+                    let title = creation.title_draft.clone().unwrap_or_default();
+                    creation.suggest_name_for(title);
+                }
+            } else {
+                ui.label(format!(
+                    "Back up “{}” to a new private repository on your GitHub account.",
+                    display_cloud_title(&self.board.title)
+                ));
             }
+            ui.add_space(4.0);
+            let field = repo_name_field(ui, colors, creation, !creating);
             let name_is_valid = github::is_valid_repo_name(creation.name.trim());
-            if !name_is_valid {
+            if creation.missing.is_none() {
                 ui.label(
-                    RichText::new("Use letters, digits, '-', '_' or '.'")
-                        .small()
-                        .color(colors.danger),
+                    RichText::new(
+                        "You can change the title later in the header; a repository \
+                         named after the title is renamed to match on the next backup.",
+                    )
+                    .small()
+                    .color(colors.muted),
                 );
             }
             if let Some(error) = &creation.error {
@@ -1615,8 +1681,16 @@ impl PlannerApp {
             }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                let submitted = field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
-                let can_create = name_is_valid && !suggesting && !creating;
+                let submitted = [Some(&field), title_field.as_ref()]
+                    .into_iter()
+                    .flatten()
+                    .any(egui::Response::lost_focus)
+                    && ui.input(|i| i.key_pressed(Key::Enter));
+                let has_title = creation
+                    .title_draft
+                    .as_deref()
+                    .is_none_or(|draft| !draft.trim().is_empty());
+                let can_create = name_is_valid && has_title && !suggesting && !creating;
                 create = (ui
                     .add_enabled(can_create, egui::Button::new("Create"))
                     .clicked()
@@ -1628,21 +1702,39 @@ impl PlannerApp {
             });
         });
         if create {
-            creation.error = None;
-            creation.queued = Some((
-                BackupTask::CreateRepo,
-                github::Job::CreateRepo {
-                    name: creation.name.trim().to_owned(),
-                    title: self.board.title.clone(),
-                },
-            ));
-            self.start_queued_dialog_job();
+            self.create_repo_from_dialog();
         } else if (cancel || modal.should_close())
             && !creating
             && let Some(creation) = self.backup.repo_creation.take()
         {
             self.backup.declined_repo_creation.insert(creation.board);
         }
+    }
+
+    fn create_repo_from_dialog(&mut self) {
+        let Some(creation) = &mut self.backup.repo_creation else {
+            return;
+        };
+        let new_title = creation
+            .title_draft
+            .take()
+            .map(|draft| draft.trim().to_owned());
+        let name = creation.name.trim().to_owned();
+        creation.error = None;
+        if let Some(title) = new_title
+            && creation.board == self.path
+        {
+            self.board.title = title;
+            self.save_now();
+        }
+        let title = self.board.title.clone();
+        if let Some(creation) = &mut self.backup.repo_creation {
+            creation.queued = Some((
+                BackupTask::CreateRepo,
+                github::Job::CreateRepo { name, title },
+            ));
+        }
+        self.start_queued_dialog_job();
     }
 
     fn cloud_open_dialog(&mut self, ctx: &egui::Context) {
@@ -1804,6 +1896,7 @@ impl PlannerApp {
             );
             let title = ui.add(
                 TextEdit::singleline(&mut self.board.title)
+                    .id(egui::Id::unique(NOVEL_TITLE_FIELD))
                     .hint_text("Novel title")
                     .desired_width(360.0),
             );
@@ -3189,6 +3282,7 @@ impl eframe::App for PlannerApp {
         self.receive_github_reply(ctx);
         self.start_queued_push();
         self.start_queued_dialog_job();
+        self.offer_repo_for_new_board(ctx);
         self.back_up_to_github_if_due(ctx);
     }
 
@@ -3700,6 +3794,57 @@ fn badge(ui: &mut Ui, text: &str, fill: Color32, color: Color32) {
                     .color(color),
             );
         });
+}
+
+/// The name, after the account it is created on, with a hint when GitHub
+/// would refuse it.
+fn repo_name_field(
+    ui: &mut Ui,
+    colors: Palette,
+    creation: &mut RepoCreation,
+    enabled: bool,
+) -> egui::Response {
+    let label = field_label(ui, colors, "Repository name");
+    let field = ui
+        .horizontal(|ui| {
+            let owner = creation.owner.as_deref().unwrap_or("…");
+            ui.label(RichText::new(format!("{owner} /")).color(colors.muted));
+            ui.add_enabled(
+                enabled,
+                TextEdit::singleline(&mut creation.name).desired_width(f32::INFINITY),
+            )
+            .labelled_by(label)
+        })
+        .inner;
+    if field.changed() {
+        creation.name_edited = true;
+        creation.error = None;
+    }
+    if !github::is_valid_repo_name(creation.name.trim()) {
+        ui.label(
+            RichText::new("Use letters, digits, '-', '_' or '.'")
+                .small()
+                .color(colors.danger),
+        );
+    }
+    field
+}
+
+fn story_title_field(
+    ui: &mut Ui,
+    colors: Palette,
+    draft: &mut String,
+    enabled: bool,
+) -> egui::Response {
+    ui.label("Give the story a title; the repository is named after it.");
+    let label = field_label(ui, colors, "Story title");
+    ui.add_enabled(
+        enabled,
+        TextEdit::singleline(draft)
+            .hint_text(crate::model::DEFAULT_TITLE)
+            .desired_width(f32::INFINITY),
+    )
+    .labelled_by(label)
 }
 
 fn field_label(ui: &mut Ui, colors: Palette, text: &str) -> egui::Id {

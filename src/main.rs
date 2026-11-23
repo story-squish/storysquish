@@ -14,6 +14,7 @@ fn main() -> Result<()> {
             configured_board_path(&settings_path).map_or_else(storage::default_board_path, Ok)?
         }
     };
+    let never_saved = !path.try_exists().unwrap_or(true);
     let (board, board_alert) = load_board(&path);
     let startup_alert = board_alert.or(migration_alert);
 
@@ -32,13 +33,12 @@ fn main() -> Result<()> {
         APP_NAME,
         options,
         Box::new(move |cc| {
-            Ok(Box::new(PlannerApp::new(
-                cc,
-                board,
-                path,
-                settings_path,
-                startup_alert,
-            )))
+            let app = PlannerApp::new(cc, board, path, settings_path, startup_alert);
+            Ok(Box::new(if never_saved {
+                app.offering_repo_on_first_change()
+            } else {
+                app
+            }))
         }),
     )
     .map_err(|e| anyhow::anyhow!("{e}"))
