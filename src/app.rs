@@ -1363,7 +1363,9 @@ impl PlannerApp {
         }
     }
 
-    /// Pushes the board to its new repo ahead of anything else queued.
+    /// Pushes the board to its new repo ahead of anything else queued, even
+    /// an empty one: the repo has nothing to overwrite, and without the file
+    /// it cannot be opened from the cloud.
     fn link_created_repo(&mut self, repo: String) {
         let Some(creation) = self.backup.repo_creation.take() else {
             return;
@@ -1378,7 +1380,7 @@ impl PlannerApp {
         }
         self.backup.repo_draft = repo;
         self.backup.last_pushed_json = None;
-        if let Some(job) = self.push_job().filter(|_| !self.board.is_empty()) {
+        if let Some(job) = self.push_job() {
             self.backup.unpushed_boards.insert(board.clone());
             self.backup.queued_pushes.insert(0, (board, job));
         }
@@ -1522,10 +1524,10 @@ impl PlannerApp {
         }
         let status = if self.backup.in_flight.is_some() {
             "Talking to GitHub…".to_owned()
-        } else if self.board.is_empty() {
-            "Empty boards are not backed up.".to_owned()
         } else if let Some(at) = self.backup.last_success {
             format!("Backed up {}", elapsed_description(at.elapsed()))
+        } else if self.board.is_empty() {
+            "Empty boards are not backed up.".to_owned()
         } else if self.repo().is_none() {
             "No repository yet; the first backup offers to create a private one.".to_owned()
         } else {

@@ -1303,6 +1303,13 @@ fn a_linked_repo_that_no_longer_exists_offers_to_create_it_again() {
     assert_eq!(linked_repo(&harness).as_deref(), Some("someone/dune-gone"));
 }
 
+fn header_title_field<'h>(harness: &'h Harness<'_, PlannerApp>) -> egui_kittest::Node<'h> {
+    harness.get_by(|node| {
+        node.role() == egui::accesskit::Role::TextInput
+            && node.value().as_deref() == Some("Untitled Novel")
+    })
+}
+
 fn story_title_field<'h>(harness: &'h Harness<'_, PlannerApp>) -> egui_kittest::Node<'h> {
     labelled_text_input(harness, "STORY TITLE")
 }
@@ -1403,5 +1410,35 @@ fn the_first_change_on_first_launch_offers_a_repo() {
     assert_eq!(
         repo_name_shown(&harness).as_deref(),
         Some("storysquish-board")
+    );
+}
+
+#[test]
+fn a_repo_created_for_an_empty_board_still_gets_the_board_file() {
+    let (mut harness, _dir) = launch_with_fake_github(titled_board("Dune"), None, &[]);
+    harness.get_by_label("New").click();
+    harness.run();
+    header_title_field(&harness).focus();
+    harness.run();
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    header_title_field(&harness).type_text("Arrakis");
+    harness.run();
+    harness.key_press(egui::Key::Tab);
+    step_until(&mut harness, |h| {
+        repo_name_shown(h).as_deref() == Some("storysquish-arrakis")
+            && h.query_by_label("Checking which names are free…").is_none()
+    });
+
+    harness.get_by_label("Create").click();
+    step_until(&mut harness, |h| linked_repo(h).is_some());
+    open_settings(&mut harness);
+    step_until(&mut harness, |h| {
+        h.query_by_label_contains("Backed up").is_some()
+    });
+
+    assert!(harness.state().board().is_empty());
+    assert_eq!(
+        linked_repo(&harness).as_deref(),
+        Some("someone/storysquish-arrakis")
     );
 }
