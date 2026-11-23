@@ -16,7 +16,7 @@ use ureq::config::RedirectAuthHeaders;
 pub const API_BASE: &str = "https://api.github.com";
 pub const BOARD_FILE_NAME: &str = "storysquish-board.json";
 pub const TOKEN_FILE_NAME: &str = "github-token";
-const REPO_NAME_PREFIX: &str = "storysquish-";
+pub const REPO_NAME_PREFIX: &str = "storysquish-";
 const UNTITLED_REPO_NAME: &str = "storysquish-board";
 const MAX_SUGGESTED_REPO_NAME_LEN: usize = 80;
 const MAX_REPO_NAME_LEN: usize = 100;
@@ -240,6 +240,24 @@ impl Client {
             .call()
             .context("contacting GitHub")?;
         read_json(response)
+    }
+
+    /// Renames `repo` to its name behind the `storysquish-` prefix, numbered
+    /// past names the account already uses, and returns the resulting
+    /// `owner/name`. A repo that is gone or public keeps its name; the next
+    /// push reports either.
+    pub fn add_repo_prefix(&self, repo: &str) -> Result<String> {
+        if has_repo_prefix(repo_name(repo)) {
+            return Ok(repo.to_owned());
+        }
+        let Some(existing) = self.repo_info_if_visible(repo)? else {
+            return Ok(repo.to_owned());
+        };
+        let name = repo_name(&existing.full_name);
+        if !existing.private || has_repo_prefix(name) {
+            return Ok(existing.full_name);
+        }
+        self.rename_repo(&existing.full_name, &prefixed_repo_name(name))
     }
 
     /// Tries `base_name` and its numbered variants, keeping the current name
@@ -489,9 +507,9 @@ pub fn suggested_repo_name(title: &str) -> String {
     name.trim_end_matches('-').to_owned()
 }
 
-/// The base name to rename `existing` to for `title`, or `None` when its name
-/// does not follow the title it was backed up under, e.g. one the writer
-/// chose, or when the new title gives the same name.
+/// The base name to rename `existing` to when `title` gives a different name
+/// than the title it was last backed up under, or `None` when the name stays,
+/// including when it already follows `title`, e.g. renamed on another device.
 fn renamed_repo_base(existing: &RepoResponse, title: &str) -> Option<String> {
     let description = existing.description.as_deref().unwrap_or_default();
     if !is_board_description(description) {
@@ -500,8 +518,20 @@ fn renamed_repo_base(existing: &RepoResponse, title: &str) -> Option<String> {
     let previous_base = suggested_repo_name(&title_from_description(description));
     let base_name = suggested_repo_name(title);
     (base_name != previous_base
-        && is_numbered_repo_name(repo_name(&existing.full_name), &previous_base))
+        && !is_numbered_repo_name(repo_name(&existing.full_name), &base_name))
     .then_some(base_name)
+}
+
+/// Compared without case, as GitHub compares repository names.
+pub fn has_repo_prefix(name: &str) -> bool {
+    name.get(..REPO_NAME_PREFIX.len())
+        .is_some_and(|start| start.eq_ignore_ascii_case(REPO_NAME_PREFIX))
+}
+
+fn prefixed_repo_name(name: &str) -> String {
+    let mut prefixed = format!("{REPO_NAME_PREFIX}{name}");
+    prefixed.truncate(MAX_SUGGESTED_REPO_NAME_LEN);
+    prefixed.trim_end_matches('-').to_owned()
 }
 
 fn is_numbered_repo_name(name: &str, base_name: &str) -> bool {
@@ -612,6 +642,9 @@ pub enum Job {
     SuggestRepoName {
         title: String,
     },
+    AddRepoPrefix {
+        repo: String,
+    },
     CreateRepo {
         name: String,
         title: String,
@@ -645,6 +678,10 @@ pub enum Reply {
     SuggestedRepoName {
         title: String,
         suggested: SuggestedRepo,
+    },
+    RenamedRepo {
+        from: String,
+        to: String,
     },
     CreatedRepo(String),
     Fetched(String),
@@ -699,6 +736,9 @@ pub fn run(client: &Client, job: Job) -> Reply {
         Job::SuggestRepoName { title } => client
             .suggest_repo_name(&title)
             .map(|suggested| Reply::SuggestedRepoName { title, suggested }),
+        Job::AddRepoPrefix { repo } => client
+            .add_repo_prefix(&repo)
+            .map(|to| Reply::RenamedRepo { from: repo, to }),
         Job::CreateRepo { name, title } => {
             client.create_repo(&name, &title).map(Reply::CreatedRepo)
         }
@@ -776,7 +816,7 @@ mod tests {
     }
 
     #[test]
-    fn only_repos_named_after_the_previous_title_follow_a_new_one() {
+    fn a_new_title_renames_the_repo_unless_it_already_follows_it() {
         let dune = repo("someone/storysquish-dune", "StorySquish board: Dune");
         assert_eq!(
             renamed_repo_base(&dune, "Dune Messiah").as_deref(),
@@ -798,10 +838,30 @@ mod tests {
         );
 
         let chosen = repo("someone/my-novel", "StorySquish board: Dune");
-        assert_eq!(renamed_repo_base(&chosen, "Dune Messiah"), None);
+        assert_eq!(
+            renamed_repo_base(&chosen, "Dune Messiah").as_deref(),
+            Some("storysquish-dune-messiah")
+        );
+        assert_eq!(renamed_repo_base(&chosen, "Dune"), None);
+
+        let renamed_elsewhere = repo("someone/storysquish-arrakis-2", "StorySquish board: Dune");
+        assert_eq!(renamed_repo_base(&renamed_elsewhere, "Arrakis"), None);
 
         let foreign = repo("someone/storysquish-dune", "my notes");
         assert_eq!(renamed_repo_base(&foreign, "Dune Messiah"), None);
+    }
+
+    #[test]
+    fn the_prefix_is_added_once_and_kept_within_githubs_limit() {
+        assert!(has_repo_prefix("storysquish-dune"));
+        assert!(has_repo_prefix("StorySquish-Dune"));
+        assert!(!has_repo_prefix("dune"));
+        assert!(!has_repo_prefix("storysquish"));
+        assert_eq!(prefixed_repo_name("dune"), "storysquish-dune");
+        assert_eq!(prefixed_repo_name("my_novel.v2"), "storysquish-my_novel.v2");
+        let long = prefixed_repo_name(&format!("{}-x", "a".repeat(67)));
+        assert_eq!(long.len(), MAX_SUGGESTED_REPO_NAME_LEN - 1, "{long}");
+        assert!(is_valid_repo_name(&numbered_repo_name(&long, 20)));
     }
 
     #[test]
