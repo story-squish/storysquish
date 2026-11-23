@@ -2,12 +2,21 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use spellbook::Dictionary;
 
+use crate::storage::write_atomically;
+
 pub const DEFAULT_DICTIONARY: &str = "en_US";
 const SUGGESTION_LIMIT: usize = 6;
+
+/// Pinned to a commit so a download is always the file that was tested.
+pub const DOWNLOAD_BASE: &str = "https://raw.githubusercontent.com/wooorm/dictionaries/\
+     8cfea406b505e4d7df52d5a19bce525df98c54ab/dictionaries";
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60);
+const MAX_DOWNLOAD_BYTES: u64 = 32 * 1024 * 1024;
 
 struct BundledDictionary {
     id: &'static str,
@@ -31,10 +40,40 @@ const BUNDLED: [BundledDictionary; 2] = [
     },
 ];
 
+struct DownloadableDictionary {
+    id: &'static str,
+    name: &'static str,
+    folder: &'static str,
+}
+
+const DOWNLOADABLE: [DownloadableDictionary; 4] = [
+    DownloadableDictionary {
+        id: "de_DE",
+        name: "German",
+        folder: "de",
+    },
+    DownloadableDictionary {
+        id: "es_ES",
+        name: "Spanish",
+        folder: "es",
+    },
+    DownloadableDictionary {
+        id: "fr_FR",
+        name: "French",
+        folder: "fr",
+    },
+    DownloadableDictionary {
+        id: "ru_RU",
+        name: "Russian",
+        folder: "ru",
+    },
+];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DictionarySource {
     Bundled,
     Installed { aff: PathBuf, dic: PathBuf },
+    Downloadable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,7 +84,8 @@ pub struct DictionaryInfo {
 }
 
 /// Bundled dictionaries first, then Hunspell `.aff`/`.dic` pairs found in
-/// `dirs`, earlier directories winning when two share an id.
+/// `dirs`, earlier directories winning when two share an id, then the
+/// downloadable ones not yet on this computer.
 pub fn available_dictionaries(dirs: &[PathBuf]) -> Vec<DictionaryInfo> {
     let mut found: Vec<DictionaryInfo> = BUNDLED
         .iter()
@@ -68,7 +108,12 @@ pub fn available_dictionaries(dirs: &[PathBuf]) -> Vec<DictionaryInfo> {
         in_dir.sort_by(|a, b| a.id.cmp(&b.id));
         installed.extend(in_dir);
     }
-    for dictionary in installed {
+    let downloadable = DOWNLOADABLE.iter().map(|downloadable| DictionaryInfo {
+        id: downloadable.id.to_owned(),
+        name: downloadable.name.to_owned(),
+        source: DictionarySource::Downloadable,
+    });
+    for dictionary in installed.into_iter().chain(downloadable) {
         if !found.iter().any(|known| known.id == dictionary.id) {
             found.push(dictionary);
         }
@@ -85,8 +130,12 @@ fn installed_dictionary(dic: &Path) -> Option<DictionaryInfo> {
         return None;
     }
     let id = dic.file_stem()?.to_str()?.to_owned();
+    let name = DOWNLOADABLE
+        .iter()
+        .find(|downloadable| downloadable.id == id)
+        .map_or_else(|| format!("{id} (installed)"), |d| d.name.to_owned());
     Some(DictionaryInfo {
-        name: format!("{id} (installed)"),
+        name,
         id,
         source: DictionarySource::Installed {
             aff,
@@ -129,8 +178,57 @@ pub fn load_dictionary(info: &DictionaryInfo) -> Result<Dictionary> {
         DictionarySource::Installed { aff, dic } => {
             Dictionary::new(&read_dictionary_file(aff)?, &read_dictionary_file(dic)?)
         }
+        DictionarySource::Downloadable => {
+            return Err(anyhow!(
+                "the {} dictionary is not downloaded yet",
+                info.name
+            ));
+        }
     };
     parsed.map_err(|e| anyhow!("{} is not a valid Hunspell dictionary: {e}", info.id))
+}
+
+/// Downloads a dictionary from `base` into `dir`, parsing it before saving
+/// so a broken download never shadows a later retry.
+pub fn download_dictionary(id: &str, base: &str, dir: &Path) -> Result<Dictionary> {
+    let downloadable = DOWNLOADABLE
+        .iter()
+        .find(|downloadable| downloadable.id == id)
+        .with_context(|| format!("no downloadable dictionary {id}"))?;
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(DOWNLOAD_TIMEOUT))
+        .build()
+        .into();
+    let fetch = |file: &str| -> Result<String> {
+        let url = format!(
+            "{}/{}/{file}",
+            base.trim_end_matches('/'),
+            downloadable.folder
+        );
+        agent
+            .get(&url)
+            .header("User-Agent", crate::APP_NAME)
+            .call()
+            .and_then(|mut response| {
+                response
+                    .body_mut()
+                    .with_config()
+                    .limit(MAX_DOWNLOAD_BYTES)
+                    .read_to_string()
+            })
+            .with_context(|| format!("downloading the {} dictionary", downloadable.name))
+    };
+    let aff = fetch("index.aff")?;
+    let dic = fetch("index.dic")?;
+    let dictionary = Dictionary::new(&aff, &dic).map_err(|e| {
+        anyhow!(
+            "the downloaded {} dictionary is not valid: {e}",
+            downloadable.name
+        )
+    })?;
+    write_atomically(&dir.join(format!("{id}.aff")), &aff)?;
+    write_atomically(&dir.join(format!("{id}.dic")), &dic)?;
+    Ok(dictionary)
 }
 
 /// Older Hunspell dictionaries are ISO-8859-1 rather than UTF-8.
@@ -352,24 +450,36 @@ mod tests {
         for file in [
             "de_DE.aff",
             "de_DE.dic",
+            "it_IT.aff",
+            "it_IT.dic",
             "en_US.aff",
             "en_US.dic",
             "fr_FR.dic",
         ] {
             fs::write(dir.path().join(file), "").unwrap();
         }
-        let ids: Vec<_> = available_dictionaries(&[dir.path().to_owned()])
+        let found: Vec<_> = available_dictionaries(&[dir.path().to_owned()])
             .into_iter()
-            .map(|info| (info.id, info.source == DictionarySource::Bundled))
+            .map(|info| {
+                let source = match info.source {
+                    DictionarySource::Bundled => "bundled",
+                    DictionarySource::Installed { .. } => "installed",
+                    DictionarySource::Downloadable => "downloadable",
+                };
+                (info.id, info.name, source)
+            })
             .collect();
-        assert_eq!(
-            ids,
-            [
-                ("en_US".to_owned(), true),
-                ("en_GB".to_owned(), true),
-                ("de_DE".to_owned(), false)
-            ]
-        );
+        let expected = [
+            ("en_US", "English (US)", "bundled"),
+            ("en_GB", "English (UK)", "bundled"),
+            ("de_DE", "German", "installed"),
+            ("it_IT", "it_IT (installed)", "installed"),
+            ("es_ES", "Spanish", "downloadable"),
+            ("fr_FR", "French", "downloadable"),
+            ("ru_RU", "Russian", "downloadable"),
+        ]
+        .map(|(id, name, source)| (id.to_owned(), name.to_owned(), source));
+        assert_eq!(found, expected);
     }
 
     #[test]
@@ -378,5 +488,64 @@ mod tests {
         let path = dir.path().join("x.dic");
         fs::write(&path, [b'c', b'a', b'f', 0xE9]).unwrap();
         assert_eq!(read_dictionary_file(&path).unwrap(), "café");
+    }
+
+    /// Answers each request for `path` with its body, and anything else with
+    /// a 404, returning the base URL.
+    fn serve(files: &'static [(&'static str, &'static str)]) -> String {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut request_line = String::new();
+                reader.read_line(&mut request_line).unwrap();
+                let path = request_line.split_whitespace().nth(1).unwrap_or_default();
+                let (status, body) = files
+                    .iter()
+                    .find(|(served, _)| *served == path)
+                    .map_or((404, ""), |(_, body)| (200, *body));
+                write!(
+                    stream,
+                    "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+        });
+        base
+    }
+
+    #[test]
+    fn downloaded_dictionaries_are_saved_and_then_listed_as_installed() {
+        let base = serve(&[
+            ("/de/index.aff", "SET UTF-8\n"),
+            ("/de/index.dic", "1\nStraße\n"),
+        ]);
+        let dir = tempfile::tempdir().unwrap();
+
+        let dictionary = download_dictionary("de_DE", &base, dir.path()).unwrap();
+
+        assert!(dictionary.check("Straße"));
+        let german = available_dictionaries(&[dir.path().to_owned()])
+            .into_iter()
+            .find(|info| info.id == "de_DE")
+            .unwrap();
+        assert_eq!(german.name, "German");
+        assert!(matches!(german.source, DictionarySource::Installed { .. }));
+        assert!(Speller::new(load_dictionary(&german).unwrap()).is_correct("Straße"));
+    }
+
+    #[test]
+    fn failed_downloads_leave_nothing_behind() {
+        let base = serve(&[("/fr/index.aff", "SET UTF-8\n")]);
+        let dir = tempfile::tempdir().unwrap();
+
+        let error = download_dictionary("fr_FR", &base, dir.path()).unwrap_err();
+
+        assert!(format!("{error:#}").contains("French"), "{error:#}");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 }

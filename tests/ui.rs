@@ -1937,3 +1937,80 @@ fn choosing_a_dictionary_in_settings_saves_and_loads_it() {
     assert_eq!(saved.spellcheck_dictionary.0, None);
     assert!(!harness.state().spellcheck_ready());
 }
+
+fn fake_dictionary_host(dic: &'static str) -> String {
+    use std::io::{BufRead, BufReader, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut request_line = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut request_line)
+                .unwrap();
+            let body = match request_line.split_whitespace().nth(1) {
+                Some("/de/index.aff") => "SET UTF-8\n",
+                Some("/de/index.dic") => dic,
+                _ => "",
+            };
+            let status = if body.is_empty() { 404 } else { 200 };
+            write!(
+                stream,
+                "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        }
+    });
+    base
+}
+
+#[test]
+fn choosing_a_downloadable_dictionary_downloads_and_uses_it() {
+    let base = fake_dictionary_host("2\nDer\nRegen\n");
+    let dir = tempfile::tempdir().unwrap();
+    let settings_path = dir.path().join("config/storysquish/settings.json");
+    let board = board_with_scenes(&["Rain"]);
+    let board_path = dir.path().join("board.json");
+    let app_settings_path = settings_path.clone();
+    let mut harness = Harness::builder()
+        .with_size(WINDOW)
+        .build_eframe(move |cc| {
+            PlannerApp::new(cc, board, board_path, app_settings_path, None)
+                .with_dictionary_download_base(&base)
+        });
+    harness.run();
+    wait_for_spellcheck(&mut harness);
+
+    harness.get_by_label("Settings").click();
+    harness.run();
+    harness
+        .get_by(|node| {
+            node.role() == egui::accesskit::Role::ComboBox
+                && node.label().as_deref() == Some("SPELLCHECK")
+        })
+        .click();
+    harness.run();
+    harness.get_by_label("German (download)").click();
+    harness.run();
+    wait_for_spellcheck(&mut harness);
+
+    let saved = storysquish::settings::load(&settings_path).unwrap();
+    assert_eq!(saved.spellcheck_dictionary.0.as_deref(), Some("de_DE"));
+    let dictionaries = dir.path().join("config/storysquish/dictionaries");
+    assert!(dictionaries.join("de_DE.aff").is_file());
+    assert!(dictionaries.join("de_DE.dic").is_file());
+    let picker = harness.get_by(|node| {
+        node.role() == egui::accesskit::Role::ComboBox
+            && node.label().as_deref() == Some("SPELLCHECK")
+    });
+    assert_eq!(picker.value().as_deref(), Some("German"));
+
+    harness.get_by_label("Close").click();
+    harness.run();
+    open_prose(&mut harness, "Der Regen rain");
+    labelled_text_input(&harness, "SCENE 01  Rain").click_secondary();
+    harness.run();
+    assert!(harness.query_by_label("Add “rain” to dictionary").is_some());
+}

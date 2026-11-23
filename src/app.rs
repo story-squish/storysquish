@@ -14,7 +14,7 @@ use crate::github::{self, CloudBoard, Revision};
 use crate::history::History;
 use crate::model::{Act, Board, Character, Id, Location, Scene, Status};
 use crate::settings::{self, Settings, SpellcheckDictionary};
-use crate::spelling::{self, DictionaryInfo, KnownWords};
+use crate::spelling::{self, DictionaryInfo, DictionarySource, KnownWords};
 use crate::theme::{ColorScheme, Palette};
 use crate::{outline, storage};
 
@@ -400,6 +400,12 @@ impl PlannerApp {
     #[must_use]
     pub fn offering_repo_on_first_change(mut self) -> Self {
         self.backup.new_board = Some(self.path.clone());
+        self
+    }
+
+    #[must_use]
+    pub fn with_dictionary_download_base(mut self, base: &str) -> Self {
+        self.spellcheck.set_download_base(base);
         self
     }
 
@@ -3515,13 +3521,20 @@ impl PlannerApp {
             .show_ui(ui, |ui| {
                 ui.selectable_value(chosen, None, "Off");
                 for info in dictionaries {
-                    ui.selectable_value(chosen, Some(info.id.clone()), &info.name);
+                    let label = match info.source {
+                        DictionarySource::Downloadable => format!("{} (download)", info.name),
+                        _ => info.name.clone(),
+                    };
+                    ui.selectable_value(chosen, Some(info.id.clone()), label);
                 }
             })
             .response
             .labelled_by(label);
         let (note, color) = match &self.spellcheck.status {
             spellcheck::Status::Loading(_) => ("Loading dictionary…".to_owned(), colors.muted),
+            spellcheck::Status::Downloading { name, .. } => {
+                (format!("Downloading the {name} dictionary…"), colors.muted)
+            }
             spellcheck::Status::Failed(error) => (error.clone(), colors.danger),
             spellcheck::Status::Off | spellcheck::Status::Ready(_) => (
                 format!(
@@ -3703,7 +3716,11 @@ impl eframe::App for PlannerApp {
         self.offer_repo_for_new_board(ctx);
         self.back_up_to_github_if_due(ctx);
         self.add_prefix_to_open_repo(ctx);
-        self.spellcheck.receive_loaded();
+        if self.spellcheck.receive_loaded()
+            && let Some(dialog) = &mut self.settings_dialog
+        {
+            dialog.dictionaries = None;
+        }
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
