@@ -2,10 +2,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::APP_NAME;
-use crate::model::Board;
+use crate::model::{Board, DEFAULT_TITLE};
 
 pub fn default_board_path() -> Result<PathBuf> {
     Ok(data_dir(APP_NAME)?.join("board.json"))
@@ -197,9 +197,41 @@ pub fn export_file_name(board: &Board, suffix: Option<&str>, extension: &str) ->
     }
 }
 
-/// A file in `dir` named after the board's title that does not exist yet.
+/// Beside `board_path`, unless it is a backup opened from a backups
+/// directory: new boards there would be mistaken for its backups.
+pub fn new_board_dir(board_path: &Path) -> PathBuf {
+    let mut dir = board_path.parent().unwrap_or(Path::new("."));
+    while dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with("-backups"))
+        && let Some(parent) = dir.parent()
+    {
+        dir = parent;
+    }
+    dir.to_path_buf()
+}
+
+/// A file in `dir` named after the board's title that neither exists nor
+/// has a backups directory left behind yet.
 pub fn unused_board_path(dir: &Path, board: &Board) -> PathBuf {
-    let name = export_file_name(board, None, "json");
+    let stem = board_file_stem(&board.title);
+    let mut number = 1;
+    loop {
+        let path = dir.join(format!("{}.json", numbered_stem(&stem, number)));
+        if !path.exists() && !backups_dir(&path).exists() {
+            return path;
+        }
+        number += 1;
+    }
+}
+
+fn board_file_stem(title: &str) -> String {
+    let board = Board {
+        title: title.to_owned(),
+        ..Board::default()
+    };
+    let name = export_file_name(&board, None, "json");
     let stem: String = name
         .trim_end_matches(".json")
         .trim_start_matches('.')
@@ -210,14 +242,90 @@ pub fn unused_board_path(dir: &Path, board: &Board) -> PathBuf {
             c => c,
         })
         .collect();
-    let stem = if stem.is_empty() { "novel" } else { &stem };
-    let mut path = dir.join(format!("{stem}.json"));
-    let mut number = 1;
-    while path.exists() {
-        number += 1;
-        path = dir.join(format!("{stem}_{number}.json"));
+    if stem.is_empty() {
+        "novel".to_owned()
+    } else {
+        stem
     }
-    path
+}
+
+fn numbered_stem(stem: &str, number: usize) -> String {
+    if number == 1 {
+        stem.to_owned()
+    } else {
+        format!("{stem}_{number}")
+    }
+}
+
+/// Compared without case, as the default macOS and Windows file systems
+/// compare names.
+fn is_numbered_stem(stem: &str, base: &str) -> bool {
+    let (stem, base) = (stem.to_lowercase(), base.to_lowercase());
+    match stem.strip_prefix(&base) {
+        Some("") => true,
+        Some(rest) => rest
+            .strip_prefix('_')
+            .and_then(|digits| digits.parse::<usize>().ok())
+            .is_some_and(|number| number >= 2 && rest == format!("_{number}")),
+        None => false,
+    }
+}
+
+/// Where `board_path` moves so its name follows the board's new title, or
+/// `None` when the name stays: the file is not saved yet, it already follows
+/// the title, the title is a placeholder, or the name was chosen rather than derived from
+/// `previous_title` or a placeholder, e.g. with Move.
+pub fn title_following_path(
+    board_path: &Path,
+    previous_title: &str,
+    board: &Board,
+) -> Option<PathBuf> {
+    if board.has_placeholder_title() || !board_path.is_file() {
+        return None;
+    }
+    let stem = board_stem(board_path);
+    if is_numbered_stem(&stem, &board_file_stem(&board.title)) {
+        return None;
+    }
+    let derived = [previous_title, DEFAULT_TITLE, "", "board"]
+        .iter()
+        .any(|title| is_numbered_stem(&stem, &board_file_stem(title)));
+    let dir = board_path.parent()?;
+    derived.then(|| unused_board_path(dir, board))
+}
+
+/// Moves the board file and its backups, renaming each backup to the new
+/// stem so it is still listed and pruned with the board.
+pub fn rename_board(from: &Path, to: &Path) -> Result<()> {
+    if to.try_exists()? {
+        bail!("{} already exists", to.display());
+    }
+    fs::rename(from, to)
+        .with_context(|| format!("renaming {} to {}", from.display(), to.display()))?;
+    let (old_dir, new_dir) = (backups_dir(from), backups_dir(to));
+    if !old_dir.try_exists()? {
+        return Ok(());
+    }
+    fs::rename(&old_dir, &new_dir)
+        .with_context(|| format!("renaming {} to {}", old_dir.display(), new_dir.display()))?;
+    let (old_stem, new_stem) = (board_stem(from), board_stem(to));
+    let entries =
+        fs::read_dir(&new_dir).with_context(|| format!("listing {}", new_dir.display()))?;
+    for backup in entries.filter_map(Result::ok).map(|entry| entry.path()) {
+        if parse_backup_name(&old_stem, &backup).is_none() {
+            continue;
+        }
+        let Some(rest) = backup
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_prefix(&old_stem))
+        else {
+            continue;
+        };
+        let renamed = new_dir.join(format!("{new_stem}{rest}"));
+        fs::rename(&backup, &renamed).with_context(|| format!("renaming {}", backup.display()))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -433,6 +541,111 @@ mod tests {
         assert_eq!(
             export_file_name(&board, Some("manuscript"), "md"),
             "novel_manuscript.md"
+        );
+    }
+
+    #[test]
+    fn numbered_stems_match_their_base_without_case() {
+        assert!(is_numbered_stem("Dune", "Dune"));
+        assert!(is_numbered_stem("dune_3", "Dune"));
+        assert!(!is_numbered_stem("Dune_1", "Dune"));
+        assert!(!is_numbered_stem("Dune_03", "Dune"));
+        assert!(!is_numbered_stem("Dune_Messiah", "Dune"));
+        assert!(!is_numbered_stem("Dun", "Dune"));
+    }
+
+    #[test]
+    fn only_names_derived_from_a_title_follow_a_new_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let dune = Board {
+            title: "Dune".into(),
+            ..Board::default()
+        };
+        let path_for = |name: &str| {
+            let path = dir.path().join(name);
+            save(&path, &dune).unwrap();
+            path
+        };
+        let renamed = Some(dir.path().join("Dune.json"));
+        assert_eq!(
+            title_following_path(&path_for("Untitled_Novel_4.json"), "Dune", &dune),
+            renamed
+        );
+        assert_eq!(
+            title_following_path(&path_for("board.json"), "Dune", &dune),
+            renamed
+        );
+        assert_eq!(
+            title_following_path(&path_for("Arrakis_2.json"), "Arrakis", &dune),
+            renamed
+        );
+        assert_eq!(
+            title_following_path(&path_for("draft.json"), "Arrakis", &dune),
+            None
+        );
+        assert_eq!(
+            title_following_path(&path_for("dune_2.json"), "Arrakis", &dune),
+            None
+        );
+        assert_eq!(
+            title_following_path(&dir.path().join("Untitled_Novel_9.json"), "", &dune),
+            None
+        );
+        let untitled = Board::default();
+        assert_eq!(
+            title_following_path(&path_for("board.json"), "Dune", &untitled),
+            None
+        );
+    }
+
+    #[test]
+    fn renaming_a_board_moves_its_backups_under_the_new_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("Untitled_Novel.json");
+        save(&from, &Board::default()).unwrap();
+        back_up(&from, "", 5).unwrap();
+        back_up(&from, "conflict", 5).unwrap();
+        fs::write(backups_dir(&from).join("notes.txt"), "mine").unwrap();
+        let to = dir.path().join("Dune.json");
+
+        rename_board(&from, &to).unwrap();
+
+        assert!(!from.exists() && !backups_dir(&from).exists());
+        assert!(to.is_file());
+        let mut tags: Vec<String> = list_backups(&to)
+            .unwrap()
+            .into_iter()
+            .filter(|backup| backup.saved_at.is_some())
+            .map(|backup| backup.tag)
+            .collect();
+        tags.sort();
+        assert_eq!(tags, ["", "conflict"]);
+        assert!(backups_dir(&to).join("notes.txt").is_file());
+        assert!(rename_board(&to, &to).is_err());
+    }
+
+    #[test]
+    fn new_boards_go_beside_the_board_outside_backups_directories() {
+        let root = Path::new("/novels");
+        assert_eq!(new_board_dir(&root.join("Dune.json")), root);
+        assert_eq!(
+            new_board_dir(&root.join("board-backups/board-001.json")),
+            root
+        );
+        assert_eq!(
+            new_board_dir(&root.join("board-backups/x-backups/x-002.json")),
+            root
+        );
+        assert_eq!(new_board_dir(Path::new("Dune.json")), Path::new(""));
+    }
+
+    #[test]
+    fn unused_board_path_skips_names_with_leftover_backups() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("Untitled_Novel-backups")).unwrap();
+        assert_eq!(
+            unused_board_path(dir.path(), &Board::default()),
+            dir.path().join("Untitled_Novel_2.json")
         );
     }
 

@@ -243,6 +243,9 @@ pub struct PlannerApp {
     board: Board,
     history: History<Board>,
     path: PathBuf,
+    /// The title `path` was last saved or opened under, which its name may
+    /// have been derived from.
+    file_title: String,
     selected: Option<Selection>,
     view: View,
     new_character: String,
@@ -307,8 +310,9 @@ impl PlannerApp {
         };
         let colors = settings.color_scheme.palette();
         apply_theme(&cc.egui_ctx, colors);
-        Self {
+        let mut app = Self {
             history: History::new(board.clone(), UNDO_LIMIT),
+            file_title: board.title.clone(),
             board,
             disk_modified: storage::modified_time(&path),
             path,
@@ -338,7 +342,9 @@ impl PlannerApp {
             local_recovery: None,
             backup,
             colors,
-        }
+        };
+        app.follow_title_in_file_name();
+        app
     }
 
     #[must_use]
@@ -423,6 +429,71 @@ impl PlannerApp {
             }
             Err(e) => SaveState::Failed(format!("{e:#}")),
         };
+        if self.save_state == SaveState::Saved {
+            self.follow_title_in_file_name();
+        }
+    }
+
+    /// Renames a board file named after its previous title, or a
+    /// placeholder, to match the current title, as its repo is renamed.
+    fn follow_title_in_file_name(&mut self) {
+        let previous_title = std::mem::replace(&mut self.file_title, self.board.title.clone());
+        let Some(renamed) = storage::title_following_path(&self.path, &previous_title, &self.board)
+        else {
+            return;
+        };
+        match storage::rename_board(&self.path, &renamed) {
+            Ok(()) => self.retarget_board_path(renamed),
+            Err(e) => {
+                self.alert = Some(format!(
+                    "Could not rename the board file to follow its title: {e:#}"
+                ));
+            }
+        }
+    }
+
+    /// Points everything that tracked the open board's file at its new
+    /// name, unlike `use_board_path`, which switches to another board.
+    fn retarget_board_path(&mut self, renamed: PathBuf) {
+        let previous = std::mem::replace(&mut self.path, renamed);
+        let current = self.path.clone();
+        let retarget = |path: &mut PathBuf| {
+            if *path == previous {
+                path.clone_from(&current);
+            }
+        };
+        self.disk_modified = storage::modified_time(&current);
+        self.settings.move_repo(&previous, &current);
+        self.settings.board_path = Some(current.clone());
+        let backup = &mut self.backup;
+        [
+            backup.pushed_board.as_mut(),
+            backup.new_board.as_mut(),
+            backup.prefix_check.as_mut(),
+            backup.repo_creation.as_mut().map(|c| &mut c.board),
+        ]
+        .into_iter()
+        .flatten()
+        .for_each(retarget);
+        backup
+            .queued_pushes
+            .iter_mut()
+            .for_each(|(path, _)| retarget(path));
+        for set in [
+            &mut backup.unpushed_boards,
+            &mut backup.declined_repo_creation,
+        ] {
+            if set.remove(&previous) {
+                set.insert(current.clone());
+            }
+        }
+        if let Some(recovery) = &mut self.local_recovery {
+            recovery.error = storage::list_backups(&current)
+                .map(|backups| recovery.backups = backups)
+                .err()
+                .map(|e| format!("{e:#}"));
+        }
+        self.save_settings_reporting_errors();
     }
 
     fn changed_on_disk(&self) -> Option<SystemTime> {
@@ -838,6 +909,7 @@ impl PlannerApp {
                     self.settings.previous_board_path = Some(self.path.clone());
                 }
                 self.use_board_path(path);
+                self.follow_title_in_file_name();
                 true
             }
             Err(e) => {
@@ -851,8 +923,8 @@ impl PlannerApp {
     /// becomes the previous board.
     fn new_board_file(&mut self) {
         let board = Board::default();
-        let dir = self.path.parent().unwrap_or(Path::new("."));
-        let path = storage::unused_board_path(dir, &board);
+        let dir = storage::new_board_dir(&self.path);
+        let path = storage::unused_board_path(&dir, &board);
         if let Err(e) = storage::save(&path, &board) {
             self.alert = Some(format!("Could not create a new board: {e:#}"));
             return;
@@ -913,8 +985,8 @@ impl PlannerApp {
             }
             self.replace_board_or_alert(board, BEFORE_GITHUB);
         } else {
-            let dir = self.path.parent().unwrap_or(Path::new("."));
-            let path = storage::unused_board_path(dir, &board);
+            let dir = storage::new_board_dir(&self.path);
+            let path = storage::unused_board_path(&dir, &board);
             if let Err(e) = storage::save(&path, &board) {
                 self.alert = Some(format!("Could not save the cloud board: {e:#}"));
                 return;
@@ -961,6 +1033,7 @@ impl PlannerApp {
     /// Makes `path` the board file for this and later launches.
     fn use_board_path(&mut self, path: PathBuf) {
         self.path = path;
+        self.board.title.clone_into(&mut self.file_title);
         self.disk_modified = storage::modified_time(&self.path);
         self.save_state = SaveState::Saved;
         self.last_backup = None;
