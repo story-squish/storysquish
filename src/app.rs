@@ -232,6 +232,9 @@ struct BackupRestore {
 #[derive(Default)]
 struct CloudPicker {
     boards: Option<Vec<CloudBoard>>,
+    /// Filled when GitHub cannot be reached, so boards on this computer can
+    /// still be opened.
+    offline_boards: Option<Vec<PathBuf>>,
     queued: Option<(BackupTask, github::Job)>,
     error: Option<String>,
 }
@@ -495,7 +498,7 @@ impl PlannerApp {
             }
         };
         self.disk_modified = storage::modified_time(&current);
-        self.settings.move_repo(&previous, &current);
+        self.settings.move_board(&previous, &current);
         self.settings.board_path = Some(current.clone());
         let backup = &mut self.backup;
         [
@@ -939,7 +942,7 @@ impl PlannerApp {
                 self.board = board;
                 self.selected = None;
                 if path != self.path {
-                    self.settings.previous_board_path = Some(self.path.clone());
+                    self.settings.remember_recent_board(&self.path);
                 }
                 self.use_board_path(path);
                 self.follow_title_in_file_name();
@@ -1057,7 +1060,7 @@ impl PlannerApp {
             return;
         }
         self.history.commit(&self.board);
-        self.settings.move_repo(&self.path, &path);
+        self.settings.move_board(&self.path, &path);
         self.use_board_path(path);
     }
 
@@ -1556,6 +1559,13 @@ impl PlannerApp {
                 }
             }
             BackupTask::AddRepoPrefix => self.backup.prefix_check = Some(self.path.clone()),
+            BackupTask::ListCloudBoards | BackupTask::OpenCloudBoard => {
+                let boards = self.local_boards();
+                if let Some(cloud) = &mut self.backup.cloud {
+                    cloud.error = None;
+                    cloud.offline_boards = Some(boards);
+                }
+            }
             _ => self.handle_github_failure(task, OFFLINE_REASON),
         }
     }
@@ -2060,12 +2070,19 @@ impl PlannerApp {
             || matches!(&self.backup.in_flight, Some((task, _)) if is_cloud_task(*task));
         let open_repo = self.repo();
         let mut chosen = None;
+        let mut chosen_offline = None;
         let mut close = false;
         let modal = egui::Modal::new(egui::Id::unique("cloud_open")).show(ctx, |ui| {
             ui.set_width(380.0);
             ui.heading("Open from cloud");
             if let Some(error) = &cloud.error {
                 ui.label(RichText::new(error).small().color(colors.danger));
+            }
+            if let Some(boards) = &cloud.offline_boards {
+                chosen_offline = offline_boards_list(ui, colors, boards);
+                ui.add_space(8.0);
+                close = ui.button("Cancel").clicked();
+                return;
             }
             let other_boards = cloud
                 .boards
@@ -2121,6 +2138,11 @@ impl PlannerApp {
             ui.add_space(8.0);
             close = ui.button("Cancel").clicked();
         });
+        if let Some(path) = chosen_offline
+            && self.switch_to_board_file(path)
+        {
+            close = true;
+        }
         if let Some(repo) = chosen
             && let Some(cloud) = &mut self.backup.cloud
         {
@@ -2136,28 +2158,35 @@ impl PlannerApp {
         }
     }
 
-    fn local_open_menu(&mut self, ui: &mut Ui) {
-        ui.menu_button("Local", |ui| {
-            match self.settings.previous_board_path.clone() {
-                Some(path) => {
-                    let name = path
-                        .file_name()
-                        .map_or_else(|| path.display().to_string(), |n| n.display().to_string());
-                    if ui
-                        .button(name)
-                        .on_hover_text(path.display().to_string())
-                        .clicked()
-                    {
-                        self.switch_to_board_file(path);
-                    }
-                }
-                None => {
-                    ui.label(RichText::new("No other board opened yet").color(self.colors.muted));
-                }
-            }
-        });
-        ui.add_enabled(false, egui::Button::new("Cloud…"))
-            .on_disabled_hover_text("Connect GitHub in Settings first");
+    fn open_menu(&mut self, ui: &mut Ui) {
+        ui.menu_button("Local", |ui| self.local_boards_menu(ui));
+        if ui
+            .add_enabled(self.backup.token.is_some(), egui::Button::new("Cloud…"))
+            .on_hover_text("Boards backed up to private GitHub repositories")
+            .on_disabled_hover_text("Connect GitHub in Settings first")
+            .clicked()
+        {
+            self.open_cloud_picker();
+        }
+    }
+
+    /// Reads only local files, so switching boards works offline.
+    fn local_boards_menu(&mut self, ui: &mut Ui) {
+        let boards = self.local_boards();
+        if boards.is_empty() {
+            ui.label(RichText::new("No other board opened yet").color(self.colors.muted));
+        }
+        if let Some(path) = board_file_buttons(ui, &boards) {
+            self.switch_to_board_file(path);
+        }
+    }
+
+    fn local_boards(&self) -> Vec<PathBuf> {
+        local_boards_to_offer(
+            self.settings.recent_boards(),
+            self.settings.linked_boards(),
+            &self.path,
+        )
     }
 
     fn export_menu(&mut self, ui: &mut Ui) {
@@ -2188,15 +2217,7 @@ impl PlannerApp {
     }
 
     fn open_button(&mut self, ui: &mut Ui) {
-        if self.backup.token.is_none() {
-            ui.menu_button("Open", |ui| self.local_open_menu(ui));
-        } else if ui
-            .button("Open")
-            .on_hover_text("Boards backed up to private GitHub repositories")
-            .clicked()
-        {
-            self.open_cloud_picker();
-        }
+        ui.menu_button("Open", |ui| self.open_menu(ui));
     }
 
     fn set_up_github_button(&mut self, ui: &mut Ui) {
@@ -4334,9 +4355,88 @@ fn boards_other_than<'a>(boards: &'a [CloudBoard], open_repo: Option<&str>) -> V
         .collect()
 }
 
+fn offline_boards_list(ui: &mut Ui, colors: Palette, boards: &[PathBuf]) -> Option<PathBuf> {
+    ui.label(
+        RichText::new(
+            "Offline: showing boards on this computer. Edits back up once GitHub is reachable.",
+        )
+        .small()
+        .color(colors.muted),
+    );
+    if boards.is_empty() {
+        ui.label("No other boards on this computer.");
+        return None;
+    }
+    egui::ScrollArea::vertical()
+        .max_height(320.0)
+        .show(ui, |ui| board_file_buttons(ui, boards))
+        .inner
+}
+
+fn board_file_buttons(ui: &mut Ui, boards: &[PathBuf]) -> Option<PathBuf> {
+    let mut chosen = None;
+    for path in boards {
+        let name = path
+            .file_name()
+            .map_or_else(|| path.display().to_string(), |n| n.display().to_string());
+        if ui
+            .button(name)
+            .on_hover_text(path.display().to_string())
+            .clicked()
+        {
+            chosen = Some(path.clone());
+        }
+    }
+    chosen
+}
+
+/// Recent boards first, then boards linked to a repo; each once, never the
+/// open board, and only files still on disk.
+fn local_boards_to_offer<'a>(
+    recent: impl Iterator<Item = &'a Path>,
+    linked: impl Iterator<Item = &'a Path>,
+    open: &Path,
+) -> Vec<PathBuf> {
+    let absolute = |path: &Path| std::path::absolute(path).unwrap_or_else(|_| path.to_owned());
+    let mut seen = vec![absolute(open)];
+    let mut boards = Vec::new();
+    for path in recent.chain(linked) {
+        let key = absolute(path);
+        if !seen.contains(&key) && path.exists() {
+            seen.push(key);
+            boards.push(path.to_owned());
+        }
+    }
+    boards
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_boards_put_recent_first_and_skip_the_open_and_missing_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let [open, previous, linked, missing] = ["open", "previous", "linked", "missing"]
+            .map(|name| dir.path().join(format!("{name}.json")));
+        for path in [&open, &previous, &linked] {
+            std::fs::write(path, "{}").unwrap();
+        }
+        let linked_boards = [
+            open.as_path(),
+            linked.as_path(),
+            previous.as_path(),
+            missing.as_path(),
+        ];
+
+        let boards = local_boards_to_offer(
+            [previous.as_path()].into_iter(),
+            linked_boards.into_iter(),
+            &open,
+        );
+
+        assert_eq!(boards, [previous, linked]);
+    }
 
     #[test]
     fn cloud_picker_leaves_out_the_open_board() {

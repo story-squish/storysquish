@@ -834,10 +834,7 @@ fn new_starts_an_empty_board_in_its_own_file() {
     assert!(storysquish::storage::load(&new_path).unwrap().is_empty());
     let saved = storysquish::settings::load(&dir.path().join("settings.json")).unwrap();
     assert_eq!(saved.board_path.as_deref(), Some(new_path.as_path()));
-    assert_eq!(
-        saved.previous_board_path.as_deref(),
-        Some(old_path.as_path())
-    );
+    assert_eq!(saved.recent_boards().next(), Some(old_path.as_path()));
 }
 
 #[test]
@@ -910,7 +907,7 @@ fn open_local_switches_back_to_the_previous_board() {
     let previous = dir.path().join("emma.json");
     storysquish::storage::save(&previous, &board_with_scenes(&["Ball"])).unwrap();
     let mut settings = storysquish::settings::Settings::default();
-    settings.previous_board_path = Some(previous.clone());
+    settings.remember_recent_board(&previous);
     storysquish::settings::save(&settings_path, &settings).unwrap();
     let current = dir.path().join("dune.json");
     let open_path = current.clone();
@@ -937,8 +934,12 @@ fn open_local_switches_back_to_the_previous_board() {
     assert_eq!(harness.state().board_path(), previous);
     assert_eq!(scene_titles(&harness), ["Ball"]);
     assert_eq!(
-        harness.state().settings().previous_board_path.as_deref(),
-        Some(current.as_path())
+        harness
+            .state()
+            .settings()
+            .recent_boards()
+            .collect::<Vec<_>>(),
+        [current.as_path(), previous.as_path()]
     );
 }
 
@@ -957,11 +958,53 @@ fn open_offers_only_local_boards_without_a_github_connection() {
 }
 
 #[test]
-fn open_offers_only_cloud_boards_with_a_github_connection() {
-    let (harness, _dir) = launch_connected(Board::default());
-    assert!(harness.query_by_label("Local").is_none());
-    assert!(harness.query_by_label("Cloud…").is_none());
-    assert!(!harness.get_by_label("Open").accesskit_node().is_disabled());
+fn open_offers_local_and_cloud_boards_with_a_github_connection() {
+    let (mut harness, _dir) = launch_connected(Board::default());
+    harness.get_by_label("Open").click();
+    harness.run();
+    assert!(harness.query_by_label("Local").is_some());
+    assert!(
+        !harness
+            .get_by_label("Cloud…")
+            .accesskit_node()
+            .is_disabled()
+    );
+}
+
+#[test]
+fn open_local_offers_boards_linked_to_a_repo_with_a_github_connection() {
+    let dir = tempfile::tempdir().unwrap();
+    let settings_path = dir.path().join("settings.json");
+    storysquish::github::save_token(&storysquish::github::token_path(&settings_path), "t").unwrap();
+    let linked = dir.path().join("emma.json");
+    storysquish::storage::save(&linked, &board_with_scenes(&["Ball"])).unwrap();
+    let mut settings = storysquish::settings::Settings::default();
+    settings.set_repo(&linked, Some("someone/storysquish-emma".to_owned()));
+    storysquish::settings::save(&settings_path, &settings).unwrap();
+    let open_path = dir.path().join("dune.json");
+    let mut harness = Harness::builder()
+        .with_size(WINDOW)
+        .build_eframe(move |cc| {
+            PlannerApp::new(
+                cc,
+                board_with_scenes(&["Arrakis"]),
+                open_path,
+                settings_path,
+                None,
+            )
+            .with_github_api_base(&format!("http://{}", unused_local_address()))
+        });
+    harness.run();
+
+    harness.get_by_label("Open").click();
+    harness.run();
+    harness.get_by_label("Local").hover();
+    harness.run();
+    harness.get_by_label("emma.json").click();
+    harness.run();
+
+    assert_eq!(harness.state().board_path(), linked);
+    assert_eq!(scene_titles(&harness), ["Ball"]);
 }
 
 #[test]
@@ -1133,6 +1176,8 @@ fn step_until(
 
 fn open_from_cloud(harness: &mut Harness<'_, PlannerApp>, title: &str, path: &std::path::Path) {
     harness.get_by_label("Open").click();
+    harness.run();
+    harness.get_by_label("Cloud…").click();
     step_until(harness, |h| h.query_by_label(title).is_some());
     harness.get_by_label(title).click();
     step_until(harness, |h| h.state().board_path() == path);
@@ -1707,6 +1752,24 @@ fn unused_local_address() -> std::net::SocketAddr {
         .unwrap()
         .local_addr()
         .unwrap()
+}
+
+#[test]
+fn open_from_cloud_offline_offers_boards_on_this_computer() {
+    let address = unused_local_address();
+    let (mut harness, dir) = launch_auto_backup(format!("http://{address}"), |_, _| {});
+
+    harness.get_by_label("Open").click();
+    harness.run();
+    harness.get_by_label("Cloud…").click();
+    step_until(&mut harness, |h| h.query_by_label("other.json").is_some());
+    assert!(harness.query_by_label("Dune.json").is_none());
+    harness.get_by_label("other.json").click();
+    harness.run();
+
+    assert_eq!(harness.state().board_path(), dir.path().join("other.json"));
+    assert_eq!(harness.state().board().title, "Other");
+    assert!(harness.query_by_label("Open from cloud").is_none());
 }
 
 #[test]
