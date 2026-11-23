@@ -4,6 +4,7 @@ VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
 OS := $(shell uname -s)
 
 ICON := assets/icon.png
+RELEASE_BIN ?= target/release/$(BIN)
 
 ifeq ($(OS),Darwin)
 APP_DIR ?= /Applications
@@ -49,9 +50,12 @@ all:
 
 ifeq ($(OS),Darwin)
 install: all
+	$(MAKE) app
+
+app:
 	rm -rf "$(APP_BUNDLE)"
 	mkdir -p "$(APP_BUNDLE)/Contents/MacOS" "$(APP_BUNDLE)/Contents/Resources"
-	cp target/release/$(BIN) "$(APP_BUNDLE)/Contents/MacOS/$(BIN)"
+	cp $(RELEASE_BIN) "$(APP_BUNDLE)/Contents/MacOS/$(BIN)"
 	rm -rf target/$(BIN).iconset
 	mkdir -p target/$(BIN).iconset
 	for size in 16 32 128 256 512; do \
@@ -104,4 +108,4 @@ upgrade:
 	rustup update
 	cargo update
 
-.PHONY: rust-version format lint test check run build all install clean uninstall upgrade
+.PHONY: rust-version format lint test check run build all app install clean uninstall upgrade
