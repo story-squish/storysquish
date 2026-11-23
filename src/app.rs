@@ -278,6 +278,7 @@ pub struct PlannerApp {
 #[derive(Debug, Default)]
 struct SettingsDialog {
     save_error: Option<String>,
+    focus_github_token: bool,
 }
 
 impl PlannerApp {
@@ -1550,12 +1551,12 @@ impl PlannerApp {
         }
     }
 
-    fn github_section(&mut self, ui: &mut Ui) -> Option<BackupAction> {
+    fn github_section(&mut self, ui: &mut Ui, focus_token: bool) -> Option<BackupAction> {
         let section_label = field_label(ui, self.colors, "GitHub backup");
         let action = if self.backup.token.is_some() {
             self.github_controls(ui, section_label)
         } else {
-            self.github_connect_form(ui, section_label)
+            self.github_connect_form(ui, section_label, focus_token)
         };
         let (status, color) = self.github_status();
         if !status.is_empty() {
@@ -1564,7 +1565,12 @@ impl PlannerApp {
         action
     }
 
-    fn github_connect_form(&mut self, ui: &mut Ui, label: egui::Id) -> Option<BackupAction> {
+    fn github_connect_form(
+        &mut self,
+        ui: &mut Ui,
+        label: egui::Id,
+        focus_token: bool,
+    ) -> Option<BackupAction> {
         ui.label(
             RichText::new(
                 "Optionally back up each board to its own private repository on your GitHub \
@@ -1586,6 +1592,9 @@ impl PlannerApp {
                         .desired_width(240.0),
                 )
                 .labelled_by(label);
+            if focus_token {
+                field.request_focus();
+            }
             let submitted = field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
             if ui.button("Connect").clicked() || submitted {
                 action = Some(BackupAction::Connect);
@@ -2030,6 +2039,26 @@ impl PlannerApp {
             .clicked()
         {
             self.open_cloud_picker();
+        }
+    }
+
+    fn set_up_github_button(&mut self, ui: &mut Ui) {
+        let button = egui::Button::new(
+            RichText::new("Set up GitHub backup")
+                .strong()
+                .color(self.colors.on_accent),
+        )
+        .fill(self.colors.accent)
+        .min_size(egui::vec2(ui.available_width(), 30.0));
+        if ui
+            .add(button)
+            .on_hover_text("Back up each board to a private repository on your GitHub")
+            .clicked()
+        {
+            self.settings_dialog = Some(SettingsDialog {
+                focus_github_token: true,
+                ..SettingsDialog::default()
+            });
         }
     }
 
@@ -3262,10 +3291,11 @@ impl PlannerApp {
     }
 
     fn settings_dialog(&mut self, ctx: &egui::Context) {
-        let Some(dialog) = &self.settings_dialog else {
+        let Some(dialog) = &mut self.settings_dialog else {
             return;
         };
         let save_error = dialog.save_error.clone();
+        let focus_github_token = std::mem::take(&mut dialog.focus_github_token);
         let colors = self.colors;
         let mut chosen = self.settings.color_scheme;
         let mut close = false;
@@ -3327,7 +3357,7 @@ impl PlannerApp {
                 board_file_action = Some(BoardFileAction::RecoverFromLocal);
             }
 
-            backup_action = self.github_section(ui);
+            backup_action = self.github_section(ui, focus_github_token);
 
             ui.add_space(6.0);
             match &save_error {
@@ -3453,6 +3483,10 @@ impl eframe::App for PlannerApp {
             .default_size(250.0)
             .frame(Frame::new().fill(colors.sidebar).inner_margin(16))
             .show(ui, |ui| {
+                if self.backup.token.is_none() {
+                    self.set_up_github_button(ui);
+                    ui.add_space(10.0);
+                }
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     self.filter_panel(ui);
                     ui.add_space(10.0);

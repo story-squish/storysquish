@@ -747,6 +747,27 @@ fn connecting_github_stores_the_token_privately_and_disconnecting_forgets_it() {
     assert!(harness.query_by_label("Connect").is_some());
 }
 
+#[test]
+fn set_up_github_button_opens_settings_on_the_token_until_connected() {
+    let Fixture { mut harness, .. } = launch(board_with_scenes(&["Opening"]));
+
+    harness.get_by_label("Set up GitHub backup").click();
+    harness.run();
+    assert!(github_field(&harness).is_focused());
+
+    github_field(&harness).type_text("ghp_example");
+    harness.run();
+    harness.get_by_label("Connect").click();
+    harness.run();
+    assert!(harness.query_by_label("Set up GitHub backup").is_none());
+}
+
+#[test]
+fn set_up_github_button_is_hidden_when_connected() {
+    let (harness, _dir) = launch_connected(board_with_scenes(&["Opening"]));
+    assert!(harness.query_by_label("Set up GitHub backup").is_none());
+}
+
 fn launch_connected(board: Board) -> (Harness<'static, PlannerApp>, TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let settings_path = dir.path().join("settings.json");
