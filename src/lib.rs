@@ -5,6 +5,7 @@ pub mod migration;
 pub mod model;
 pub mod outline;
 pub mod settings;
+pub mod spelling;
 pub mod storage;
 pub mod theme;
 
