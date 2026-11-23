@@ -7,20 +7,30 @@ cards, track their status, act, point-of-view character, location and story
 day, write each scene's prose, and keep characters, relationships and
 locations alongside. Built in Rust with [egui/eframe](https://github.com/emilk/egui).
 
-A browser version lives in [`docs/index.html`](docs/index.html) and is
-published at <https://story-squish.github.io/storysquish/>. It has the same
-features and JSON format, so boards move between the two through Export and
-Import, or by pointing both at the same file.
+**Use the desktop app for writing you care about.** The
+[browser version](#browser-version) is there to try StorySquish without
+installing anything, or for a quick look at a board from a machine without
+the app.
 
-The web version keeps its board in the browser's `localStorage`, the last 30
-versions in IndexedDB (Settings → Restore backup…), and asks the browser for
-persistent storage. In Chrome and Edge on desktop, Settings → Save to file… /
-Open file… links the board to a JSON file, for example in a synced folder:
-every change is written to it and changes synced in are picked up, with the
-same conflict handling as the desktop app. Browsers drop file permission
-between visits, so a "Reconnect file" button appears until clicked. Without a
-linked file, a "Back up" button appears when the board has not been exported
-for a week.
+## Desktop app or browser?
+
+The two share features and the board's JSON format, but not where your work
+lives:
+
+|                         | Desktop app                                  | Browser version                                   |
+| ----------------------- | -------------------------------------------- | ------------------------------------------------- |
+| Where the board lives   | A JSON file on disk ([Files](#files))        | The browser's `localStorage`, unless linked to a file |
+| Survives clearing site data | Yes                                       | Only with a linked file or an export              |
+| Crash-safe writes       | Temp file + rename on every save             | Depends on the browser                            |
+| Rolling backups         | 30 copies on disk, next to the board         | 30 versions in IndexedDB, same browser only        |
+| Syncing between devices | Any synced folder, every OS                  | Linked file in Chrome and Edge on desktop only; permission must be re-granted each visit |
+| GitHub backup           | Pushes 5 s after edits and on quit           | At most every five minutes, and on leaving the page |
+| GitHub token            | Separate file readable only by you (`0600`)  | The browser's `localStorage`                      |
+
+"Clear browsing data" removes `localStorage` and IndexedDB along with the
+board, and browsers that refuse the page's request for persistent storage may
+evict them under storage pressure. The desktop app keeps everything in
+ordinary files you can see, copy and back up.
 
 ## Quick start
 
@@ -169,6 +179,22 @@ is readable by anyone with the URL until you do.
 The desktop app keeps the token in a separate `github-token` file (mode
 `0600`) so `settings.json` can be synced or shared safely. The web version
 keeps it in the browser's `localStorage`.
+
+## Browser version
+
+Published at <https://story-squish.github.io/storysquish/> from
+[`docs/index.html`](docs/index.html). Boards move to the desktop app through
+Export and Import, or by pointing both at the same file.
+
+It keeps the board in `localStorage` and the last 30 versions in IndexedDB
+(**Settings → Restore backup…**), and asks the browser for persistent storage.
+In Chrome and Edge on desktop, **Settings → Save to file… / Open file…** links
+the board to a JSON file, for example in a synced folder: every change is
+written to it and changes synced in are picked up, with the same conflict
+handling as the desktop app. Browsers drop file permission between visits, so
+a "Reconnect file" button appears until clicked. Without a linked file, a
+"Back up" button appears when the board has not been exported for a week;
+export regularly, or move to the desktop app.
 
 ## Development
 
