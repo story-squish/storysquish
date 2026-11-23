@@ -1166,6 +1166,32 @@ fn recover_from_local_restores_the_chosen_backup() {
 }
 
 #[test]
+fn recover_from_local_keeps_a_copy_of_the_replaced_board() {
+    let Fixture { mut harness, dir } = launch(board_with_scenes(&["Current"]));
+    storysquish::storage::save(
+        &dir.path().join("board.json"),
+        &board_with_scenes(&["Current"]),
+    )
+    .unwrap();
+    write_local_backup(dir.path(), "board-001700000000000.json", &["Old"]);
+
+    open_local_recovery(&mut harness);
+    harness.get_by_label("Recover").click();
+    harness.run();
+
+    assert_eq!(scene_titles(&harness), ["Old"]);
+    let kept = std::fs::read_dir(dir.path().join("board-backups"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.to_string_lossy().ends_with("-before-recover.json"))
+        .expect("the replaced board is kept as a backup");
+    assert_eq!(
+        storysquish::storage::load(&kept).unwrap().scenes[0].title,
+        "Current"
+    );
+}
+
+#[test]
 fn recover_from_local_without_backups_says_so() {
     let Fixture { mut harness, .. } = launch(board_with_scenes(&["Current"]));
 
