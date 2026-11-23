@@ -74,7 +74,7 @@
   button.warn{background:#e8b04a;color:#2b2118;border-color:transparent}
   .backup-list{display:flex;flex-direction:column;gap:2px;max-height:50vh;overflow:auto;margin-bottom:12px}
   .backup-list button{text-align:left}
-  .modal input.gist-input{flex:1;min-width:0}
+  .modal input.repo-input{flex:1;min-width:0}
   #inspector{width:340px;flex:none;background:var(--inspector);border-left:1px solid var(--line);padding:16px;overflow:auto}
   #stats{background:var(--inspector);border-top:1px solid var(--line);padding:12px}
   h2{margin:0 0 6px;font-size:16px}
@@ -344,10 +344,14 @@ const BACKUP_NUDGE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
 const FILE_KEY = "storysquish.file";
 const TOKEN_KEY = "storysquish.github-token";
 const GITHUB_API = "https://api.github.com";
-const GIST_FILE = "storysquish-board.json";
-const GIST_BACKUP_INTERVAL_MS = 5 * 60 * 1000;
-const GIST_CHECK_MS = 30 * 1000;
-const GIST_REVISIONS_LISTED = 30;
+const GITHUB_BOARD_FILE = "storysquish-board.json";
+const GITHUB_BACKUP_INTERVAL_MS = 5 * 60 * 1000;
+const GITHUB_CHECK_MS = 30 * 1000;
+const GITHUB_REVISIONS_LISTED = 30;
+const GITHUB_REPO_NAME_PREFIX = "storysquish-";
+const GITHUB_UNTITLED_REPO_NAME = "storysquish-board";
+const GITHUB_MAX_REPO_NAME_LEN = 80;
+const GITHUB_MAX_REPO_NAME_ATTEMPTS = 20;
 const DB_NAME = "storysquish";
 const FILE_ACCESS = "showOpenFilePicker" in window;
 const UNDO_LIMIT = 100;
@@ -842,7 +846,7 @@ function loadBoard() {
 }
 
 function loadSettings() {
-  const defaults = {colorScheme: DEFAULT_SCHEME, lastExportAt: 0, gistId: null, gistAutoBackup: false};
+  const defaults = {colorScheme: DEFAULT_SCHEME, lastExportAt: 0, githubRepo: null, githubAutoBackup: false};
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
     if (raw === null) return {settings: defaults, alert: null};
@@ -852,11 +856,13 @@ function loadSettings() {
     if (!COLOR_SCHEMES.some(s => s.key === scheme)) throw new Error(`unknown color scheme ${JSON.stringify(scheme)}`);
     const lastExportAt = data["last-export"] ?? 0;
     if (!Number.isFinite(lastExportAt)) throw new Error("last-export must be a timestamp");
-    const gistId = data["gist-id"] ?? null;
-    if (gistId !== null && parseGistId(gistId) !== gistId) throw new Error("gist-id must be a gist id");
-    const gistAutoBackup = data["gist-auto-backup"] ?? false;
-    if (typeof gistAutoBackup !== "boolean") throw new Error("gist-auto-backup must be true or false");
-    return {settings: {colorScheme: scheme, lastExportAt, gistId, gistAutoBackup}, alert: null};
+    const githubRepo = data["github-repo"] ?? null;
+    if (githubRepo !== null && parseRepo(githubRepo) !== githubRepo) {
+      throw new Error("github-repo must be owner/name");
+    }
+    const githubAutoBackup = data["github-auto-backup"] ?? data["gist-auto-backup"] ?? false;
+    if (typeof githubAutoBackup !== "boolean") throw new Error("github-auto-backup must be true or false");
+    return {settings: {colorScheme: scheme, lastExportAt, githubRepo, githubAutoBackup}, alert: null};
   } catch (e) {
     return {settings: defaults, alert: `Could not read settings, using defaults: ${e.message}`};
   }
@@ -866,8 +872,8 @@ function persistSettings() {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify({
     "color-scheme": settings.colorScheme,
     "last-export": settings.lastExportAt,
-    ...(settings.gistId ? {"gist-id": settings.gistId} : {}),
-    "gist-auto-backup": settings.gistAutoBackup,
+    ...(settings.githubRepo ? {"github-repo": settings.githubRepo} : {}),
+    "github-auto-backup": settings.githubAutoBackup,
   }, null, 2));
 }
 
@@ -946,9 +952,11 @@ let persistRequested = false;
 // {handle, name, connected, lastModified}; null when the board only lives here.
 let linkedFile = null;
 let fileWrites = Promise.resolve();
-const gist = {
-  token: readToken(), busy: false, error: null, idInvalid: false,
+const githubBackup = {
+  token: readToken(), busy: false, error: null, repoInvalid: false,
   boardChanged: false, lastAttemptAt: 0, lastSuccessAt: 0, lastPushedJson: null,
+  // A cancelled repo creation stops automatic backup from asking again this visit.
+  repoCreationOpen: false, repoCreationDeclined: false,
 };
 
 function isSelected(kind, id) {
@@ -1002,7 +1010,7 @@ function saveNow() {
     saveState = {kind: "failed", reason: e.message};
   }
   writeToLinkedFile(json);
-  gist.boardChanged = true;
+  githubBackup.boardChanged = true;
   render();
 }
 
@@ -1061,7 +1069,7 @@ async function writeBoardFile(target, json) {
 function replaceBoard(loaded, kind) {
   history.commit(board);
   board = loaded;
-  gist.boardChanged = true;
+  githubBackup.boardChanged = true;
   history.commit(board);
   try { localStorage.setItem(BOARD_KEY, serializeBoard(board)); } catch { /* next save retries */ }
   saveState = {kind};
@@ -1813,7 +1821,7 @@ function settingsDialog() {
       }
       const status = hint(settingsSaveError ?? "Saved in this browser's storage.");
       if (settingsSaveError) status.style.color = "var(--danger)";
-      box.append(heading, label, list, status, ...boardFileSection(), ...backupSection(), ...gistSection(),
+      box.append(heading, label, list, status, ...boardFileSection(), ...backupSection(), ...githubSection(),
         button("Close", "", closeModal));
       box.style.maxWidth = "420px";
     },
@@ -1921,117 +1929,356 @@ async function restoreBackupDialog() {
   });
 }
 
-/* ---------- GitHub Gist backup ---------- */
+/* ---------- GitHub backup to a private repository ---------- */
 
 function readToken() {
   try { return localStorage.getItem(TOKEN_KEY) || null; } catch { return null; }
 }
 
-// Accepts a bare id or any gist URL, e.g. one copied from the address bar.
-function parseGistId(input) {
-  const segment = String(input).trim().replace(/\/+$/, "").split("/").pop() ?? "";
-  const id = segment.split(/[#?]/)[0];
-  return /^[0-9a-fA-F]+$/.test(id) ? id : null;
+// Accepts owner/name or a GitHub URL for the repository, e.g. one copied from
+// the address bar or a clone URL.
+function parseRepo(input) {
+  let path = String(input).trim().replace(/^https?:\/\/(www\.)?/, "");
+  path = path.replace(/^github\.com\//, "").replace(/^git@github\.com:/, "");
+  const [owner = "", rawName = ""] = path.split(/[/#?]/);
+  const name = rawName.replace(/\.git$/, "");
+  const ownerIsValid = /^[A-Za-z0-9-]+$/.test(owner);
+  return ownerIsValid && isValidRepoName(name) ? `${owner}/${name}` : null;
 }
 
-function gistDescription(title) {
+function isValidRepoName(name) {
+  return /^[A-Za-z0-9._-]{1,100}$/.test(name) && name !== "." && name !== "..";
+}
+
+function repoDescription(title) {
   const trimmed = title.trim();
   return trimmed ? `StorySquish board: ${trimmed}` : "StorySquish board";
+}
+
+// The title a push recorded in the description, or null when the
+// description was not written by StorySquish.
+function titleFromDescription(description) {
+  const trimmed = (description ?? "").trim();
+  if (trimmed === "StorySquish board") return "";
+  return trimmed.startsWith("StorySquish board: ") ? trimmed.slice("StorySquish board: ".length).trim() : null;
+}
+
+function numberedRepoName(baseName, attempt) {
+  return attempt === 1 ? baseName : `${baseName}-${attempt}`;
+}
+
+// The base name to rename `existing` to for `title`, or null when its name
+// does not follow the title it was backed up under, e.g. one the writer
+// chose, or when the new title gives the same name.
+function renamedRepoBase(existing, title) {
+  const previousTitle = titleFromDescription(existing.description);
+  if (previousTitle === null) return null;
+  const previousBase = repoNameFor(previousTitle);
+  const baseName = repoNameFor(title);
+  const name = existing.full_name.split("/").pop();
+  const followsPreviousTitle = Array.from({length: GITHUB_MAX_REPO_NAME_ATTEMPTS},
+    (_, i) => numberedRepoName(previousBase, i + 1)).includes(name);
+  return baseName !== previousBase && followsPreviousTitle ? baseName : null;
+}
+
+function repoNameFor(title) {
+  let slug = "";
+  for (const c of title) {
+    if (/^[A-Za-z0-9]$/.test(c)) slug += c.toLowerCase();
+    else if (slug && !slug.endsWith("-")) slug += "-";
+  }
+  slug = slug.replace(/-+$/, "");
+  if (!slug) return GITHUB_UNTITLED_REPO_NAME;
+  return `${GITHUB_REPO_NAME_PREFIX}${slug}`.slice(0, GITHUB_MAX_REPO_NAME_LEN).replace(/-+$/, "");
+}
+
+function commitMessage(title) {
+  const trimmed = title.trim();
+  return trimmed ? `Back up ${trimmed}` : "Back up untitled board";
+}
+
+function base64Utf8(text) {
+  const bytes = new TextEncoder().encode(text);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(binary);
 }
 
 function describeGithubFailure(status, detail) {
   const hint = {
     401: "the token is invalid or expired",
-    403: "the token lacks the Gist permission, or the rate limit was hit",
-    404: "the gist does not exist or belongs to another account",
+    403: "the token lacks the Contents or Administration permission, or the rate limit was hit",
+    404: "the repository does not exist or the token cannot see it",
+    409: "GitHub rejected the change; another device may have backed up at the same time",
+    422: "GitHub rejected the change; another device may have backed up at the same time",
   }[status] ?? "GitHub refused the request";
   return detail ? `${hint} (HTTP ${status}: ${detail})` : `${hint} (HTTP ${status})`;
 }
 
-async function github(path, {method = "GET", body} = {}) {
+class MissingRepoError extends Error {
+  constructor(repo) {
+    super(`${repo} does not exist or the token cannot see it`);
+    this.repo = repo;
+  }
+}
+
+class GithubError extends Error {
+  constructor(status, detail, body) {
+    super(describeGithubFailure(status, detail));
+    this.status = status;
+    this.body = body;
+  }
+}
+
+// `raw` returns the file itself rather than JSON metadata; statuses listed
+// in `absentOn` resolve to null instead of failing.
+async function github(path, {method = "GET", body, raw = false, absentOn = []} = {}) {
   let response;
   try {
     response = await fetch(`${GITHUB_API}${path}`, {
       method,
       headers: {
-        Accept: "application/vnd.github+json",
+        Accept: raw ? "application/vnd.github.raw+json" : "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
-        Authorization: `Bearer ${gist.token}`,
+        Authorization: `Bearer ${githubBackup.token}`,
         ...(body ? {"Content-Type": "application/json"} : {}),
       },
       body: body ? JSON.stringify(body) : undefined,
+      cache: "no-store",
     });
   } catch (e) {
     throw new Error(`contacting GitHub: ${e.message}`);
   }
   const text = await response.text();
+  if (absentOn.includes(response.status)) return null;
   if (!response.ok) {
     let detail = "";
     try { detail = JSON.parse(text).message ?? ""; } catch { /* not JSON */ }
-    throw new Error(describeGithubFailure(response.status, detail));
+    throw new GithubError(response.status, detail, text);
   }
+  if (raw) return text;
   try { return JSON.parse(text); } catch { throw new Error("GitHub sent an unexpected response"); }
 }
 
-async function runGistJob(job) {
-  gist.busy = true;
+function boardFilePath(repo) {
+  return `/repos/${repo}/contents/${GITHUB_BOARD_FILE}`;
+}
+
+// A taken name is an error, never a reuse of someone else's repository.
+async function createRepo(name, title) {
+  if (!isValidRepoName(name)) throw new Error(`“${name}” is not a valid repository name`);
+  try {
+    const created = await github("/user/repos", {method: "POST", body: {
+      name, description: repoDescription(title), private: true,
+      has_issues: false, has_projects: false, has_wiki: false,
+    }});
+    return created.full_name;
+  } catch (e) {
+    if (e instanceof GithubError && e.status === 422 && e.body.includes("name already exists")) {
+      throw new Error(`${name} already exists on your account; choose another name`);
+    }
+    throw e;
+  }
+}
+
+// The title's slug, numbered past names the account already uses.
+async function suggestRepoName(title) {
+  const {login} = await github("/user");
+  const baseName = repoNameFor(title);
+  for (let attempt = 1; attempt <= GITHUB_MAX_REPO_NAME_ATTEMPTS; attempt++) {
+    const name = numberedRepoName(baseName, attempt);
+    if (await github(`/repos/${login}/${name}`, {absentOn: [404]}) === null) return name;
+  }
+  throw new Error(`every repository name tried for this board, from ${baseName}, is taken`);
+}
+
+// Tries `baseName` and its numbered variants, keeping the current name when
+// every one is taken, and returns the resulting owner/name.
+async function renameRepo(repo, baseName) {
+  for (let attempt = 1; attempt <= GITHUB_MAX_REPO_NAME_ATTEMPTS; attempt++) {
+    try {
+      const renamed = await github(`/repos/${repo}`, {method: "PATCH", body: {name: numberedRepoName(baseName, attempt)}});
+      return renamed.full_name;
+    } catch (e) {
+      if (!(e instanceof GithubError && e.status === 422 && e.body.includes("already exists"))) throw e;
+    }
+  }
+  return repo;
+}
+
+// Refuses a public repository, so a pasted link can never publish the novel,
+// and renames one named after the previous title to follow the new one.
+async function pushBoard(repo, title, json) {
+  const existing = await github(`/repos/${repo}`, {absentOn: [404]});
+  if (!existing) throw new MissingRepoError(repo);
+  if (!existing.private) throw new Error(`${repo} is public; StorySquish backs up only to private repositories`);
+  const baseName = renamedRepoBase(existing, title);
+  repo = baseName ? await renameRepo(existing.full_name, baseName) : existing.full_name;
+  const description = repoDescription(title);
+  if (existing.description !== description) {
+    await github(`/repos/${repo}`, {method: "PATCH", body: {description}});
+  }
+  const current = await github(boardFilePath(repo), {absentOn: [404]});
+  await github(boardFilePath(repo), {method: "PUT", body: {
+    message: commitMessage(title),
+    content: base64Utf8(json),
+    ...(current ? {sha: current.sha} : {}),
+  }});
+  return repo;
+}
+
+async function runGithubJob(job) {
+  githubBackup.busy = true;
   drawModal();
   try {
     return await job();
   } finally {
-    gist.busy = false;
+    githubBackup.busy = false;
     drawModal();
   }
 }
 
-// Creates a secret gist on the first push, then adds revisions to it.
-async function backUpToGist(kind) {
-  if (!gist.token || gist.busy) return;
-  gist.lastAttemptAt = Date.now();
-  gist.boardChanged = false;
+// Asks before creating a repository for the first push, or when the linked
+// one is gone, then commits to it.
+async function backUpToGithub(kind) {
+  if (!githubBackup.token || githubBackup.busy || githubBackup.repoCreationOpen) return;
+  if (!settings.githubRepo) {
+    repoCreationDialog(null);
+    return;
+  }
+  githubBackup.lastAttemptAt = Date.now();
+  githubBackup.boardChanged = false;
   const json = serializeBoard(board);
-  const body = {description: gistDescription(board.title), public: false, files: {[GIST_FILE]: {content: json}}};
   try {
-    const result = await runGistJob(() => settings.gistId
-      ? github(`/gists/${settings.gistId}`, {method: "PATCH", body})
-      : github("/gists", {method: "POST", body}));
-    gist.lastPushedJson = json;
-    gist.lastSuccessAt = Date.now();
-    gist.error = null;
-    if (result.id !== settings.gistId) {
-      settings.gistId = result.id;
+    const repo = await runGithubJob(() => pushBoard(settings.githubRepo, board.title, json));
+    githubBackup.lastPushedJson = json;
+    githubBackup.lastSuccessAt = Date.now();
+    githubBackup.error = null;
+    if (repo !== settings.githubRepo) {
+      settings.githubRepo = repo;
       saveSettingsReportingErrors();
     }
   } catch (e) {
-    const message = `GitHub backup failed: ${e.message}`;
-    if (kind === "auto" && !gist.error) {
-      alertDialog(`${message}\n\nEdits are still saved in this browser. Check Settings → GitHub Gist.`);
+    if (e instanceof MissingRepoError) {
+      githubBackup.error = null;
+      repoCreationDialog(e.repo);
+      return;
     }
-    gist.error = message;
+    const message = `GitHub backup failed: ${e.message}`;
+    if (kind === "auto" && !githubBackup.error) {
+      alertDialog(`${message}\n\nEdits are still saved in this browser. Check Settings → GitHub backup.`);
+    }
+    githubBackup.error = message;
   }
   drawModal();
 }
 
-// At most once per interval and only after the board changed, so a long
-// writing session leaves a revision every few minutes, not one per keystroke.
-function backUpToGistIfDue({ignoreInterval = false} = {}) {
-  if (!settings.gistAutoBackup || !gist.token || gist.busy || !gist.boardChanged) return;
-  if (saveState.kind === "pending") return;
-  if (!ignoreInterval && Date.now() - gist.lastAttemptAt < GIST_BACKUP_INTERVAL_MS) return;
-  if (serializeBoard(board) === gist.lastPushedJson) { gist.boardChanged = false; return; }
-  backUpToGist("auto");
+function repoCreationDialog(missingRepo) {
+  const state = {
+    name: missingRepo ? missingRepo.split("/").pop() : repoNameFor(board.title),
+    edited: false, suggesting: !missingRepo, creating: false, error: null,
+  };
+  const redraw = () => { if (modalStack.at(-1) === dialog) drawModal(); };
+  const decline = () => {
+    githubBackup.repoCreationOpen = false;
+    githubBackup.repoCreationDeclined = true;
+  };
+  const create = async () => {
+    state.creating = true;
+    state.error = null;
+    redraw();
+    try {
+      const repo = await runGithubJob(() => createRepo(state.name.trim(), board.title));
+      const index = modalStack.indexOf(dialog);
+      if (index >= 0) { modalStack.splice(index, 1); drawModal(); }
+      githubBackup.repoCreationOpen = false;
+      githubBackup.repoCreationDeclined = false;
+      settings.githubRepo = repo;
+      githubBackup.lastPushedJson = null;
+      saveSettingsReportingErrors();
+      backUpToGithub("manual");
+    } catch (e) {
+      state.creating = false;
+      state.error = `Could not create the repository: ${e.message}`;
+      redraw();
+    }
+  };
+  const dialog = {
+    onDismiss: decline,
+    draw(box) {
+      const heading = document.createElement("h2");
+      heading.textContent = "Create a GitHub repository";
+      box.append(heading);
+      if (missingRepo) box.append(message(`${missingRepo} does not exist, or the token cannot see it.`));
+      box.append(message(`Back up “${board.title.trim() || "Untitled"}” to a new private repository ` +
+        "on your GitHub account."));
+      const input = document.createElement("input");
+      input.className = "repo-input";
+      input.value = state.name;
+      input.disabled = state.creating;
+      input.setAttribute("aria-label", "Repository name");
+      const invalid = hint("Use letters, digits, '-', '_' or '.'");
+      invalid.style.color = "var(--danger)";
+      const createButton = button("Create", "", create);
+      const sync = () => {
+        const valid = isValidRepoName(state.name.trim());
+        invalid.hidden = valid;
+        createButton.disabled = !valid || state.suggesting || state.creating;
+      };
+      input.addEventListener("input", () => { state.name = input.value; state.edited = true; sync(); });
+      input.addEventListener("keydown", e => { if (e.key === "Enter" && !createButton.disabled) create(); });
+      box.append(fieldLabel("Repository name"), input, invalid);
+      if (state.error) {
+        const error = hint(state.error);
+        error.style.color = "var(--danger)";
+        box.append(error);
+      }
+      if (state.suggesting) box.append(hint("Checking which names are free…"));
+      if (state.creating) box.append(hint("Creating…"));
+      const cancel = button("Cancel", "", () => { closeModal(); decline(); });
+      cancel.disabled = state.creating;
+      box.append(row(createButton, cancel));
+      sync();
+      if (!state.creating) {
+        input.focus();
+        input.setSelectionRange(input.value.length, input.value.length);
+      }
+    },
+  };
+  githubBackup.repoCreationOpen = true;
+  openModal(dialog);
+  if (state.suggesting) {
+    suggestRepoName(board.title)
+      .then(name => { if (!state.edited) state.name = name; },
+            e => { state.error = `Could not check which names are free: ${e.message}`; })
+      .finally(() => { state.suggesting = false; redraw(); });
+  }
 }
 
-async function gistBoardAt(version) {
-  const result = await github(`/gists/${settings.gistId}/${version}`);
-  const file = result.files?.[GIST_FILE];
-  if (!file) throw new Error(`this gist revision has no ${GIST_FILE}`);
-  if (!file.truncated && typeof file.content === "string") return file.content;
-  // The API inlines at most 1 MB; larger boards come from the raw URL,
-  // which embeds the secret gist's id and needs no token.
-  const response = await fetch(file.raw_url);
-  if (!response.ok) throw new Error(`downloading the board from GitHub failed (HTTP ${response.status})`);
-  return response.text();
+// At most once per interval and only after the board changed, so a long
+// writing session leaves a version every few minutes, not one per keystroke.
+function backUpToGithubIfDue({ignoreInterval = false} = {}) {
+  if (!settings.githubAutoBackup || !githubBackup.token || githubBackup.busy) return;
+  if (githubBackup.repoCreationOpen || githubBackup.repoCreationDeclined) return;
+  if (!githubBackup.boardChanged || saveState.kind === "pending") return;
+  if (!ignoreInterval && Date.now() - githubBackup.lastAttemptAt < GITHUB_BACKUP_INTERVAL_MS) return;
+  if (serializeBoard(board) === githubBackup.lastPushedJson) { githubBackup.boardChanged = false; return; }
+  backUpToGithub("auto");
+}
+
+async function githubRevisions(repo) {
+  const path = `/repos/${repo}/commits?path=${GITHUB_BOARD_FILE}&per_page=${GITHUB_REVISIONS_LISTED}`;
+  // GitHub answers 409 for a repository without any commits.
+  const commits = await github(path, {absentOn: [409]});
+  return (commits ?? []).map(c => ({version: c.sha, committedAt: c.commit.committer.date}));
+}
+
+async function githubBoardAt(repo, version) {
+  const text = await github(`${boardFilePath(repo)}?ref=${version}`, {raw: true, absentOn: [404]});
+  if (text === null) throw new Error(`this version of the repository has no ${GITHUB_BOARD_FILE}`);
+  return text;
 }
 
 function connectGithub(token) {
@@ -2039,29 +2286,30 @@ function connectGithub(token) {
   if (!trimmed) return;
   try {
     localStorage.setItem(TOKEN_KEY, trimmed);
-    gist.token = trimmed;
-    gist.error = null;
+    githubBackup.token = trimmed;
+    githubBackup.error = null;
   } catch (e) {
-    gist.error = `Could not save the token: ${e.message}`;
+    githubBackup.error = `Could not save the token: ${e.message}`;
   }
 }
 
-// Forgets the token but keeps the gist id, so reconnecting resumes backing
-// up to the same gist.
+// Forgets the token but keeps the repo link, so reconnecting resumes backing
+// up to the same repo.
 function disconnectGithub() {
   try { localStorage.removeItem(TOKEN_KEY); } catch { /* best effort */ }
-  gist.token = null;
-  gist.error = null;
-  gist.lastSuccessAt = 0;
+  githubBackup.token = null;
+  githubBackup.error = null;
+  githubBackup.lastSuccessAt = 0;
 }
 
-function setGistId(input) {
+function setGithubRepo(input) {
   const trimmed = input.trim();
-  const id = trimmed ? parseGistId(trimmed) : null;
-  gist.idInvalid = trimmed !== "" && id === null;
-  if (gist.idInvalid || id === settings.gistId) return;
-  settings.gistId = id;
-  gist.lastPushedJson = null;
+  const repo = trimmed ? parseRepo(trimmed) : null;
+  githubBackup.repoInvalid = trimmed !== "" && repo === null;
+  if (githubBackup.repoInvalid || repo === settings.githubRepo) return;
+  settings.githubRepo = repo;
+  githubBackup.repoCreationDeclined = false;
+  githubBackup.lastPushedJson = null;
   saveSettingsReportingErrors();
 }
 
@@ -2070,26 +2318,26 @@ function minutesAgo(at) {
   return minutes === 0 ? "just now" : minutes === 1 ? "a minute ago" : `${minutes} minutes ago`;
 }
 
-function gistStatus() {
-  if (gist.error) return {text: gist.error, danger: true};
-  if (!gist.token) return null;
-  if (gist.busy) return {text: "Talking to GitHub…"};
-  if (gist.lastSuccessAt) return {text: `Backed up ${minutesAgo(gist.lastSuccessAt)}`};
-  if (!settings.gistId) return {text: "The first backup creates a secret gist."};
+function githubStatus() {
+  if (githubBackup.error) return {text: githubBackup.error, danger: true};
+  if (!githubBackup.token) return null;
+  if (githubBackup.busy) return {text: "Talking to GitHub…"};
+  if (githubBackup.lastSuccessAt) return {text: `Backed up ${minutesAgo(githubBackup.lastSuccessAt)}`};
+  if (!settings.githubRepo) return {text: "No repository yet; the first backup offers to create a private one."};
   return {text: "Not backed up in this visit yet."};
 }
 
-function gistSection() {
-  const label = fieldLabel("GitHub Gist");
+function githubSection() {
+  const label = fieldLabel("GitHub backup");
   const parts = [label];
-  if (!gist.token) {
-    parts.push(hint("Optionally back up the board to a secret gist on your GitHub account, with every " +
-      "version kept in its history. Create a fine-grained token with the account permission Gists: read " +
-      "and write (or a classic token with the gist scope) and paste it here. It is kept in this " +
-      "browser's storage."));
+  if (!githubBackup.token) {
+    parts.push(hint("Optionally back up the board to a private repository on your GitHub account, with " +
+      "every version kept in its history. Create a fine-grained token for all repositories with the " +
+      "permissions Administration and Contents: read and write (or a classic token with the repo " +
+      "scope) and paste it here. It is kept in this browser's storage."));
     const input = document.createElement("input");
     input.type = "password";
-    input.className = "gist-input";
+    input.className = "repo-input";
     input.placeholder = "GitHub token";
     input.setAttribute("aria-label", "GitHub token");
     const connect = () => { connectGithub(input.value); drawModal(); };
@@ -2097,23 +2345,23 @@ function gistSection() {
     parts.push(row(input, button("Connect", "", connect)));
   } else {
     const input = document.createElement("input");
-    input.className = "gist-input";
-    input.placeholder = "Gist id or URL; empty creates one";
-    input.setAttribute("aria-label", "Gist id or URL");
-    input.value = settings.gistId ?? "";
-    input.addEventListener("change", () => { setGistId(input.value); drawModal(); });
-    const idRow = row(input);
-    if (settings.gistId) {
+    input.className = "repo-input";
+    input.placeholder = "owner/repo or URL; empty offers to create one";
+    input.setAttribute("aria-label", "GitHub repository");
+    input.value = settings.githubRepo ?? "";
+    input.addEventListener("change", () => { setGithubRepo(input.value); drawModal(); });
+    const repoRow = row(input);
+    if (settings.githubRepo) {
       const link = document.createElement("a");
-      link.href = `https://gist.github.com/${settings.gistId}`;
+      link.href = `https://github.com/${settings.githubRepo}`;
       link.target = "_blank";
       link.rel = "noopener";
       link.textContent = "Open";
-      idRow.append(link);
+      repoRow.append(link);
     }
-    parts.push(idRow);
-    if (gist.idInvalid) {
-      const invalid = hint("Not a gist id or URL");
+    parts.push(repoRow);
+    if (githubBackup.repoInvalid) {
+      const invalid = hint("Not a GitHub repository name or URL");
       invalid.style.color = "var(--danger)";
       parts.push(invalid);
     }
@@ -2122,21 +2370,21 @@ function gistSection() {
     auto.title = "At most every five minutes while you edit, and when you leave the page";
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
-    checkbox.checked = settings.gistAutoBackup;
+    checkbox.checked = settings.githubAutoBackup;
     checkbox.addEventListener("change", () => {
-      settings.gistAutoBackup = checkbox.checked;
+      settings.githubAutoBackup = checkbox.checked;
       saveSettingsReportingErrors();
     });
     auto.append(checkbox, " Back up automatically");
-    const backUp = button("Back up now", "", () => backUpToGist("manual"));
-    const restore = button("Restore from gist…", "", restoreGistDialog);
-    backUp.disabled = gist.busy;
-    restore.disabled = gist.busy || !settings.gistId;
+    const backUp = button("Back up now", "", () => backUpToGithub("manual"));
+    const restore = button("Restore from GitHub…", "", restoreGithubDialog);
+    backUp.disabled = githubBackup.busy;
+    restore.disabled = githubBackup.busy || !settings.githubRepo;
     const disconnect = button("Disconnect", "", () => { disconnectGithub(); drawModal(); });
-    disconnect.title = "Forget the token; the gist itself stays on GitHub";
+    disconnect.title = "Forget the token; the repository itself stays on GitHub";
     parts.push(row(auto), row(backUp, restore, disconnect));
   }
-  const status = gistStatus();
+  const status = githubStatus();
   if (status) {
     const line = hint(status.text);
     if (status.danger) line.style.color = "var(--danger)";
@@ -2145,12 +2393,13 @@ function gistSection() {
   return parts;
 }
 
-async function restoreGistDialog() {
+async function restoreGithubDialog() {
+  const repo = settings.githubRepo;
   const state = {revisions: null, error: null};
   openModal({
     draw(box) {
       const heading = document.createElement("h2");
-      heading.textContent = "Restore from gist";
+      heading.textContent = "Restore from GitHub";
       box.append(heading);
       if (state.error) {
         const error = hint(state.error);
@@ -2160,18 +2409,18 @@ async function restoreGistDialog() {
       if (state.revisions === null) {
         if (!state.error) box.append(hint("Loading versions…"));
       } else if (!state.revisions.length) {
-        box.append(hint("This gist has no versions yet."));
+        box.append(hint("This repository has no versions yet."));
       } else {
-        box.append(hint(gist.busy ? "Downloading…" : "Newest first. Restoring can be undone."));
+        box.append(hint(githubBackup.busy ? "Downloading…" : "Newest first. Restoring can be undone."));
         const list = document.createElement("div");
         list.className = "backup-list";
         for (const revision of state.revisions) {
-          const when = new Date(revision.committed_at).toLocaleString();
+          const when = new Date(revision.committedAt).toLocaleString();
           const choose = button(`${when} · ${revision.version.slice(0, 7)}`, "", async () => {
             state.error = null;
             let restored;
             try {
-              restored = parseBoard(await runGistJob(() => gistBoardAt(revision.version)));
+              restored = parseBoard(await runGithubJob(() => githubBoardAt(repo, revision.version)));
             } catch (e) {
               state.error = `GitHub backup failed: ${e.message}`;
               drawModal();
@@ -2185,7 +2434,7 @@ async function restoreGistDialog() {
             saveNow();
             if (saveState.kind === "saved") { saveState = {kind: "imported"}; render(); }
           });
-          choose.disabled = gist.busy;
+          choose.disabled = githubBackup.busy;
           list.append(choose);
         }
         box.append(list);
@@ -2194,8 +2443,7 @@ async function restoreGistDialog() {
     },
   });
   try {
-    state.revisions = await runGistJob(() =>
-      github(`/gists/${settings.gistId}/commits?per_page=${GIST_REVISIONS_LISTED}`));
+    state.revisions = await runGithubJob(() => githubRevisions(repo));
   } catch (e) {
     state.error = `GitHub backup failed: ${e.message}`;
   }
@@ -2494,9 +2742,9 @@ window.addEventListener("storage", e => {
 const pollQuietly = () => pollLinkedFile().catch(() => {});
 setInterval(pollQuietly, FILE_POLL_MS);
 window.addEventListener("focus", pollQuietly);
-setInterval(backUpToGistIfDue, GIST_CHECK_MS);
+setInterval(backUpToGithubIfDue, GITHUB_CHECK_MS);
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden) backUpToGistIfDue({ignoreInterval: true});
+  if (document.hidden) backUpToGithubIfDue({ignoreInterval: true});
 });
 
 applyTheme(schemeByKey(settings.colorScheme));

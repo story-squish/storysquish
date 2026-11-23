@@ -62,8 +62,8 @@ sudo apt-get install libxcb-render0-dev libxcb-shape0-dev \
 - Undo/redo across all board edits
 - Autosave after every change, rolling backups, and pick-up of changes synced
   in from other devices (see [Files](#files))
-- Optional backup to a secret GitHub Gist, with every version restorable
-  (see [GitHub Gist backup](#github-gist-backup))
+- Optional backup to a private GitHub repository, with every version
+  restorable (see [GitHub backup](#github-backup))
 - Import/export the board as JSON; export an outline or the manuscript as
   Markdown (archived scenes are left out; outline scenes keep their board
   numbers)
@@ -122,30 +122,49 @@ Data and config left by the app's earlier names (`story-planner`,
 `novel-planner`) are moved over on first launch, unless a `storysquish`
 directory already exists.
 
-## GitHub Gist backup
+## GitHub backup
 
-Off until you connect a token. In **Settings → GitHub Gist**, paste a
+Off until you connect a token. Each board is backed up to its own **private**
+repository, so only your account (and anyone you add as a collaborator) can
+read it; unlike a secret gist, a leaked link reveals nothing.
+
+In **Settings → GitHub backup**, paste a
 [fine-grained token](https://github.com/settings/personal-access-tokens/new)
-with the account permission *Gists: read and write* (or a classic token with
-the `gist` scope) and click **Connect**.
+with access to *All repositories* and the repository permissions
+*Administration: read and write* (to create and describe the repositories) and
+*Contents: read and write*, or a classic token with the `repo` scope, and
+click **Connect**. A token made for the old gist backup lacks these
+permissions; replace it.
 
-- **Back up now** pushes the board as `storysquish-board.json`. The first push
-  creates a secret gist; later ones add revisions to it.
+- **Back up now** commits the board as `storysquish-board.json`. Before the
+  first push the app suggests a private repository named after the board,
+  e.g. `storysquish-dune` (numbered if your account already has one), and
+  creates it only once you confirm or edit the name; later pushes add commits
+  to it. Cancelling stops automatic backup from asking again until the next
+  session. If the linked repository has been deleted, the next backup offers
+  to create it again.
 - **Back up automatically**, in the desktop app, pushes 5 seconds after you
   stop editing, right away when you edit the title or move focus to another
   field or window, and once more when you quit. The web version pushes at most
   every five minutes while the board changes, and when you leave the page.
-- **Restore from gist…** lists the last 30 revisions; restoring can be undone.
-- In the desktop app each board file gets its own gist, so every novel keeps
-  a separate history, and the restore list is headed by that gist's title.
-  Moving the board file keeps its gist; opening another board switches to
-  that board's gist.
-- To back up to the same gist from another device or browser, paste its id or
-  URL into the gist field there. Clear the field to start a new gist next time.
-- **Disconnect** forgets the token; the gist stays on GitHub.
+- **Restore from GitHub…** lists the last 30 commits; restoring can be undone.
+- In the desktop app each board file gets its own repository, so every novel
+  keeps a separate history, and the restore list is headed by that board's
+  title. Moving the board file keeps its repository; opening another board
+  switches to that board's repository.
+- Changing the title renames the repository on the next push, numbering the
+  name if it is taken, unless you gave the repository a name of your own.
+  GitHub redirects the old name, so other devices keep backing up to it.
+- To back up to the same repository from another device or browser, paste
+  `owner/name` or its URL into the repository field there. Clear the field to
+  be offered a new repository next time.
+- The app refuses to push to a public repository, so a mistyped or pasted
+  link cannot publish a board.
+- **Disconnect** forgets the token; the repository stays on GitHub.
 
-The web version has a single board, so it keeps a single gist. Secret gists
-are unlisted, not private: anyone with the URL can read them.
+Boards previously backed up to gists are not copied over. Delete those gists
+on GitHub if you no longer want them reachable by link; their revision history
+is readable by anyone with the URL until you do.
 
 The desktop app keeps the token in a separate `github-token` file (mode
 `0600`) so `settings.json` can be synced or shared safely. The web version
@@ -172,8 +191,8 @@ drive the app headlessly with `egui_kittest`.
 | [`app`](src/app.rs)                      | egui UI, shortcuts, dialogs                      |
 | [`history`](src/history.rs)              | Snapshot-based undo/redo                         |
 | [`storage`](src/storage.rs)              | Board load/save, atomic writes, backups, export names |
-| [`settings`](src/settings.rs)            | Color scheme, board location and gist persistence |
-| [`gist`](src/gist.rs)                    | GitHub Gist client, token file, background requests |
+| [`settings`](src/settings.rs)            | Color scheme, board location and repo links      |
+| [`github`](src/github.rs)                | GitHub backup client, token file, background requests |
 | [`outline`](src/outline.rs)              | Markdown outline and manuscript export           |
 | [`theme`](src/theme.rs)                  | Color schemes and palettes                       |
 | [`migration`](src/migration.rs)          | Move data from pre-rename directories            |

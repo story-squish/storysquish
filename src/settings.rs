@@ -19,48 +19,37 @@ pub struct Settings {
     /// The board open before the current one, offered by Open → Local.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous_board_path: Option<PathBuf>,
-    /// Gist id per board file, so each novel keeps its own history.
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    gists: BTreeMap<PathBuf, String>,
-    /// The single gist of versions before per-board gists; handed to the
-    /// first board opened and dropped on the next save.
-    #[serde(rename = "gist-id", skip_serializing)]
-    unclaimed_gist_id: Option<String>,
-    pub gist_auto_backup: bool,
+    /// Private GitHub repository (`owner/name`) per board file, so each
+    /// novel keeps its own history.
+    #[serde(rename = "github-repos", skip_serializing_if = "BTreeMap::is_empty")]
+    repos: BTreeMap<PathBuf, String>,
+    #[serde(alias = "gist-auto-backup")]
+    pub github_auto_backup: bool,
 }
 
 impl Settings {
-    pub fn gist_id(&self, board: &Path) -> Option<&str> {
-        self.gists.get(&board_key(board)).map(String::as_str)
+    pub fn repo(&self, board: &Path) -> Option<&str> {
+        self.repos.get(&board_key(board)).map(String::as_str)
     }
 
-    pub fn set_gist_id(&mut self, board: &Path, gist_id: Option<String>) {
+    pub fn set_repo(&mut self, board: &Path, repo: Option<String>) {
         let key = board_key(board);
-        match gist_id {
-            Some(id) => self.gists.insert(key, id),
-            None => self.gists.remove(&key),
+        match repo {
+            Some(repo) => self.repos.insert(key, repo),
+            None => self.repos.remove(&key),
         };
     }
 
-    pub fn boards_linked_to<'a>(&'a self, gist_id: &'a str) -> impl Iterator<Item = &'a Path> {
-        self.gists
+    pub fn boards_linked_to<'a>(&'a self, repo: &'a str) -> impl Iterator<Item = &'a Path> {
+        self.repos
             .iter()
-            .filter(move |(_, id)| id.as_str() == gist_id)
+            .filter(move |(_, linked)| linked.as_str() == repo)
             .map(|(board, _)| board.as_path())
     }
 
-    pub fn move_gist_id(&mut self, from: &Path, to: &Path) {
-        let gist_id = self.gists.remove(&board_key(from));
-        self.set_gist_id(to, gist_id);
-    }
-
-    /// Returns whether the settings changed and need saving.
-    pub fn claim_unclaimed_gist_id(&mut self, board: &Path) -> bool {
-        let Some(gist_id) = self.unclaimed_gist_id.take() else {
-            return false;
-        };
-        self.gists.entry(board_key(board)).or_insert(gist_id);
-        true
+    pub fn move_repo(&mut self, from: &Path, to: &Path) {
+        let repo = self.repos.remove(&board_key(from));
+        self.set_repo(to, repo);
     }
 }
 
@@ -123,10 +112,10 @@ mod tests {
             color_scheme: ColorScheme::ForestNight,
             board_path: Some(board.clone()),
             previous_board_path: Some(dir.path().join("emma.json")),
-            gist_auto_backup: true,
+            github_auto_backup: true,
             ..Settings::default()
         };
-        settings.set_gist_id(&board, Some("aa5a315d61ae9438b18d".to_owned()));
+        settings.set_repo(&board, Some("someone/storysquish-dune".to_owned()));
         save(&path, &settings).unwrap();
         assert!(
             fs::read_to_string(&path)
@@ -137,22 +126,16 @@ mod tests {
     }
 
     #[test]
-    fn each_board_has_its_own_gist_and_moving_keeps_it() {
+    fn each_board_has_its_own_repo_and_moving_keeps_it() {
         let mut settings = Settings::default();
-        settings.set_gist_id(Path::new("/novels/dune.json"), Some("aaa".to_owned()));
-        settings.set_gist_id(Path::new("/novels/emma.json"), Some("bbb".to_owned()));
-        assert_eq!(
-            settings.gist_id(Path::new("/novels/dune.json")),
-            Some("aaa")
-        );
-        assert_eq!(
-            settings.gist_id(Path::new("/novels/emma.json")),
-            Some("bbb")
-        );
+        settings.set_repo(Path::new("/novels/dune.json"), Some("aaa".to_owned()));
+        settings.set_repo(Path::new("/novels/emma.json"), Some("bbb".to_owned()));
+        assert_eq!(settings.repo(Path::new("/novels/dune.json")), Some("aaa"));
+        assert_eq!(settings.repo(Path::new("/novels/emma.json")), Some("bbb"));
 
-        settings.move_gist_id(Path::new("/novels/dune.json"), Path::new("/sync/dune.json"));
-        assert_eq!(settings.gist_id(Path::new("/novels/dune.json")), None);
-        assert_eq!(settings.gist_id(Path::new("/sync/dune.json")), Some("aaa"));
+        settings.move_repo(Path::new("/novels/dune.json"), Path::new("/sync/dune.json"));
+        assert_eq!(settings.repo(Path::new("/novels/dune.json")), None);
+        assert_eq!(settings.repo(Path::new("/sync/dune.json")), Some("aaa"));
 
         assert_eq!(
             settings.boards_linked_to("aaa").collect::<Vec<_>>(),
@@ -160,33 +143,37 @@ mod tests {
         );
         assert_eq!(settings.boards_linked_to("zzz").count(), 0);
 
-        settings.set_gist_id(Path::new("/sync/dune.json"), None);
-        assert_eq!(settings.gist_id(Path::new("/sync/dune.json")), None);
+        settings.set_repo(Path::new("/sync/dune.json"), None);
+        assert_eq!(settings.repo(Path::new("/sync/dune.json")), None);
     }
 
     #[test]
-    fn relative_and_absolute_board_paths_share_a_gist() {
+    fn relative_and_absolute_board_paths_share_a_repo() {
         let mut settings = Settings::default();
-        settings.set_gist_id(Path::new("novel.json"), Some("aaa".to_owned()));
+        settings.set_repo(Path::new("novel.json"), Some("aaa".to_owned()));
         let absolute = std::env::current_dir().unwrap().join("novel.json");
-        assert_eq!(settings.gist_id(&absolute), Some("aaa"));
+        assert_eq!(settings.repo(&absolute), Some("aaa"));
     }
 
     #[test]
-    fn the_old_single_gist_goes_to_the_first_board_opened() {
+    fn gist_links_are_dropped_and_auto_backup_carries_over() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
-        fs::write(&path, r#"{"gist-id": "aaa"}"#).unwrap();
-        let mut settings = load(&path).unwrap();
         let board = dir.path().join("dune.json");
+        let old_settings = serde_json::json!({
+            "gist-id": "aaa",
+            "gists": { board.to_string_lossy(): "bbb" },
+            "gist-auto-backup": true,
+        });
+        fs::write(&path, old_settings.to_string()).unwrap();
+        let settings = load(&path).unwrap();
 
-        assert!(settings.claim_unclaimed_gist_id(&board));
-        assert!(!settings.claim_unclaimed_gist_id(&dir.path().join("emma.json")));
-        assert_eq!(settings.gist_id(&board), Some("aaa"));
+        assert_eq!(settings.repo(&board), None);
+        assert!(settings.github_auto_backup);
         save(&path, &settings).unwrap();
         let saved = fs::read_to_string(&path).unwrap();
-        assert!(!saved.contains("gist-id"), "{saved}");
-        assert_eq!(load(&path).unwrap().gist_id(&board), Some("aaa"));
+        assert!(!saved.contains("gist"), "{saved}");
+        assert!(saved.contains(r#""github-auto-backup": true"#), "{saved}");
     }
 
     #[test]
