@@ -955,6 +955,8 @@ let fileWrites = Promise.resolve();
 const githubBackup = {
   token: readToken(), busy: false, error: null, repoInvalid: false,
   boardChanged: false, lastAttemptAt: 0, lastSuccessAt: 0, lastPushedJson: null,
+  // A cancelled repo creation stops automatic backup from asking again this visit.
+  repoCreationOpen: false, repoCreationDeclined: false,
 };
 
 function isSelected(kind, id) {
@@ -1941,8 +1943,11 @@ function parseRepo(input) {
   const [owner = "", rawName = ""] = path.split(/[/#?]/);
   const name = rawName.replace(/\.git$/, "");
   const ownerIsValid = /^[A-Za-z0-9-]+$/.test(owner);
-  const nameIsValid = /^[A-Za-z0-9._-]+$/.test(name) && name !== "." && name !== "..";
-  return ownerIsValid && nameIsValid ? `${owner}/${name}` : null;
+  return ownerIsValid && isValidRepoName(name) ? `${owner}/${name}` : null;
+}
+
+function isValidRepoName(name) {
+  return /^[A-Za-z0-9._-]{1,100}$/.test(name) && name !== "." && name !== "..";
 }
 
 function repoDescription(title) {
@@ -1984,6 +1989,13 @@ function describeGithubFailure(status, detail) {
     422: "GitHub rejected the change; another device may have backed up at the same time",
   }[status] ?? "GitHub refused the request";
   return detail ? `${hint} (HTTP ${status}: ${detail})` : `${hint} (HTTP ${status})`;
+}
+
+class MissingRepoError extends Error {
+  constructor(repo) {
+    super(`${repo} does not exist or the token cannot see it`);
+    this.repo = repo;
+  }
 }
 
 class GithubError extends Error {
@@ -2028,37 +2040,44 @@ function boardFilePath(repo) {
   return `/repos/${repo}/contents/${GITHUB_BOARD_FILE}`;
 }
 
-async function createRepo(title) {
+// A taken name is an error, never a reuse of someone else's repository.
+async function createRepo(name, title) {
+  if (!isValidRepoName(name)) throw new Error(`“${name}” is not a valid repository name`);
+  try {
+    const created = await github("/user/repos", {method: "POST", body: {
+      name, description: repoDescription(title), private: true,
+      has_issues: false, has_projects: false, has_wiki: false,
+    }});
+    return created.full_name;
+  } catch (e) {
+    if (e instanceof GithubError && e.status === 422 && e.body.includes("name already exists")) {
+      throw new Error(`${name} already exists on your account; choose another name`);
+    }
+    throw e;
+  }
+}
+
+// The title's slug, numbered past names the account already uses.
+async function suggestRepoName(title) {
+  const {login} = await github("/user");
   const baseName = repoNameFor(title);
   for (let attempt = 1; attempt <= GITHUB_MAX_REPO_NAME_ATTEMPTS; attempt++) {
     const name = attempt === 1 ? baseName : `${baseName}-${attempt}`;
-    try {
-      const created = await github("/user/repos", {method: "POST", body: {
-        name, description: repoDescription(title), private: true,
-        has_issues: false, has_projects: false, has_wiki: false,
-      }});
-      return created.full_name;
-    } catch (e) {
-      if (e instanceof GithubError && e.status === 422 && e.body.includes("name already exists")) continue;
-      throw e;
-    }
+    if (await github(`/repos/${login}/${name}`, {absentOn: [404]}) === null) return name;
   }
   throw new Error(`every repository name tried for this board, from ${baseName}, is taken`);
 }
 
 // Refuses a public repository, so a pasted link can never publish the novel.
 async function pushBoard(repo, title, json) {
-  if (repo === null) {
-    repo = await createRepo(title);
-  } else {
-    const existing = await github(`/repos/${repo}`);
-    if (!existing.private) throw new Error(`${repo} is public; StorySquish backs up only to private repositories`);
-    const description = repoDescription(title);
-    if (existing.description !== description) {
-      await github(`/repos/${repo}`, {method: "PATCH", body: {description}});
-    }
-    repo = existing.full_name;
+  const existing = await github(`/repos/${repo}`, {absentOn: [404]});
+  if (!existing) throw new MissingRepoError(repo);
+  if (!existing.private) throw new Error(`${repo} is public; StorySquish backs up only to private repositories`);
+  const description = repoDescription(title);
+  if (existing.description !== description) {
+    await github(`/repos/${repo}`, {method: "PATCH", body: {description}});
   }
+  repo = existing.full_name;
   const current = await github(boardFilePath(repo), {absentOn: [404]});
   await github(boardFilePath(repo), {method: "PUT", body: {
     message: commitMessage(title),
@@ -2079,9 +2098,14 @@ async function runGithubJob(job) {
   }
 }
 
-// Creates a private repository on the first push, then commits to it.
+// Asks before creating a repository for the first push, or when the linked
+// one is gone, then commits to it.
 async function backUpToGithub(kind) {
-  if (!githubBackup.token || githubBackup.busy) return;
+  if (!githubBackup.token || githubBackup.busy || githubBackup.repoCreationOpen) return;
+  if (!settings.githubRepo) {
+    repoCreationDialog(null);
+    return;
+  }
   githubBackup.lastAttemptAt = Date.now();
   githubBackup.boardChanged = false;
   const json = serializeBoard(board);
@@ -2095,6 +2119,11 @@ async function backUpToGithub(kind) {
       saveSettingsReportingErrors();
     }
   } catch (e) {
+    if (e instanceof MissingRepoError) {
+      githubBackup.error = null;
+      repoCreationDialog(e.repo);
+      return;
+    }
     const message = `GitHub backup failed: ${e.message}`;
     if (kind === "auto" && !githubBackup.error) {
       alertDialog(`${message}\n\nEdits are still saved in this browser. Check Settings → GitHub backup.`);
@@ -2104,10 +2133,93 @@ async function backUpToGithub(kind) {
   drawModal();
 }
 
+function repoCreationDialog(missingRepo) {
+  const state = {
+    name: missingRepo ? missingRepo.split("/").pop() : repoNameFor(board.title),
+    edited: false, suggesting: !missingRepo, creating: false, error: null,
+  };
+  const redraw = () => { if (modalStack.at(-1) === dialog) drawModal(); };
+  const decline = () => {
+    githubBackup.repoCreationOpen = false;
+    githubBackup.repoCreationDeclined = true;
+  };
+  const create = async () => {
+    state.creating = true;
+    state.error = null;
+    redraw();
+    try {
+      const repo = await runGithubJob(() => createRepo(state.name.trim(), board.title));
+      const index = modalStack.indexOf(dialog);
+      if (index >= 0) { modalStack.splice(index, 1); drawModal(); }
+      githubBackup.repoCreationOpen = false;
+      githubBackup.repoCreationDeclined = false;
+      settings.githubRepo = repo;
+      githubBackup.lastPushedJson = null;
+      saveSettingsReportingErrors();
+      backUpToGithub("manual");
+    } catch (e) {
+      state.creating = false;
+      state.error = `Could not create the repository: ${e.message}`;
+      redraw();
+    }
+  };
+  const dialog = {
+    onDismiss: decline,
+    draw(box) {
+      const heading = document.createElement("h2");
+      heading.textContent = "Create a GitHub repository";
+      box.append(heading);
+      if (missingRepo) box.append(message(`${missingRepo} does not exist, or the token cannot see it.`));
+      box.append(message(`Back up “${board.title.trim() || "Untitled"}” to a new private repository ` +
+        "on your GitHub account."));
+      const input = document.createElement("input");
+      input.className = "repo-input";
+      input.value = state.name;
+      input.disabled = state.creating;
+      input.setAttribute("aria-label", "Repository name");
+      const invalid = hint("Use letters, digits, '-', '_' or '.'");
+      invalid.style.color = "var(--danger)";
+      const createButton = button("Create", "", create);
+      const sync = () => {
+        const valid = isValidRepoName(state.name.trim());
+        invalid.hidden = valid;
+        createButton.disabled = !valid || state.suggesting || state.creating;
+      };
+      input.addEventListener("input", () => { state.name = input.value; state.edited = true; sync(); });
+      input.addEventListener("keydown", e => { if (e.key === "Enter" && !createButton.disabled) create(); });
+      box.append(fieldLabel("Repository name"), input, invalid);
+      if (state.error) {
+        const error = hint(state.error);
+        error.style.color = "var(--danger)";
+        box.append(error);
+      }
+      if (state.suggesting) box.append(hint("Checking which names are free…"));
+      if (state.creating) box.append(hint("Creating…"));
+      const cancel = button("Cancel", "", () => { closeModal(); decline(); });
+      cancel.disabled = state.creating;
+      box.append(row(createButton, cancel));
+      sync();
+      if (!state.creating) {
+        input.focus();
+        input.setSelectionRange(input.value.length, input.value.length);
+      }
+    },
+  };
+  githubBackup.repoCreationOpen = true;
+  openModal(dialog);
+  if (state.suggesting) {
+    suggestRepoName(board.title)
+      .then(name => { if (!state.edited) state.name = name; },
+            e => { state.error = `Could not check which names are free: ${e.message}`; })
+      .finally(() => { state.suggesting = false; redraw(); });
+  }
+}
+
 // At most once per interval and only after the board changed, so a long
 // writing session leaves a version every few minutes, not one per keystroke.
 function backUpToGithubIfDue({ignoreInterval = false} = {}) {
   if (!settings.githubAutoBackup || !githubBackup.token || githubBackup.busy) return;
+  if (githubBackup.repoCreationOpen || githubBackup.repoCreationDeclined) return;
   if (!githubBackup.boardChanged || saveState.kind === "pending") return;
   if (!ignoreInterval && Date.now() - githubBackup.lastAttemptAt < GITHUB_BACKUP_INTERVAL_MS) return;
   if (serializeBoard(board) === githubBackup.lastPushedJson) { githubBackup.boardChanged = false; return; }
@@ -2154,6 +2266,7 @@ function setGithubRepo(input) {
   githubBackup.repoInvalid = trimmed !== "" && repo === null;
   if (githubBackup.repoInvalid || repo === settings.githubRepo) return;
   settings.githubRepo = repo;
+  githubBackup.repoCreationDeclined = false;
   githubBackup.lastPushedJson = null;
   saveSettingsReportingErrors();
 }
@@ -2168,7 +2281,7 @@ function githubStatus() {
   if (!githubBackup.token) return null;
   if (githubBackup.busy) return {text: "Talking to GitHub…"};
   if (githubBackup.lastSuccessAt) return {text: `Backed up ${minutesAgo(githubBackup.lastSuccessAt)}`};
-  if (!settings.githubRepo) return {text: "The first backup creates a private repository."};
+  if (!settings.githubRepo) return {text: "No repository yet; the first backup offers to create a private one."};
   return {text: "Not backed up in this visit yet."};
 }
 
@@ -2191,7 +2304,7 @@ function githubSection() {
   } else {
     const input = document.createElement("input");
     input.className = "repo-input";
-    input.placeholder = "owner/repo or URL; empty creates one";
+    input.placeholder = "owner/repo or URL; empty offers to create one";
     input.setAttribute("aria-label", "GitHub repository");
     input.value = settings.githubRepo ?? "";
     input.addEventListener("change", () => { setGithubRepo(input.value); drawModal(); });

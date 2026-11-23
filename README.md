@@ -136,9 +136,13 @@ with access to *All repositories* and the repository permissions
 click **Connect**. A token made for the old gist backup lacks these
 permissions; replace it.
 
-- **Back up now** commits the board as `storysquish-board.json`. The first
-  push creates a private repository named after the board, e.g.
-  `storysquish-dune`; later pushes add commits to it.
+- **Back up now** commits the board as `storysquish-board.json`. Before the
+  first push the app suggests a private repository named after the board,
+  e.g. `storysquish-dune` (numbered if your account already has one), and
+  creates it only once you confirm or edit the name; later pushes add commits
+  to it. Cancelling stops automatic backup from asking again until the next
+  session. If the linked repository has been deleted, the next backup offers
+  to create it again.
 - **Back up automatically**, in the desktop app, pushes 5 seconds after you
   stop editing, right away when you edit the title or move focus to another
   field or window, and once more when you quit. The web version pushes at most
@@ -150,7 +154,7 @@ permissions; replace it.
   switches to that board's repository.
 - To back up to the same repository from another device or browser, paste
   `owner/name` or its URL into the repository field there. Clear the field to
-  start a new repository next time.
+  be offered a new repository next time.
 - The app refuses to push to a public repository, so a mistyped or pasted
   link cannot publish a board.
 - **Disconnect** forgets the token; the repository stays on GitHub.

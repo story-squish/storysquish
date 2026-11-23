@@ -5,7 +5,7 @@ use std::thread;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use storysquish::github::{BOARD_FILE_NAME, Client, CloudBoard, Revision};
+use storysquish::github::{BOARD_FILE_NAME, Client, CloudBoard, MissingRepo, Revision};
 
 #[derive(Debug, Clone)]
 struct Recorded {
@@ -104,69 +104,101 @@ fn decoded_content(recorded: &Recorded) -> String {
 }
 
 #[test]
-fn first_push_creates_a_private_repo_and_commits_the_board() {
+fn a_repo_is_created_private_under_the_confirmed_name() {
     let (base, recorded) = mock_github(|method, path| match (method, path) {
         ("POST", "/user/repos") => (201, repo_json(true, "StorySquish board: Dune")),
-        ("PUT", _) => (201, "{}".to_owned()),
         _ => not_found(),
     });
     let client = Client::with_api_base(" tok \n", &base);
 
-    let pushed = client.push(None, "Dune", r#"{"title":"Dune"}"#).unwrap();
-    assert_eq!(pushed.repo, REPO);
+    assert_eq!(client.create_repo("my-dune", "Dune").unwrap(), REPO);
 
     let recorded = recorded.lock().unwrap();
-    let calls: Vec<_> = recorded
-        .iter()
-        .map(|r| (r.method.as_str(), r.path.as_str()))
-        .collect();
-    assert_eq!(
-        calls,
-        [
-            ("POST", "/user/repos"),
-            ("GET", board_path().as_str()),
-            ("PUT", board_path().as_str()),
-        ]
-    );
+    assert_eq!(recorded.len(), 1);
     assert_eq!(recorded[0].authorization.as_deref(), Some("Bearer tok"));
     let created = body_of(&recorded[0]);
     assert_eq!(created["private"], true);
-    assert_eq!(created["name"], "storysquish-dune");
+    assert_eq!(created["name"], "my-dune");
     assert_eq!(created["description"], "StorySquish board: Dune");
-    let put = body_of(&recorded[2]);
-    assert_eq!(put["message"], "Back up Dune");
-    assert_eq!(put.get("sha"), None);
-    assert_eq!(decoded_content(&recorded[2]), r#"{"title":"Dune"}"#);
 }
 
 #[test]
-fn a_taken_name_gets_a_numbered_suffix() {
-    let attempts = Arc::new(Mutex::new(0));
-    let counter = Arc::clone(&attempts);
-    let (base, recorded) = mock_github(move |method, _| match method {
-        "POST" => {
-            let mut attempts = counter.lock().unwrap();
-            *attempts += 1;
-            if *attempts == 1 {
-                (
-                    422,
-                    r#"{"message":"Repository creation failed.","errors":[{"message":"name already exists on this account"}]}"#
-                        .to_owned(),
-                )
-            } else {
-                (201, repo_json(true, "StorySquish board: Dune"))
-            }
-        }
-        "PUT" => (201, "{}".to_owned()),
+fn a_taken_name_is_reported_rather_than_reused() {
+    let (base, recorded) = mock_github(|_, _| {
+        (
+            422,
+            r#"{"message":"Repository creation failed.","errors":[{"message":"name already exists on this account"}]}"#
+                .to_owned(),
+        )
+    });
+    let client = Client::with_api_base("tok", &base);
+
+    let error = format!(
+        "{:#}",
+        client.create_repo("storysquish-dune", "Dune").unwrap_err()
+    );
+    assert!(error.contains("storysquish-dune already exists"), "{error}");
+    assert_eq!(recorded.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn an_invalid_name_never_reaches_github() {
+    let (base, recorded) = mock_github(|_, _| not_found());
+    let client = Client::with_api_base("tok", &base);
+
+    assert!(client.create_repo("my novel", "Dune").is_err());
+    assert!(recorded.lock().unwrap().is_empty());
+}
+
+#[test]
+fn the_suggested_name_skips_names_the_account_already_uses() {
+    let (base, _) = mock_github(|_, path| match path {
+        "/user" => (200, r#"{"login":"someone"}"#.to_owned()),
+        "/repos/someone/storysquish-dune" => (200, repo_json(true, "my notes")),
         _ => not_found(),
     });
     let client = Client::with_api_base("tok", &base);
 
-    client.push(None, "Dune", "{}").unwrap();
+    assert_eq!(
+        client.suggest_repo_name("Dune").unwrap(),
+        "storysquish-dune-2"
+    );
+}
+
+#[test]
+fn the_first_push_to_a_new_repo_commits_without_a_previous_version() {
+    let (base, recorded) = mock_github(|method, path| match (method, path) {
+        ("GET", path) if path == format!("/repos/{REPO}") => {
+            (200, repo_json(true, "StorySquish board: Dune"))
+        }
+        ("PUT", _) => (201, "{}".to_owned()),
+        _ => not_found(),
+    });
+    let client = Client::with_api_base("tok", &base);
+
+    let pushed = client.push(REPO, "Dune", r#"{"title":"Dune"}"#).unwrap();
+    assert_eq!(pushed.repo, REPO);
 
     let recorded = recorded.lock().unwrap();
-    assert_eq!(body_of(&recorded[0])["name"], "storysquish-dune");
-    assert_eq!(body_of(&recorded[1])["name"], "storysquish-dune-2");
+    let put = recorded.last().unwrap();
+    assert_eq!(put.method, "PUT");
+    assert_eq!(body_of(put)["message"], "Back up Dune");
+    assert_eq!(body_of(put).get("sha"), None);
+    assert_eq!(decoded_content(put), r#"{"title":"Dune"}"#);
+}
+
+#[test]
+fn a_missing_repo_is_reported_and_never_recreated() {
+    let (base, recorded) = mock_github(|_, _| not_found());
+    let client = Client::with_api_base("tok", &base);
+
+    let error = client.push(REPO, "Dune", "{}").unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<MissingRepo>(),
+        Some(&MissingRepo(REPO.to_owned()))
+    );
+    let recorded = recorded.lock().unwrap();
+    assert!(recorded.iter().all(|r| r.method == "GET"), "{recorded:?}");
 }
 
 #[test]
@@ -180,10 +212,8 @@ fn later_pushes_replace_the_file_and_keep_the_description_fresh() {
     });
     let client = Client::with_api_base("tok", &base);
 
-    client
-        .push(Some(REPO), "Dune", r#"{"title":"Dune 2"}"#)
-        .unwrap();
-    client.push(Some(REPO), "Dune Messiah", "{}").unwrap();
+    client.push(REPO, "Dune", r#"{"title":"Dune 2"}"#).unwrap();
+    client.push(REPO, "Dune Messiah", "{}").unwrap();
 
     let recorded = recorded.lock().unwrap();
     let calls: Vec<_> = recorded
@@ -215,7 +245,7 @@ fn a_public_repo_is_never_written_to() {
     let (base, recorded) = mock_github(|_, _| (200, repo_json(false, "StorySquish board")));
     let client = Client::with_api_base("tok", &base);
 
-    let error = format!("{:#}", client.push(Some(REPO), "", "{}").unwrap_err());
+    let error = format!("{:#}", client.push(REPO, "", "{}").unwrap_err());
     assert!(error.contains("public"), "{error}");
     let recorded = recorded.lock().unwrap();
     assert!(recorded.iter().all(|r| r.method == "GET"), "{recorded:?}");
@@ -274,7 +304,7 @@ fn failures_name_the_likely_cause() {
     let (base, _) = mock_github(|_, _| (401, r#"{"message":"Bad credentials"}"#.to_owned()));
     let client = Client::with_api_base("expired", &base);
 
-    let error = format!("{:#}", client.push(None, "", "{}").unwrap_err());
+    let error = format!("{:#}", client.push(REPO, "", "{}").unwrap_err());
     assert_eq!(
         error,
         "the token is invalid or expired (HTTP 401: Bad credentials)"

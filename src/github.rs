@@ -17,7 +17,8 @@ pub const BOARD_FILE_NAME: &str = "storysquish-board.json";
 pub const TOKEN_FILE_NAME: &str = "github-token";
 const REPO_NAME_PREFIX: &str = "storysquish-";
 const UNTITLED_REPO_NAME: &str = "storysquish-board";
-const MAX_REPO_NAME_LEN: usize = 80;
+const MAX_SUGGESTED_REPO_NAME_LEN: usize = 80;
+const MAX_REPO_NAME_LEN: usize = 100;
 const MAX_REPO_NAME_ATTEMPTS: usize = 20;
 const UNTITLED_DESCRIPTION: &str = "StorySquish board";
 const TITLED_DESCRIPTION_PREFIX: &str = "StorySquish board: ";
@@ -45,6 +46,24 @@ pub struct CloudBoard {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pushed {
     pub repo: String,
+}
+
+/// The linked repository is gone, or the token can no longer see it, so the
+/// board needs a new one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingRepo(pub String);
+
+impl std::fmt::Display for MissingRepo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} does not exist or the token cannot see it", self.0)
+    }
+}
+
+impl std::error::Error for MissingRepo {}
+
+#[derive(Deserialize)]
+struct UserResponse {
+    login: String,
 }
 
 #[derive(Deserialize)]
@@ -105,23 +124,19 @@ impl Client {
         }
     }
 
-    /// Creates a private repository when `repo` is `None`, otherwise commits
-    /// a new version to the existing one, which must be private.
-    pub fn push(&self, repo: Option<&str>, title: &str, board_json: &str) -> Result<Pushed> {
-        let repo = match repo {
-            None => self.create_repo(title)?,
-            Some(repo) => {
-                let existing = self.repo_info(repo)?;
-                if !existing.private {
-                    bail!("{repo} is public; StorySquish backs up only to private repositories");
-                }
-                let description = repo_description(title);
-                if existing.description.as_deref() != Some(description.as_str()) {
-                    self.set_description(repo, &description)?;
-                }
-                existing.full_name
-            }
-        };
+    /// Commits a new version to `repo`, which must be private.
+    pub fn push(&self, repo: &str, title: &str, board_json: &str) -> Result<Pushed> {
+        let existing = self
+            .repo_info_if_visible(repo)?
+            .ok_or_else(|| MissingRepo(repo.to_owned()))?;
+        if !existing.private {
+            bail!("{repo} is public; StorySquish backs up only to private repositories");
+        }
+        let description = repo_description(title);
+        if existing.description.as_deref() != Some(description.as_str()) {
+            self.set_description(repo, &description)?;
+        }
+        let repo = existing.full_name;
         let mut body = json!({
             "message": commit_message(title),
             "content": BASE64.encode(board_json),
@@ -137,38 +152,71 @@ impl Client {
         Ok(Pushed { repo })
     }
 
-    fn create_repo(&self, title: &str) -> Result<String> {
-        let base_name = repo_name_for(title);
+    /// Creates the private repository `name` on the token's account and
+    /// returns its `owner/name`; a taken name is an error, never a reuse.
+    pub fn create_repo(&self, name: &str, title: &str) -> Result<String> {
+        if !is_valid_repo_name(name) {
+            bail!("“{name}” is not a valid repository name");
+        }
+        let response = self
+            .authorized(self.agent.post(format!("{}/user/repos", self.api_base)))
+            .send_json(json!({
+                "name": name,
+                "description": repo_description(title),
+                "private": true,
+                "has_issues": false,
+                "has_projects": false,
+                "has_wiki": false,
+            }))
+            .context("contacting GitHub")?;
+        let status = response.status().as_u16();
+        let text = read_body(response)?;
+        if status == 422 && text.contains("name already exists") {
+            bail!("{name} already exists on your account; choose another name");
+        }
+        if !(200..300).contains(&status) {
+            bail!("{}", describe_failure(status, &text));
+        }
+        let created: RepoResponse =
+            serde_json::from_str(&text).context("GitHub sent an unexpected response")?;
+        Ok(created.full_name)
+    }
+
+    /// The name `create_repo` should offer for a board titled `title`: the
+    /// title's slug, numbered when the account already has a repo by that
+    /// name.
+    pub fn suggest_repo_name(&self, title: &str) -> Result<String> {
+        let login = self.login()?;
+        let base_name = suggested_repo_name(title);
         for attempt in 1..=MAX_REPO_NAME_ATTEMPTS {
-            let name = if attempt == 1 {
-                base_name.clone()
-            } else {
-                format!("{base_name}-{attempt}")
-            };
-            let response = self
-                .authorized(self.agent.post(format!("{}/user/repos", self.api_base)))
-                .send_json(json!({
-                    "name": name,
-                    "description": repo_description(title),
-                    "private": true,
-                    "has_issues": false,
-                    "has_projects": false,
-                    "has_wiki": false,
-                }))
-                .context("contacting GitHub")?;
-            let status = response.status().as_u16();
-            let text = read_body(response)?;
-            if status == 422 && text.contains("name already exists") {
-                continue;
+            let name = numbered_repo_name(&base_name, attempt);
+            if self
+                .repo_info_if_visible(&format!("{login}/{name}"))?
+                .is_none()
+            {
+                return Ok(name);
             }
-            if !(200..300).contains(&status) {
-                bail!("{}", describe_failure(status, &text));
-            }
-            let created: RepoResponse =
-                serde_json::from_str(&text).context("GitHub sent an unexpected response")?;
-            return Ok(created.full_name);
         }
         bail!("every repository name tried for this board, from {base_name}, is taken")
+    }
+
+    fn login(&self) -> Result<String> {
+        let response = self
+            .authorized(self.agent.get(format!("{}/user", self.api_base)))
+            .call()
+            .context("contacting GitHub")?;
+        read_json::<UserResponse>(response).map(|user| user.login)
+    }
+
+    fn repo_info_if_visible(&self, repo: &str) -> Result<Option<RepoResponse>> {
+        let response = self
+            .authorized(self.agent.get(format!("{}/repos/{repo}", self.api_base)))
+            .call()
+            .context("contacting GitHub")?;
+        if response.status().as_u16() == 404 {
+            return Ok(None);
+        }
+        read_json(response).map(Some)
     }
 
     fn repo_info(&self, repo: &str) -> Result<RepoResponse> {
@@ -384,7 +432,7 @@ fn commit_message(title: &str) -> String {
 
 /// `storysquish-` followed by the title in lowercase ASCII with every other
 /// run of characters turned into one hyphen.
-fn repo_name_for(title: &str) -> String {
+pub fn suggested_repo_name(title: &str) -> String {
     let mut slug = String::new();
     for c in title.chars() {
         if c.is_ascii_alphanumeric() {
@@ -398,8 +446,31 @@ fn repo_name_for(title: &str) -> String {
         return UNTITLED_REPO_NAME.to_owned();
     }
     let mut name = format!("{REPO_NAME_PREFIX}{slug}");
-    name.truncate(MAX_REPO_NAME_LEN);
+    name.truncate(MAX_SUGGESTED_REPO_NAME_LEN);
     name.trim_end_matches('-').to_owned()
+}
+
+fn numbered_repo_name(base_name: &str, attempt: usize) -> String {
+    if attempt == 1 {
+        base_name.to_owned()
+    } else {
+        format!("{base_name}-{attempt}")
+    }
+}
+
+pub fn is_valid_repo_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_REPO_NAME_LEN
+        && name != "."
+        && name != ".."
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+/// The `name` part of `owner/name`.
+pub fn repo_name(repo: &str) -> &str {
+    repo.rsplit_once('/').map_or(repo, |(_, name)| name)
 }
 
 /// Accepts `owner/name` or a GitHub URL for the repository, e.g. one copied
@@ -420,13 +491,7 @@ pub fn parse_repo(input: &str) -> Option<String> {
     let name = name.strip_suffix(".git").unwrap_or(name);
     let owner_is_valid =
         !owner.is_empty() && owner.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
-    let name_is_valid = !name.is_empty()
-        && name != "."
-        && name != ".."
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
-    (owner_is_valid && name_is_valid).then(|| format!("{owner}/{name}"))
+    (owner_is_valid && is_valid_repo_name(name)).then(|| format!("{owner}/{name}"))
 }
 
 pub fn repo_url(repo: &str) -> String {
@@ -482,9 +547,16 @@ pub fn delete_token(path: &Path) -> Result<()> {
 #[derive(Debug)]
 pub enum Job {
     Push {
-        repo: Option<String>,
+        repo: String,
         title: String,
         board_json: String,
+    },
+    SuggestRepoName {
+        title: String,
+    },
+    CreateRepo {
+        name: String,
+        title: String,
     },
     ListRevisions {
         repo: String,
@@ -509,6 +581,11 @@ pub enum Reply {
         title: String,
         revisions: Vec<Revision>,
     },
+    RepoMissing {
+        repo: String,
+    },
+    SuggestedRepoName(String),
+    CreatedRepo(String),
     Fetched(String),
     Boards(Vec<CloudBoard>),
     FetchedLatest {
@@ -554,9 +631,16 @@ pub fn run(client: &Client, job: Job) -> Reply {
             repo,
             title,
             board_json,
-        } => client
-            .push(repo.as_deref(), &title, &board_json)
-            .map(|pushed| Reply::Pushed { pushed, board_json }),
+        } => match client.push(&repo, &title, &board_json) {
+            Err(e) if e.is::<MissingRepo>() => Ok(Reply::RepoMissing { repo }),
+            pushed => pushed.map(|pushed| Reply::Pushed { pushed, board_json }),
+        },
+        Job::SuggestRepoName { title } => client
+            .suggest_repo_name(&title)
+            .map(Reply::SuggestedRepoName),
+        Job::CreateRepo { name, title } => {
+            client.create_repo(&name, &title).map(Reply::CreatedRepo)
+        }
         Job::ListRevisions { repo } => client.revisions(&repo).and_then(|revisions| {
             Ok(Reply::Revisions {
                 title: client.title(&repo)?,
@@ -606,17 +690,29 @@ mod tests {
 
     #[test]
     fn repo_names_come_from_the_title() {
-        assert_eq!(repo_name_for("Dune"), "storysquish-dune");
+        assert_eq!(suggested_repo_name("Dune"), "storysquish-dune");
         assert_eq!(
-            repo_name_for("  Dune: Messiah!  "),
+            suggested_repo_name("  Dune: Messiah!  "),
             "storysquish-dune-messiah"
         );
-        assert_eq!(repo_name_for("Émile & co"), "storysquish-mile-co");
-        assert_eq!(repo_name_for("  "), "storysquish-board");
-        assert_eq!(repo_name_for("……"), "storysquish-board");
-        let long = repo_name_for(&"word ".repeat(40));
-        assert!(long.len() <= MAX_REPO_NAME_LEN, "{long}");
+        assert_eq!(suggested_repo_name("Émile & co"), "storysquish-mile-co");
+        assert_eq!(suggested_repo_name("  "), "storysquish-board");
+        assert_eq!(suggested_repo_name("……"), "storysquish-board");
+        let long = suggested_repo_name(&"word ".repeat(40));
+        assert!(long.len() <= MAX_SUGGESTED_REPO_NAME_LEN, "{long}");
         assert!(!long.ends_with('-'), "{long}");
+        assert!(is_valid_repo_name(&numbered_repo_name(&long, 20)));
+    }
+
+    #[test]
+    fn repo_names_follow_githubs_rules() {
+        for name in ["storysquish-dune", "a", "my_novel.v2"] {
+            assert!(is_valid_repo_name(name), "{name}");
+        }
+        for name in ["", ".", "..", "my novel", "dune/2", &"a".repeat(101)] {
+            assert!(!is_valid_repo_name(name), "{name}");
+        }
+        assert_eq!(repo_name("someone/storysquish-dune"), "storysquish-dune");
     }
 
     #[test]

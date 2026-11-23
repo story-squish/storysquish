@@ -111,6 +111,8 @@ enum BackupTask {
     Fetch,
     ListCloudBoards,
     OpenCloudBoard,
+    SuggestRepoName,
+    CreateRepo,
 }
 
 #[derive(Default)]
@@ -140,6 +142,21 @@ struct BackupState {
     error: Option<String>,
     restore: Option<BackupRestore>,
     cloud: Option<CloudPicker>,
+    repo_creation: Option<RepoCreation>,
+    /// Boards whose repo creation was cancelled, which automatic backup
+    /// leaves alone for the rest of the session instead of asking again.
+    declined_repo_creation: HashSet<PathBuf>,
+}
+
+/// Confirms the name of the repository about to be created for `board`;
+/// `missing` is the linked repo it replaces, when that one is gone.
+struct RepoCreation {
+    board: PathBuf,
+    name: String,
+    name_edited: bool,
+    missing: Option<String>,
+    queued: Option<(BackupTask, github::Job)>,
+    error: Option<String>,
 }
 
 #[derive(Default)]
@@ -793,14 +810,24 @@ impl PlannerApp {
         });
     }
 
-    fn start_queued_cloud_job(&mut self) {
+    fn start_queued_dialog_job(&mut self) {
         if self.backup.in_flight.is_some() || !self.backup.queued_pushes.is_empty() {
             return;
         }
-        let Some((task, job)) = self.backup.cloud.as_mut().and_then(|c| c.queued.take()) else {
-            return;
-        };
-        self.start_github_job(task, job);
+        let queued = self
+            .backup
+            .cloud
+            .as_mut()
+            .and_then(|c| c.queued.take())
+            .or_else(|| {
+                self.backup
+                    .repo_creation
+                    .as_mut()
+                    .and_then(|c| c.queued.take())
+            });
+        if let Some((task, job)) = queued {
+            self.start_github_job(task, job);
+        }
     }
 
     /// A repo already linked to a local file reopens that file, with the
@@ -838,9 +865,7 @@ impl PlannerApp {
                 return;
             }
         }
-        if let github::Job::Push { board_json, .. } = self.push_job() {
-            self.backup.last_pushed_json = Some(board_json);
-        }
+        self.backup.last_pushed_json = Some(self.board_json());
         self.backup.board_changed = false;
     }
 
@@ -951,6 +976,7 @@ impl PlannerApp {
         };
         self.backup.repo_invalid = false;
         if repo != self.repo() {
+            self.backup.declined_repo_creation.remove(&self.path);
             self.settings.set_repo(&self.path, repo);
             self.backup.last_pushed_json = None;
             self.save_settings_reporting_errors();
@@ -981,9 +1007,10 @@ impl PlannerApp {
         self.backup.in_flight = Some((task, pending));
     }
 
-    /// `None` when the repo already holds the board as it is now.
+    /// `None` when the repo already holds the board as it is now, or there
+    /// is no repo yet.
     fn unpushed_job(&self) -> Option<github::Job> {
-        let job = self.push_job();
+        let job = self.push_job()?;
         match &job {
             github::Job::Push { board_json, .. }
                 if self.backup.last_pushed_json.as_ref() == Some(board_json) =>
@@ -1023,12 +1050,16 @@ impl PlannerApp {
         }
     }
 
-    fn push_job(&self) -> github::Job {
-        github::Job::Push {
-            repo: self.repo(),
+    fn board_json(&self) -> String {
+        serde_json::to_string_pretty(&self.board).unwrap_or_default()
+    }
+
+    fn push_job(&self) -> Option<github::Job> {
+        Some(github::Job::Push {
+            repo: self.repo()?,
             title: self.board.title.clone(),
-            board_json: serde_json::to_string_pretty(&self.board).unwrap_or_default(),
-        }
+            board_json: self.board_json(),
+        })
     }
 
     /// An empty board is almost always a fresh start, and pushing
@@ -1039,11 +1070,39 @@ impl PlannerApp {
         }
         self.backup.board_changed = false;
         self.backup.push_now = false;
-        let job = self.push_job();
+        let Some(job) = self.push_job() else {
+            self.offer_repo_creation(None);
+            return;
+        };
         self.start_github_job(task, job);
         if self.backup.in_flight.is_some() {
             self.backup.pushed_board = Some(self.path.clone());
         }
+    }
+
+    /// Suggests a name from the board title, which a background check then
+    /// moves past names the account already uses unless it was edited.
+    fn offer_repo_creation(&mut self, missing: Option<String>) {
+        let title = self.board.title.clone();
+        let (name, queued) = match &missing {
+            Some(repo) => (github::repo_name(repo).to_owned(), None),
+            None => (
+                github::suggested_repo_name(&title),
+                Some((
+                    BackupTask::SuggestRepoName,
+                    github::Job::SuggestRepoName { title },
+                )),
+            ),
+        };
+        self.backup.repo_creation = Some(RepoCreation {
+            board: self.path.clone(),
+            name,
+            name_edited: false,
+            missing,
+            queued,
+            error: None,
+        });
+        self.start_queued_dialog_job();
     }
 
     /// Pushes once the board has gone unedited for `BACKUP_PUSH_DELAY`, so a
@@ -1052,6 +1111,8 @@ impl PlannerApp {
         if !self.settings.github_auto_backup
             || self.backup.token.is_none()
             || self.backup.in_flight.is_some()
+            || self.backup.repo_creation.is_some()
+            || self.backup.declined_repo_creation.contains(&self.path)
             || !self.backup.board_changed
             || self.board.is_empty()
             || matches!(self.save_state, SaveState::Pending(_))
@@ -1130,6 +1191,15 @@ impl PlannerApp {
                     self.save_settings_reporting_errors();
                 }
             }
+            github::Reply::RepoMissing { repo } => self.handle_missing_repo(repo),
+            github::Reply::SuggestedRepoName(name) => {
+                if let Some(creation) = &mut self.backup.repo_creation
+                    && !creation.name_edited
+                {
+                    creation.name = name;
+                }
+            }
+            github::Reply::CreatedRepo(repo) => self.link_created_repo(repo),
             github::Reply::Revisions { title, revisions } => {
                 if let Some(restore) = &mut self.backup.restore {
                     restore.title = Some(title);
@@ -1170,35 +1240,89 @@ impl PlannerApp {
                     }
                 }
             }
-            github::Reply::Failed(reason) if is_cloud_task(task) => {
-                if let Some(cloud) = &mut self.backup.cloud {
-                    cloud.error = Some(format!("Could not reach GitHub: {reason}"));
+            github::Reply::Failed(reason) => self.handle_github_failure(task, &reason),
+        }
+    }
+
+    fn handle_missing_repo(&mut self, repo: String) {
+        let board = self
+            .backup
+            .pushed_board
+            .take()
+            .unwrap_or_else(|| self.path.clone());
+        if board == self.path {
+            self.backup.error = None;
+            self.offer_repo_creation(Some(repo));
+        } else {
+            self.backup.error = Some(format!(
+                "GitHub backup failed: {}",
+                github::MissingRepo(repo)
+            ));
+        }
+    }
+
+    fn handle_github_failure(&mut self, task: BackupTask, reason: &str) {
+        if is_repo_creation_task(task) {
+            if let Some(creation) = &mut self.backup.repo_creation {
+                creation.error = Some(if task == BackupTask::SuggestRepoName {
+                    format!("Could not check which names are free: {reason}")
+                } else {
+                    format!("Could not create the repository: {reason}")
+                });
+            }
+            return;
+        }
+        if is_cloud_task(task) {
+            if let Some(cloud) = &mut self.backup.cloud {
+                cloud.error = Some(format!("Could not reach GitHub: {reason}"));
+            }
+            return;
+        }
+        let message = format!("GitHub backup failed: {reason}");
+        match task {
+            BackupTask::ListRevisions | BackupTask::Fetch => {
+                if let Some(restore) = &mut self.backup.restore {
+                    restore.error = Some(message);
                 }
             }
-            github::Reply::Failed(reason) => {
-                let message = format!("GitHub backup failed: {reason}");
-                match task {
-                    BackupTask::ListRevisions | BackupTask::Fetch => {
-                        if let Some(restore) = &mut self.backup.restore {
-                            restore.error = Some(message);
-                        }
-                    }
-                    BackupTask::AutoPush if self.backup.error.is_none() => {
-                        self.alert = Some(format!(
-                            "{message}\n\nEdits are still saved locally. Check Settings → \
-                             GitHub backup."
-                        ));
-                        self.backup.error = Some(message);
-                    }
-                    BackupTask::AutoPush | BackupTask::ManualPush => {
-                        self.backup.error = Some(message);
-                    }
-                    BackupTask::ListCloudBoards | BackupTask::OpenCloudBoard => {}
-                }
-                if matches!(task, BackupTask::AutoPush | BackupTask::ManualPush) {
-                    self.backup.pushed_board = None;
-                }
+            BackupTask::AutoPush if self.backup.error.is_none() => {
+                self.alert = Some(format!(
+                    "{message}\n\nEdits are still saved locally. Check Settings → \
+                     GitHub backup."
+                ));
+                self.backup.error = Some(message);
             }
+            BackupTask::AutoPush | BackupTask::ManualPush => {
+                self.backup.error = Some(message);
+            }
+            BackupTask::ListCloudBoards
+            | BackupTask::OpenCloudBoard
+            | BackupTask::SuggestRepoName
+            | BackupTask::CreateRepo => {}
+        }
+        if matches!(task, BackupTask::AutoPush | BackupTask::ManualPush) {
+            self.backup.pushed_board = None;
+        }
+    }
+
+    /// Pushes the board to its new repo ahead of anything else queued.
+    fn link_created_repo(&mut self, repo: String) {
+        let Some(creation) = self.backup.repo_creation.take() else {
+            return;
+        };
+        let board = creation.board;
+        self.backup.declined_repo_creation.remove(&board);
+        self.backup.error = None;
+        self.settings.set_repo(&board, Some(repo.clone()));
+        self.save_settings_reporting_errors();
+        if board != self.path {
+            return;
+        }
+        self.backup.repo_draft = repo;
+        self.backup.last_pushed_json = None;
+        if let Some(job) = self.push_job().filter(|_| !self.board.is_empty()) {
+            self.backup.unpushed_boards.insert(board.clone());
+            self.backup.queued_pushes.insert(0, (board, job));
         }
     }
 
@@ -1271,7 +1395,7 @@ impl PlannerApp {
             let id_field = ui
                 .add(
                     TextEdit::singleline(&mut self.backup.repo_draft)
-                        .hint_text("owner/repo or URL; empty creates one")
+                        .hint_text("owner/repo or URL; empty offers to create one")
                         .desired_width(240.0),
                 )
                 .labelled_by(label);
@@ -1345,7 +1469,7 @@ impl PlannerApp {
         } else if let Some(at) = self.backup.last_success {
             format!("Backed up {}", elapsed_description(at.elapsed()))
         } else if self.repo().is_none() {
-            "The first backup creates a private repository.".to_owned()
+            "No repository yet; the first backup offers to create a private one.".to_owned()
         } else {
             "Not backed up in this session yet.".to_owned()
         };
@@ -1433,6 +1557,94 @@ impl PlannerApp {
         }
     }
 
+    fn repo_creation_dialog(&mut self, ctx: &egui::Context) {
+        let Some(creation) = &mut self.backup.repo_creation else {
+            return;
+        };
+        let colors = self.colors;
+        let in_flight = self.backup.in_flight.as_ref().map(|(task, _)| *task);
+        let queued = creation.queued.as_ref().map(|(task, _)| *task);
+        let suggesting = [in_flight, queued].contains(&Some(BackupTask::SuggestRepoName));
+        let creating = [in_flight, queued].contains(&Some(BackupTask::CreateRepo));
+        let title = display_cloud_title(&self.board.title).to_owned();
+        let mut create = false;
+        let mut cancel = false;
+        let modal = egui::Modal::new(egui::Id::unique("repo_creation")).show(ctx, |ui| {
+            ui.set_width(380.0);
+            ui.heading("Create a GitHub repository");
+            if let Some(missing) = &creation.missing {
+                ui.label(format!(
+                    "{missing} does not exist, or the token cannot see it."
+                ));
+            }
+            ui.label(format!(
+                "Back up “{title}” to a new private repository on your GitHub account."
+            ));
+            ui.add_space(4.0);
+            let label = field_label(ui, colors, "Repository name");
+            let field = ui
+                .add_enabled(
+                    !creating,
+                    TextEdit::singleline(&mut creation.name).desired_width(f32::INFINITY),
+                )
+                .labelled_by(label);
+            if field.changed() {
+                creation.name_edited = true;
+                creation.error = None;
+            }
+            let name_is_valid = github::is_valid_repo_name(creation.name.trim());
+            if !name_is_valid {
+                ui.label(
+                    RichText::new("Use letters, digits, '-', '_' or '.'")
+                        .small()
+                        .color(colors.danger),
+                );
+            }
+            if let Some(error) = &creation.error {
+                ui.label(RichText::new(error).small().color(colors.danger));
+            }
+            if suggesting || creating {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(if creating {
+                        "Creating…"
+                    } else {
+                        "Checking which names are free…"
+                    });
+                });
+            }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let submitted = field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                let can_create = name_is_valid && !suggesting && !creating;
+                create = (ui
+                    .add_enabled(can_create, egui::Button::new("Create"))
+                    .clicked()
+                    || submitted)
+                    && can_create;
+                cancel = ui
+                    .add_enabled(!creating, egui::Button::new("Cancel"))
+                    .clicked();
+            });
+        });
+        if create {
+            creation.error = None;
+            creation.queued = Some((
+                BackupTask::CreateRepo,
+                github::Job::CreateRepo {
+                    name: creation.name.trim().to_owned(),
+                    title: self.board.title.clone(),
+                },
+            ));
+            self.start_queued_dialog_job();
+        } else if (cancel || modal.should_close())
+            && !creating
+            && let Some(creation) = self.backup.repo_creation.take()
+        {
+            self.backup.declined_repo_creation.insert(creation.board);
+        }
+    }
+
     fn cloud_open_dialog(&mut self, ctx: &egui::Context) {
         let Some(cloud) = &self.backup.cloud else {
             return;
@@ -1511,7 +1723,7 @@ impl PlannerApp {
                 BackupTask::OpenCloudBoard,
                 github::Job::FetchLatest { repo },
             ));
-            self.start_queued_cloud_job();
+            self.start_queued_dialog_job();
         }
         if close || modal.should_close() {
             self.backup.cloud = None;
@@ -2976,7 +3188,7 @@ impl eframe::App for PlannerApp {
         self.reload_if_changed_elsewhere(ctx);
         self.receive_github_reply(ctx);
         self.start_queued_push();
-        self.start_queued_cloud_job();
+        self.start_queued_dialog_job();
         self.back_up_to_github_if_due(ctx);
     }
 
@@ -3038,6 +3250,7 @@ impl eframe::App for PlannerApp {
         self.local_recovery_dialog(&ctx);
         self.restore_dialog(&ctx);
         self.cloud_open_dialog(&ctx);
+        self.repo_creation_dialog(&ctx);
         self.dialogs(&ctx);
         self.flush_on_focus_change(&ctx);
         self.sync_window_title(&ctx);
@@ -3582,6 +3795,10 @@ fn is_cloud_task(task: BackupTask) -> bool {
         task,
         BackupTask::ListCloudBoards | BackupTask::OpenCloudBoard
     )
+}
+
+fn is_repo_creation_task(task: BackupTask) -> bool {
+    matches!(task, BackupTask::SuggestRepoName | BackupTask::CreateRepo)
 }
 
 fn display_cloud_title(title: &str) -> &str {

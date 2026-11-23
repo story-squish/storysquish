@@ -677,7 +677,7 @@ fn connecting_github_stores_the_token_privately_and_disconnecting_forgets_it() {
     assert!(harness.query_by_label("Back up now").is_some());
     assert!(
         harness
-            .query_by_label("The first backup creates a private repository.")
+            .query_by_label("No repository yet; the first backup offers to create a private one.")
             .is_some()
     );
 
@@ -930,35 +930,48 @@ fn fake_github(repos: &[(&str, &Board)]) -> String {
                 })
             };
             let file_suffix = format!("/contents/{BOARD_FILE_NAME}");
-            let reply = if path.starts_with("/user/repos?") {
-                serde_json::Value::Array(
-                    boards
-                        .iter()
-                        .map(|(repo, content)| repo_json(repo, content))
-                        .collect(),
-                )
-                .to_string()
+            let not_found = (404, r#"{"message":"Not Found"}"#.to_owned());
+            let (status, reply) = if path == "/user" {
+                (200, r#"{"login":"someone"}"#.to_owned())
+            } else if method == "POST" && path == "/user/repos" {
+                let sent: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                let repo = format!("someone/{}", sent["name"].as_str().unwrap());
+                boards.insert(
+                    repo.clone(),
+                    serde_json::to_string(&Board::default()).unwrap(),
+                );
+                (201, repo_json(&repo, &boards[&repo]).to_string())
+            } else if path.starts_with("/user/repos?") {
+                let listed = boards
+                    .iter()
+                    .map(|(repo, content)| repo_json(repo, content))
+                    .collect();
+                (200, serde_json::Value::Array(listed).to_string())
             } else if let Some(repo) = path
                 .strip_prefix("/repos/")
                 .and_then(|rest| rest.strip_suffix(&file_suffix))
             {
                 match method.as_str() {
+                    _ if !boards.contains_key(repo) => not_found,
                     "PUT" => {
                         let sent: serde_json::Value = serde_json::from_slice(&body).unwrap();
                         let content = BASE64.decode(sent["content"].as_str().unwrap()).unwrap();
                         boards.insert(repo.to_owned(), String::from_utf8(content).unwrap());
-                        "{}".to_owned()
+                        (200, "{}".to_owned())
                     }
-                    _ if wants_raw => boards[repo].clone(),
-                    _ => r#"{"sha":"f00d"}"#.to_owned(),
+                    _ if wants_raw => (200, boards[repo].clone()),
+                    _ => (200, r#"{"sha":"f00d"}"#.to_owned()),
                 }
             } else {
                 let repo = path.trim_start_matches("/repos/");
-                repo_json(repo, &boards[repo]).to_string()
+                match boards.get(repo) {
+                    Some(content) => (200, repo_json(repo, content).to_string()),
+                    None => not_found,
+                }
             };
             write!(
                 stream,
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n\
                  Content-Length: {}\r\nConnection: close\r\n\r\n{reply}",
                 reply.len()
             )
@@ -1137,4 +1150,137 @@ fn recover_from_local_without_backups_says_so() {
     harness.run();
     assert!(harness.query_by_label("Recover").is_none());
     assert!(harness.query_by_label("Recover from local…").is_some());
+}
+
+fn launch_with_fake_github(
+    board: Board,
+    linked_repo: Option<&str>,
+    cloud: &[(&str, &Board)],
+) -> (Harness<'static, PlannerApp>, TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let settings_path = dir.path().join("settings.json");
+    storysquish::github::save_token(&storysquish::github::token_path(&settings_path), "t").unwrap();
+    let board_path = dir.path().join("board.json");
+    storysquish::storage::save(&board_path, &board).unwrap();
+    let mut settings = storysquish::settings::Settings::default();
+    settings.set_repo(&board_path, linked_repo.map(str::to_owned));
+    storysquish::settings::save(&settings_path, &settings).unwrap();
+    let api_base = fake_github(cloud);
+    let mut harness = Harness::builder()
+        .with_size(WINDOW)
+        .build_eframe(move |cc| {
+            PlannerApp::new(cc, board, board_path, settings_path, None)
+                .with_github_api_base(&api_base)
+        });
+    harness.run();
+    (harness, dir)
+}
+
+fn titled_board(title: &str) -> Board {
+    Board {
+        title: title.to_owned(),
+        ..board_with_scenes(&["Opening"])
+    }
+}
+
+fn repo_name_field<'h>(harness: &'h Harness<'_, PlannerApp>) -> egui_kittest::Node<'h> {
+    labelled_text_input(harness, "REPOSITORY NAME")
+}
+
+fn repo_name_shown(harness: &Harness<'_, PlannerApp>) -> Option<String> {
+    harness
+        .query_by(|node| {
+            node.role() == egui::accesskit::Role::TextInput
+                && node.label().as_deref() == Some("REPOSITORY NAME")
+        })
+        .and_then(|node| node.value())
+}
+
+fn linked_repo(harness: &Harness<'_, PlannerApp>) -> Option<String> {
+    harness
+        .state()
+        .settings()
+        .repo(harness.state().board_path())
+        .map(str::to_owned)
+}
+
+#[test]
+fn backing_up_without_a_repo_asks_before_creating_one_with_a_free_name() {
+    let taken = Board::default();
+    let (mut harness, _dir) = launch_with_fake_github(
+        titled_board("Dune"),
+        None,
+        &[("someone/storysquish-dune", &taken)],
+    );
+    open_settings(&mut harness);
+    harness.get_by_label("Back up now").click();
+    step_until(&mut harness, |h| {
+        repo_name_shown(h).as_deref() == Some("storysquish-dune-2")
+    });
+    assert_eq!(linked_repo(&harness), None);
+
+    harness.get_by_label("Create").click();
+    step_until(&mut harness, |h| {
+        h.query_by_label_contains("Backed up").is_some()
+    });
+
+    assert_eq!(
+        linked_repo(&harness).as_deref(),
+        Some("someone/storysquish-dune-2")
+    );
+    assert!(repo_name_shown(&harness).is_none());
+}
+
+#[test]
+fn the_suggested_repo_name_can_be_changed_before_creating() {
+    let (mut harness, _dir) = launch_with_fake_github(titled_board("Dune"), None, &[]);
+    open_settings(&mut harness);
+    harness.get_by_label("Back up now").click();
+    step_until(&mut harness, |h| {
+        repo_name_shown(h).as_deref() == Some("storysquish-dune")
+            && h.query_by_label("Checking which names are free…").is_none()
+    });
+
+    repo_name_field(&harness).focus();
+    harness.run();
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    repo_name_field(&harness).type_text("arrakis");
+    harness.run();
+    harness.get_by_label("Create").click();
+    step_until(&mut harness, |h| linked_repo(h).is_some());
+
+    assert_eq!(linked_repo(&harness).as_deref(), Some("someone/arrakis"));
+}
+
+#[test]
+fn cancelling_repo_creation_leaves_the_board_unlinked() {
+    let (mut harness, _dir) = launch_with_fake_github(titled_board("Dune"), None, &[]);
+    open_settings(&mut harness);
+    harness.get_by_label("Back up now").click();
+    step_until(&mut harness, |h| repo_name_shown(h).is_some());
+
+    harness.get_by_label("Cancel").click();
+    harness.run();
+
+    assert!(repo_name_shown(&harness).is_none());
+    assert_eq!(linked_repo(&harness), None);
+}
+
+#[test]
+fn a_linked_repo_that_no_longer_exists_offers_to_create_it_again() {
+    let (mut harness, _dir) =
+        launch_with_fake_github(titled_board("Dune"), Some("someone/dune-gone"), &[]);
+    open_settings(&mut harness);
+    harness.get_by_label("Back up now").click();
+    step_until(&mut harness, |h| {
+        h.query_by_label_contains("someone/dune-gone does not exist")
+            .is_some()
+    });
+    assert_eq!(repo_name_shown(&harness).as_deref(), Some("dune-gone"));
+
+    harness.get_by_label("Create").click();
+    step_until(&mut harness, |h| {
+        h.query_by_label_contains("Backed up").is_some()
+    });
+    assert_eq!(linked_repo(&harness).as_deref(), Some("someone/dune-gone"));
 }
