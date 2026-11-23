@@ -142,13 +142,79 @@ Off until you connect a token. Each board is backed up to its own **private**
 repository, so only your account (and anyone you add as a collaborator) can
 read it; unlike a secret gist, a leaked link reveals nothing.
 
-In **Settings → GitHub backup**, paste a
+If you already use GitHub: in **Settings → GitHub backup**, paste a
 [fine-grained token](https://github.com/settings/personal-access-tokens/new)
 with access to *All repositories* and the repository permissions
 *Administration: read and write* (to create and describe the repositories) and
 *Contents: read and write*, or a classic token with the `repo` scope, and
 click **Connect**. A token made for the old gist backup lacks these
 permissions; replace it.
+
+### Setting it up for the first time
+
+New to GitHub? GitHub is a website that stores files and keeps every earlier
+version of them. StorySquish uses it as an off-site copy of your board, so
+your novel survives a lost or broken computer. It is free, and takes about
+five minutes to set up once.
+
+1. **Create a GitHub account.** Go to <https://github.com/signup>, enter an
+   email address, a password and a username, and confirm the email GitHub
+   sends you. The free plan is all you need.
+2. **Create a token.** A token is a password just for StorySquish: it lets
+   the app save your boards without knowing your real password, and you can
+   revoke it at any time. While signed in to GitHub, open
+   <https://github.com/settings/personal-access-tokens/new> (or click your
+   profile picture, then **Settings → Developer settings → Personal access
+   tokens → Fine-grained tokens → Generate new token**) and fill in:
+   - **Token name**: anything you'll recognise, such as `StorySquish`.
+   - **Expiration**: how long the token works. When it runs out, backups stop
+     with an error and you repeat steps 2 and 3. A year is a reasonable
+     choice.
+   - **Repository access**: choose **All repositories**. StorySquish creates
+     a new repository for each board, which a token limited to selected
+     repositories cannot do.
+   - **Permissions**: under **Repository permissions**, set
+     **Administration** to **Read and write** and **Contents** to **Read and
+     write**. Leave everything else as it is; GitHub adds **Metadata:
+     Read-only** by itself.
+
+   Click **Generate token**, then copy the token (it starts with
+   `github_pat_`). GitHub shows it only once; if you lose it, delete it on
+   the same page and generate a new one.
+3. **Connect StorySquish.** In the app, click **Settings**, paste the token
+   into the **GitHub token** field under **GitHub backup**, and click
+   **Connect**. The token is kept in a file on your computer that only your
+   user account can read.
+4. **Create the backup repository.** Edit the board, or click **Back up
+   now**. A **Save to a GitHub repository** window suggests a name such as
+   `storysquish-dune`; click **Create**. The repository is private: nobody
+   but you can see it, even if they know its name.
+
+From then on, every change is backed up automatically a few seconds after you
+stop typing. To check, click **Open** next to the repository name in
+Settings: your board appears on GitHub as `storysquish-board.json`, and its
+**History** lists every backup. **Settings → Restore from GitHub…** brings
+back any of them.
+
+If something goes wrong, the error appears under **GitHub backup** in
+Settings:
+
+- *contacting GitHub*: you are offline, or GitHub is down. Backups resume on
+  their own once the connection is back.
+- *the token is invalid or expired*: the token ran out or was deleted, or a
+  character was lost when pasting. Click **Disconnect**, make a new token,
+  and connect again. Your repository and its history are kept.
+- *the token lacks the Contents or Administration permission*: a permission
+  from step 2 is missing. Open the token on GitHub's token page, click
+  **Edit**, and add it; the token text stays the same, so the next backup
+  works without reconnecting.
+
+To use the same backup on a second computer, install StorySquish there,
+repeat step 3 (the same token works, or make another one), and paste the
+repository's name, e.g. `yourname/storysquish-dune`, into the repository field
+in Settings instead of creating a new one.
+
+### How it works
 
 - **Back up now** commits the board as `storysquish-board.json`. Before the
   first push the app suggests a private repository named after the board,
