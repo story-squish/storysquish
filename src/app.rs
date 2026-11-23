@@ -24,6 +24,17 @@ const BEFORE_RECOVER: &str = "before-recover";
 const BEFORE_GITHUB: &str = "before-github";
 const BACKUP_PUSH_DELAY: Duration = Duration::from_secs(5);
 const BACKUP_POLL: Duration = Duration::from_millis(100);
+const OFFLINE_RETRY_DELAYS: [Duration; 5] = [
+    Duration::from_secs(15),
+    Duration::from_secs(30),
+    Duration::from_mins(1),
+    Duration::from_mins(2),
+    Duration::from_mins(5),
+];
+/// Closing must not hang on a bad network; whatever misses this stays
+/// flagged in settings and is backed up on the next launch.
+const EXIT_BACKUP_BUDGET: Duration = Duration::from_secs(8);
+const OFFLINE_REASON: &str = "no internet connection, or GitHub is down";
 const NOVEL_TITLE_FIELD: &str = "novel_title";
 const NODE_RADIUS: f32 = 26.0;
 /// Short of the midpoint, so the labels of A→B and B→A land apart.
@@ -140,9 +151,8 @@ struct BackupState {
     /// Pushes for boards switched away from before their edits reached
     /// GitHub; they go ahead of cloud requests so a reopen fetches them.
     queued_pushes: Vec<(PathBuf, github::Job)>,
-    /// Boards edited here whose latest version is not yet in their repo,
-    /// so the cloud copy must not overwrite them.
-    unpushed_boards: HashSet<PathBuf>,
+    /// Set while GitHub cannot be reached; automatic requests wait for it.
+    offline: Option<OfflineRetry>,
     api_base: Option<String>,
     error: Option<String>,
     restore: Option<BackupRestore>,
@@ -156,6 +166,26 @@ struct BackupState {
     /// The board just opened, whose linked repo gets the `storysquish-`
     /// prefix if it lacks it.
     prefix_check: Option<PathBuf>,
+}
+
+struct OfflineRetry {
+    attempts: usize,
+    next_at: Instant,
+}
+
+impl OfflineRetry {
+    fn after(previous: Option<&Self>) -> Self {
+        let attempts = previous.map_or(0, |p| p.attempts + 1);
+        let delay = OFFLINE_RETRY_DELAYS[attempts.min(OFFLINE_RETRY_DELAYS.len() - 1)];
+        Self {
+            attempts,
+            next_at: Instant::now() + delay,
+        }
+    }
+
+    fn wait(&self) -> Option<Duration> {
+        Some(self.next_at.saturating_duration_since(Instant::now())).filter(|d| !d.is_zero())
+    }
 }
 
 /// Confirms the name of the repository about to be created for `board`;
@@ -345,6 +375,7 @@ impl PlannerApp {
             colors,
         };
         app.follow_title_in_file_name();
+        app.resume_unpushed_backups();
         app
     }
 
@@ -480,13 +511,8 @@ impl PlannerApp {
             .queued_pushes
             .iter_mut()
             .for_each(|(path, _)| retarget(path));
-        for set in [
-            &mut backup.unpushed_boards,
-            &mut backup.declined_repo_creation,
-        ] {
-            if set.remove(&previous) {
-                set.insert(current.clone());
-            }
+        if backup.declined_repo_creation.remove(&previous) {
+            backup.declined_repo_creation.insert(current.clone());
         }
         if let Some(recovery) = &mut self.local_recovery {
             recovery.error = storage::list_backups(&current)
@@ -589,6 +615,12 @@ impl PlannerApp {
     fn flush_on_focus_change(&mut self, ctx: &egui::Context) {
         let focus = FocusSnapshot::of(ctx);
         if focus != self.focus_seen {
+            if focus.window
+                && !self.focus_seen.window
+                && let Some(offline) = &mut self.backup.offline
+            {
+                offline.next_at = Instant::now();
+            }
             self.focus_seen = focus;
             self.flush_pending_edits();
             if self.backup.board_changed {
@@ -942,8 +974,12 @@ impl PlannerApp {
         });
     }
 
+    /// Pushes parked by an offline retry do not hold up a request the
+    /// writer is waiting on.
     fn start_queued_dialog_job(&mut self) {
-        if self.backup.in_flight.is_some() || !self.backup.queued_pushes.is_empty() {
+        let pushes_waiting =
+            !self.backup.queued_pushes.is_empty() && self.offline_retry_wait().is_none();
+        if self.backup.in_flight.is_some() || pushes_waiting {
             return;
         }
         let queued = self
@@ -975,7 +1011,7 @@ impl PlannerApp {
                 .map(Path::to_owned)
         };
         if let Some(path) = linked {
-            let local_is_newer = self.backup.unpushed_boards.contains(&path);
+            let local_is_newer = self.settings.is_unpushed(&path);
             if path != self.path && !self.switch_to_board_file(path) {
                 return;
             }
@@ -1044,9 +1080,76 @@ impl PlannerApp {
         self.backup.repo_invalid = false;
         self.backup.last_pushed_json = None;
         self.backup.last_success = None;
-        self.backup.board_changed = false;
+        self.backup.board_changed =
+            self.settings.is_unpushed(&self.path) && !self.push_queued(&self.path);
         self.backup.push_now = false;
         self.backup.prefix_check = Some(self.path.clone());
+    }
+
+    fn push_queued(&self, board: &Path) -> bool {
+        self.backup
+            .queued_pushes
+            .iter()
+            .any(|(queued, _)| queued == board)
+    }
+
+    fn mark_unpushed(&mut self, board: &Path, unpushed: bool) {
+        if self.settings.set_unpushed(board, unpushed) {
+            self.save_settings_reporting_errors();
+        }
+    }
+
+    /// Picks up backups a previous session could not finish, e.g. because
+    /// it was closed offline.
+    fn resume_unpushed_backups(&mut self) {
+        if !self.settings.github_auto_backup || self.backup.token.is_none() {
+            return;
+        }
+        let open = std::path::absolute(&self.path).unwrap_or_else(|_| self.path.clone());
+        let boards: Vec<PathBuf> = self
+            .settings
+            .unpushed_boards()
+            .map(Path::to_owned)
+            .collect();
+        for board in boards {
+            if board == open {
+                self.backup.board_changed = true;
+            } else {
+                self.queue_push_from_disk(board);
+            }
+        }
+    }
+
+    /// For a board that is not open, whose saved file is what it last
+    /// looked like here.
+    fn queue_push_from_disk(&mut self, board: PathBuf) {
+        if self.push_queued(&board) {
+            return;
+        }
+        let Some(repo) = self.settings.repo(&board).map(str::to_owned) else {
+            self.mark_unpushed(&board, false);
+            return;
+        };
+        let saved = match storage::load(&board) {
+            Ok(saved) if !saved.is_empty() => saved,
+            _ => {
+                self.mark_unpushed(&board, false);
+                return;
+            }
+        };
+        let Ok(board_json) = serde_json::to_string_pretty(&saved) else {
+            return;
+        };
+        let job = github::Job::Push {
+            repo,
+            title: saved.title,
+            board_json,
+        };
+        self.backup.queued_pushes.push((board, job));
+    }
+
+    fn offline_retry_wait(&self) -> Option<Duration> {
+        self.backup.offline.as_ref().and_then(OfflineRetry::wait)
     }
 
     fn repo(&self) -> Option<String> {
@@ -1170,11 +1273,15 @@ impl PlannerApp {
             .queued_pushes
             .retain(|(board, _)| *board != self.path);
         self.backup.queued_pushes.push((self.path.clone(), job));
-        self.backup.unpushed_boards.insert(self.path.clone());
+        self.mark_unpushed(&self.path.clone(), true);
     }
 
-    fn start_queued_push(&mut self) {
+    fn start_queued_push(&mut self, ctx: &egui::Context) {
         if self.backup.in_flight.is_some() || self.backup.queued_pushes.is_empty() {
+            return;
+        }
+        if let Some(wait) = self.offline_retry_wait() {
+            ctx.request_repaint_after(wait);
             return;
         }
         let (board, job) = self.backup.queued_pushes.remove(0);
@@ -1264,11 +1371,15 @@ impl PlannerApp {
 
     /// Waits for pushes, so edits to the board switched away from reach its
     /// repo first.
-    fn add_prefix_to_open_repo(&mut self) {
+    fn add_prefix_to_open_repo(&mut self, ctx: &egui::Context) {
         if self.backup.prefix_check.as_ref() != Some(&self.path)
             || self.backup.in_flight.is_some()
             || !self.backup.queued_pushes.is_empty()
         {
+            return;
+        }
+        if let Some(wait) = self.offline_retry_wait() {
+            ctx.request_repaint_after(wait);
             return;
         }
         self.backup.prefix_check = None;
@@ -1301,7 +1412,9 @@ impl PlannerApp {
         if let Some(wait) = backup_push_wait(
             self.backup.last_edit.map(|at| at.elapsed()),
             self.backup.push_now,
-        ) {
+        )
+        .or_else(|| self.offline_retry_wait())
+        {
             ctx.request_repaint_after(wait);
             return;
         }
@@ -1344,6 +1457,9 @@ impl PlannerApp {
     }
 
     fn handle_github_reply(&mut self, task: BackupTask, reply: github::Reply) {
+        if !matches!(reply, github::Reply::Offline(_)) {
+            self.backup.offline = None;
+        }
         match reply {
             github::Reply::Pushed { pushed, board_json } => {
                 let board = self
@@ -1352,14 +1468,9 @@ impl PlannerApp {
                     .take()
                     .unwrap_or_else(|| self.path.clone());
                 self.backup.error = None;
-                if !self
-                    .backup
-                    .queued_pushes
-                    .iter()
-                    .any(|(queued, _)| *queued == board)
-                {
-                    self.backup.unpushed_boards.remove(&board);
-                }
+                let still_unpushed = self.push_queued(&board)
+                    || (board == self.path && self.board_json() != board_json);
+                self.mark_unpushed(&board, still_unpushed);
                 if board == self.path {
                     self.backup.last_pushed_json = Some(board_json);
                     self.backup.last_success = Some(Instant::now());
@@ -1421,7 +1532,31 @@ impl PlannerApp {
                     }
                 }
             }
+            github::Reply::Offline(_) => self.handle_github_offline(task),
             github::Reply::Failed(reason) => self.handle_github_failure(task, &reason),
+        }
+    }
+
+    /// Being offline is normal, so automatic work is retried later without
+    /// a word; only requests the writer is waiting on report it.
+    fn handle_github_offline(&mut self, task: BackupTask) {
+        self.backup.offline = Some(OfflineRetry::after(self.backup.offline.as_ref()));
+        match task {
+            BackupTask::AutoPush | BackupTask::ManualPush => {
+                let board = self
+                    .backup
+                    .pushed_board
+                    .take()
+                    .unwrap_or_else(|| self.path.clone());
+                self.mark_unpushed(&board, true);
+                if board == self.path {
+                    self.backup.board_changed = true;
+                } else {
+                    self.queue_push_from_disk(board);
+                }
+            }
+            BackupTask::AddRepoPrefix => self.backup.prefix_check = Some(self.path.clone()),
+            _ => self.handle_github_failure(task, OFFLINE_REASON),
         }
     }
 
@@ -1528,25 +1663,39 @@ impl PlannerApp {
         self.backup.repo_draft = repo;
         self.backup.last_pushed_json = None;
         if let Some(job) = self.push_job() {
-            self.backup.unpushed_boards.insert(board.clone());
+            self.mark_unpushed(&board, true);
             self.backup.queued_pushes.insert(0, (board, job));
         }
     }
 
-    /// Blocks shutdown on one last push so the repo ends the session with
-    /// the final state rather than one from before the last few edits.
+    /// Blocks shutdown for up to `EXIT_BACKUP_BUDGET` on one last push, so
+    /// the repo usually ends the session with the final state. Pushes that
+    /// do not finish in time keep their boards flagged for the next launch.
     fn back_up_to_github_before_exit(&mut self) {
+        let deadline = Instant::now() + EXIT_BACKUP_BUDGET;
         if let Some((task, pending)) = self.backup.in_flight.take() {
-            let reply = pending.wait();
-            self.handle_github_reply(task, reply);
+            match pending.wait_until(deadline) {
+                Some(reply) => self.handle_github_reply(task, reply),
+                None => {
+                    if let Some(board) = self.backup.pushed_board.take() {
+                        self.mark_unpushed(&board, true);
+                    }
+                }
+            }
         }
         self.queue_push_of_open_board();
         let Some(client) = self.github_client() else {
             return;
         };
         for (board, job) in std::mem::take(&mut self.backup.queued_pushes) {
-            let reply = github::run(&client, job);
+            if self.backup.offline.is_some() {
+                break;
+            }
             self.backup.pushed_board = Some(board);
+            let Some(reply) = github::Pending::start(client.clone(), job).wait_until(deadline)
+            else {
+                break;
+            };
             self.handle_github_reply(BackupTask::ManualPush, reply);
         }
     }
@@ -1679,6 +1828,14 @@ impl PlannerApp {
         }
         let status = if self.backup.in_flight.is_some() {
             "Talking to GitHub…".to_owned()
+        } else if self.backup.offline.is_some() {
+            let last = self.backup.last_success.map_or_else(String::new, |at| {
+                format!(" Last backed up {}.", elapsed_description(at.elapsed()))
+            });
+            format!(
+                "Offline: edits are saved on this computer and back up once GitHub \
+                 is reachable.{last}"
+            )
         } else if let Some(at) = self.backup.last_success {
             format!("Backed up {}", elapsed_description(at.elapsed()))
         } else if self.board.is_empty() {
@@ -2149,6 +2306,13 @@ impl PlannerApp {
                         label.on_hover_text("Picked up changes made to the board file elsewhere");
                     }
                     _ => {}
+                }
+                if self.backup.offline.is_some() {
+                    ui.label(RichText::new("offline").small().color(colors.header_text))
+                        .on_hover_text(
+                            "GitHub cannot be reached. Edits are saved on this computer and \
+                             are backed up automatically once the connection is back.",
+                        );
                 }
             });
         });
@@ -3458,11 +3622,11 @@ impl eframe::App for PlannerApp {
         self.flush_if_due(ctx);
         self.reload_if_changed_elsewhere(ctx);
         self.receive_github_reply(ctx);
-        self.start_queued_push();
+        self.start_queued_push(ctx);
         self.start_queued_dialog_job();
         self.offer_repo_for_new_board(ctx);
         self.back_up_to_github_if_due(ctx);
-        self.add_prefix_to_open_repo();
+        self.add_prefix_to_open_repo(ctx);
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {

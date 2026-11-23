@@ -982,6 +982,10 @@ fn export_menu_offers_outline_manuscript_and_combined_markdown() {
 /// Keeps each repo's latest board in memory, like GitHub does, so a test can
 /// see whether edits reached the cloud before a board was reopened from it.
 fn fake_github(repos: &[(&str, &Board)]) -> String {
+    fake_github_on(std::net::TcpListener::bind("127.0.0.1:0").unwrap(), repos)
+}
+
+fn fake_github_on(listener: std::net::TcpListener, repos: &[(&str, &Board)]) -> String {
     use base64::Engine;
     use base64::engine::general_purpose::STANDARD as BASE64;
     use std::io::{BufRead, BufReader, Read, Write};
@@ -991,7 +995,6 @@ fn fake_github(repos: &[(&str, &Board)]) -> String {
         .iter()
         .map(|(repo, board)| ((*repo).to_owned(), serde_json::to_string(board).unwrap()))
         .collect();
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     std::thread::spawn(move || {
         for stream in listener.incoming() {
@@ -1645,4 +1648,131 @@ fn a_repo_created_for_an_empty_board_still_gets_the_board_file() {
         linked_repo(&harness).as_deref(),
         Some("someone/storysquish-arrakis")
     );
+}
+
+/// A board linked to `REPO_DUNE` with automatic backup on, talking to
+/// `api_base`, plus a second linked board `other.json` that is not open.
+fn launch_auto_backup(
+    api_base: String,
+    configure: impl FnOnce(&mut storysquish::settings::Settings, &std::path::Path),
+) -> (Harness<'static, PlannerApp>, TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let settings_path = dir.path().join("settings.json");
+    storysquish::github::save_token(&storysquish::github::token_path(&settings_path), "t").unwrap();
+    let board_path = dir.path().join("Dune.json");
+    let dune = titled_board("Dune");
+    storysquish::storage::save(&board_path, &dune).unwrap();
+    let other_path = dir.path().join("other.json");
+    storysquish::storage::save(&other_path, &titled_board("Other")).unwrap();
+    let mut settings = storysquish::settings::Settings::default();
+    settings.github_auto_backup = true;
+    settings.set_repo(&board_path, Some(REPO_DUNE.to_owned()));
+    settings.set_repo(&other_path, Some(REPO_OTHER.to_owned()));
+    configure(&mut settings, dir.path());
+    storysquish::settings::save(&settings_path, &settings).unwrap();
+    let mut harness = Harness::builder()
+        .with_size(WINDOW)
+        .build_eframe(move |cc| {
+            PlannerApp::new(cc, dune, board_path, settings_path, None)
+                .with_github_api_base(&api_base)
+        });
+    harness.run();
+    (harness, dir)
+}
+
+const REPO_DUNE: &str = "someone/storysquish-dune";
+const REPO_OTHER: &str = "someone/storysquish-other";
+
+fn saved_unpushed(dir: &TempDir, board: &str) -> bool {
+    storysquish::settings::load(&dir.path().join("settings.json"))
+        .unwrap()
+        .is_unpushed(&dir.path().join(board))
+}
+
+fn cloud_board(api_base: &str, repo: &str) -> Board {
+    let json = storysquish::github::Client::with_api_base("t", api_base)
+        .latest_board(repo)
+        .unwrap();
+    serde_json::from_str(&json).unwrap()
+}
+
+fn set_window_focus(harness: &mut Harness<'_, PlannerApp>, focused: bool) {
+    harness.input_mut().focused = focused;
+    harness.event(egui::Event::WindowFocused(focused));
+    harness.run();
+}
+
+fn unused_local_address() -> std::net::SocketAddr {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+}
+
+#[test]
+fn an_offline_backup_stays_quiet_and_resumes_when_github_returns() {
+    let address = unused_local_address();
+    let (mut harness, dir) = launch_auto_backup(format!("http://{address}"), |_, _| {});
+
+    harness.get_by_label("+ Scene").click();
+    harness.run();
+    set_window_focus(&mut harness, false);
+    step_until(&mut harness, |h| h.query_by_label("offline").is_some());
+
+    assert!(
+        harness
+            .query_by(|n| n
+                .label()
+                .is_some_and(|l| l.contains("GitHub backup failed")))
+            .is_none()
+    );
+    assert!(saved_unpushed(&dir, "Dune.json"));
+
+    let dune = titled_board("Dune");
+    let api_base = fake_github_on(
+        std::net::TcpListener::bind(address).unwrap(),
+        &[(REPO_DUNE, &dune), (REPO_OTHER, &titled_board("Other"))],
+    );
+    set_window_focus(&mut harness, true);
+    step_until(&mut harness, |h| h.query_by_label("offline").is_none());
+    step_until(&mut harness, |_| !saved_unpushed(&dir, "Dune.json"));
+
+    assert_eq!(cloud_board(&api_base, REPO_DUNE).scenes.len(), 2);
+}
+
+#[test]
+fn edits_left_unbacked_by_an_earlier_session_are_backed_up_on_launch() {
+    let mut cloud_dune = titled_board("Dune");
+    cloud_dune.scenes.clear();
+    let api_base = fake_github(&[(REPO_DUNE, &cloud_dune), (REPO_OTHER, &Board::default())]);
+    let (mut harness, dir) = launch_auto_backup(api_base.clone(), |settings, dir| {
+        settings.set_unpushed(&dir.join("Dune.json"), true);
+        settings.set_unpushed(&dir.join("other.json"), true);
+    });
+
+    step_until(&mut harness, |_| {
+        !saved_unpushed(&dir, "Dune.json") && !saved_unpushed(&dir, "other.json")
+    });
+
+    assert_eq!(cloud_board(&api_base, REPO_DUNE).scenes.len(), 1);
+    assert_eq!(cloud_board(&api_base, REPO_OTHER).title, "Other");
+}
+
+#[test]
+fn closing_on_a_network_that_never_answers_gives_up_and_flags_the_board() {
+    let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let api_base = format!("http://{}", silent.local_addr().unwrap());
+    let (mut harness, dir) = launch_auto_backup(api_base, |_, _| {});
+
+    harness.get_by_label("+ Scene").click();
+    harness.run();
+    set_window_focus(&mut harness, false);
+    harness.run_steps(2);
+
+    let started = std::time::Instant::now();
+    eframe::App::on_exit(harness.state_mut());
+
+    assert!(started.elapsed() < std::time::Duration::from_secs(15));
+    assert!(saved_unpushed(&dir, "Dune.json"));
+    drop(silent);
 }

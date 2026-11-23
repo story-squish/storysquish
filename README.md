@@ -196,11 +196,16 @@ Settings: your board appears on GitHub as `storysquish-board.json`, and its
 **History** lists every backup. **Settings → Restore from GitHub…** brings
 back any of them.
 
-If something goes wrong, the error appears under **GitHub backup** in
+Being offline is not an error. The header shows *offline*, edits keep
+saving on your computer, and backups resume on their own once GitHub is
+reachable again, even if you close StorySquish in the meantime: the next
+launch backs up whatever did not make it. A board with edits that never
+reached GitHub is not replaced by the older copy when you open it from the
+cloud.
+
+If something else goes wrong, the error appears under **GitHub backup** in
 Settings:
 
-- *contacting GitHub*: you are offline, or GitHub is down. Backups resume on
-  their own once the connection is back.
 - *the token is invalid or expired*: the token ran out or was deleted, or a
   character was lost when pasting. Click **Disconnect**, make a new token,
   and connect again. Your repository and its history are kept.
