@@ -834,10 +834,7 @@ fn new_starts_an_empty_board_in_its_own_file() {
     assert!(storysquish::storage::load(&new_path).unwrap().is_empty());
     let saved = storysquish::settings::load(&dir.path().join("settings.json")).unwrap();
     assert_eq!(saved.board_path.as_deref(), Some(new_path.as_path()));
-    assert_eq!(
-        saved.previous_board_path.as_deref(),
-        Some(old_path.as_path())
-    );
+    assert_eq!(saved.recent_boards().next(), Some(old_path.as_path()));
 }
 
 #[test]
@@ -910,7 +907,7 @@ fn open_local_switches_back_to_the_previous_board() {
     let previous = dir.path().join("emma.json");
     storysquish::storage::save(&previous, &board_with_scenes(&["Ball"])).unwrap();
     let mut settings = storysquish::settings::Settings::default();
-    settings.previous_board_path = Some(previous.clone());
+    settings.remember_recent_board(&previous);
     storysquish::settings::save(&settings_path, &settings).unwrap();
     let current = dir.path().join("dune.json");
     let open_path = current.clone();
@@ -937,8 +934,12 @@ fn open_local_switches_back_to_the_previous_board() {
     assert_eq!(harness.state().board_path(), previous);
     assert_eq!(scene_titles(&harness), ["Ball"]);
     assert_eq!(
-        harness.state().settings().previous_board_path.as_deref(),
-        Some(current.as_path())
+        harness
+            .state()
+            .settings()
+            .recent_boards()
+            .collect::<Vec<_>>(),
+        [current.as_path(), previous.as_path()]
     );
 }
 

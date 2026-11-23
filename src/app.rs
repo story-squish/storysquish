@@ -495,7 +495,7 @@ impl PlannerApp {
             }
         };
         self.disk_modified = storage::modified_time(&current);
-        self.settings.move_repo(&previous, &current);
+        self.settings.move_board(&previous, &current);
         self.settings.board_path = Some(current.clone());
         let backup = &mut self.backup;
         [
@@ -939,7 +939,7 @@ impl PlannerApp {
                 self.board = board;
                 self.selected = None;
                 if path != self.path {
-                    self.settings.previous_board_path = Some(self.path.clone());
+                    self.settings.remember_recent_board(&self.path);
                 }
                 self.use_board_path(path);
                 self.follow_title_in_file_name();
@@ -1057,7 +1057,7 @@ impl PlannerApp {
             return;
         }
         self.history.commit(&self.board);
-        self.settings.move_repo(&self.path, &path);
+        self.settings.move_board(&self.path, &path);
         self.use_board_path(path);
     }
 
@@ -2161,7 +2161,7 @@ impl PlannerApp {
 
     fn local_boards(&self) -> Vec<PathBuf> {
         local_boards_to_offer(
-            self.settings.previous_board_path.as_deref().into_iter(),
+            self.settings.recent_boards(),
             self.settings.linked_boards(),
             &self.path,
         )
@@ -4350,8 +4350,8 @@ fn board_file_buttons(ui: &mut Ui, boards: &[PathBuf]) -> Option<PathBuf> {
     chosen
 }
 
-/// The previous board first, then boards linked to a repo; each once, never
-/// the open board, and only files still on disk.
+/// Recent boards first, then boards linked to a repo; each once, never the
+/// open board, and only files still on disk.
 fn local_boards_to_offer<'a>(
     recent: impl Iterator<Item = &'a Path>,
     linked: impl Iterator<Item = &'a Path>,
@@ -4375,7 +4375,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn local_boards_put_the_previous_first_and_skip_the_open_and_missing_ones() {
+    fn local_boards_put_recent_first_and_skip_the_open_and_missing_ones() {
         let dir = tempfile::tempdir().unwrap();
         let [open, previous, linked, missing] = ["open", "previous", "linked", "missing"]
             .map(|name| dir.path().join(format!("{name}.json")));
