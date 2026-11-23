@@ -2,6 +2,8 @@
 
 # StorySquish
 
+<a href="https://www.buymeacoffee.com/storysquish"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy me a coffee" height="40"></a>
+
 A desktop scene board for planning and drafting novels. Lay out scenes as
 cards, track their status, act, point-of-view character, location and story
 day, write each scene's prose, and keep characters, relationships and
@@ -32,7 +34,20 @@ board, and browsers that refuse the page's request for persistent storage may
 evict them under storage pressure. The desktop app keeps everything in
 ordinary files you can see, copy and back up.
 
-## Quick start
+## Install
+
+Each [release](https://github.com/story-squish/storysquish/releases) has:
+
+- macOS: `StorySquish-<tag>-macos-universal.pkg`, which installs
+  `StorySquish.app` into `/Applications` for Apple silicon and Intel. The
+  package is not notarized, so macOS blocks it the first time; allow it in
+  **System Settings → Privacy & Security → Open Anyway**.
+- Windows: `StorySquish-<tag>-windows-x86_64.zip` with a standalone
+  `StorySquish.exe` (no Visual C++ runtime needed). Unzip it anywhere and run
+  it; SmartScreen may ask you to confirm the first time.
+- Linux: build from source (below).
+
+## Build from source
 
 ```sh
 cargo run -r                      # open the default board
@@ -65,7 +80,12 @@ sudo apt-get install libxcb-render0-dev libxcb-shape0-dev \
   threads show up next to their place in the story's chronology
 - **Relationships** view: a graph of directed, labelled relationships between
   characters (added in the character inspector)
-- Characters with role, goal and notes; locations with notes
+- Characters with role, gender, goal and notes; locations with notes
+- Several boards, one per novel: **New** starts a board in its own file next
+  to the current one, named after its title; the file is renamed to follow
+  later title changes unless you gave it a name of your own. **Open → Local** lists the last eight boards you
+  switched away from and works offline; **Open → Cloud…** lists boards
+  backed up to GitHub
 - Reorder scenes by drag or keyboard, characters and locations by keyboard or
   buttons
 - Search (including prose) plus filters by status, act and POV
@@ -289,7 +309,9 @@ make test
 ```
 
 CI runs the same three checks on every pull request. Clippy `pedantic` is
-enabled and `unsafe` code is forbidden. UI tests in [`tests/ui.rs`](tests/ui.rs)
+enabled and `unsafe` code is forbidden. Publishing a GitHub release builds the
+macOS package and Windows zip and attaches them to it
+([`release.yml`](.github/workflows/release.yml)). UI tests in [`tests/ui.rs`](tests/ui.rs)
 drive the app headlessly with `egui_kittest`.
 
 ### Layout
@@ -300,7 +322,7 @@ drive the app headlessly with `egui_kittest`.
 | [`app`](src/app.rs)                      | egui UI, shortcuts, dialogs                      |
 | [`history`](src/history.rs)              | Snapshot-based undo/redo                         |
 | [`storage`](src/storage.rs)              | Board load/save, atomic writes, backups, export names |
-| [`settings`](src/settings.rs)            | Color scheme, board location and repo links      |
+| [`settings`](src/settings.rs)            | Color scheme, board location, recent boards, repo links, dictionary |
 | [`github`](src/github.rs)                | GitHub backup client, token file, background requests |
 | [`outline`](src/outline.rs)              | Markdown outline and manuscript export           |
 | [`spelling`](src/spelling.rs)            | Dictionaries, word splitting, spellchecker       |
