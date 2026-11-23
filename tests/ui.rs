@@ -957,11 +957,53 @@ fn open_offers_only_local_boards_without_a_github_connection() {
 }
 
 #[test]
-fn open_offers_only_cloud_boards_with_a_github_connection() {
-    let (harness, _dir) = launch_connected(Board::default());
-    assert!(harness.query_by_label("Local").is_none());
-    assert!(harness.query_by_label("Cloud…").is_none());
-    assert!(!harness.get_by_label("Open").accesskit_node().is_disabled());
+fn open_offers_local_and_cloud_boards_with_a_github_connection() {
+    let (mut harness, _dir) = launch_connected(Board::default());
+    harness.get_by_label("Open").click();
+    harness.run();
+    assert!(harness.query_by_label("Local").is_some());
+    assert!(
+        !harness
+            .get_by_label("Cloud…")
+            .accesskit_node()
+            .is_disabled()
+    );
+}
+
+#[test]
+fn open_local_offers_boards_linked_to_a_repo_with_a_github_connection() {
+    let dir = tempfile::tempdir().unwrap();
+    let settings_path = dir.path().join("settings.json");
+    storysquish::github::save_token(&storysquish::github::token_path(&settings_path), "t").unwrap();
+    let linked = dir.path().join("emma.json");
+    storysquish::storage::save(&linked, &board_with_scenes(&["Ball"])).unwrap();
+    let mut settings = storysquish::settings::Settings::default();
+    settings.set_repo(&linked, Some("someone/storysquish-emma".to_owned()));
+    storysquish::settings::save(&settings_path, &settings).unwrap();
+    let open_path = dir.path().join("dune.json");
+    let mut harness = Harness::builder()
+        .with_size(WINDOW)
+        .build_eframe(move |cc| {
+            PlannerApp::new(
+                cc,
+                board_with_scenes(&["Arrakis"]),
+                open_path,
+                settings_path,
+                None,
+            )
+            .with_github_api_base(&format!("http://{}", unused_local_address()))
+        });
+    harness.run();
+
+    harness.get_by_label("Open").click();
+    harness.run();
+    harness.get_by_label("Local").hover();
+    harness.run();
+    harness.get_by_label("emma.json").click();
+    harness.run();
+
+    assert_eq!(harness.state().board_path(), linked);
+    assert_eq!(scene_titles(&harness), ["Ball"]);
 }
 
 #[test]
@@ -1133,6 +1175,8 @@ fn step_until(
 
 fn open_from_cloud(harness: &mut Harness<'_, PlannerApp>, title: &str, path: &std::path::Path) {
     harness.get_by_label("Open").click();
+    harness.run();
+    harness.get_by_label("Cloud…").click();
     step_until(harness, |h| h.query_by_label(title).is_some());
     harness.get_by_label(title).click();
     step_until(harness, |h| h.state().board_path() == path);

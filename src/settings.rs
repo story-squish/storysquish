@@ -52,6 +52,10 @@ impl Settings {
             .map(|(board, _)| board.as_path())
     }
 
+    pub fn linked_boards(&self) -> impl Iterator<Item = &Path> {
+        self.repos.keys().map(PathBuf::as_path)
+    }
+
     pub fn move_repo(&mut self, from: &Path, to: &Path) {
         let repo = self.repos.remove(&board_key(from));
         self.set_repo(to, repo);
