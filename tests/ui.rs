@@ -920,15 +920,6 @@ fn fake_github(repos: &[(&str, &Board)]) -> String {
             let mut body = vec![0; content_length];
             reader.read_exact(&mut body).unwrap();
 
-            let repo_json = |repo: &str, content: &str| {
-                let board: Board = serde_json::from_str(content).unwrap();
-                serde_json::json!({
-                    "full_name": repo,
-                    "private": true,
-                    "description": format!("StorySquish board: {}", board.title),
-                    "pushed_at": "2026-01-01T00:00:00Z",
-                })
-            };
             let file_suffix = format!("/contents/{BOARD_FILE_NAME}");
             let not_found = (404, r#"{"message":"Not Found"}"#.to_owned());
             let (status, reply) = if path == "/user" {
@@ -936,10 +927,15 @@ fn fake_github(repos: &[(&str, &Board)]) -> String {
             } else if method == "POST" && path == "/user/repos" {
                 let sent: serde_json::Value = serde_json::from_slice(&body).unwrap();
                 let repo = format!("someone/{}", sent["name"].as_str().unwrap());
-                boards.insert(
-                    repo.clone(),
-                    serde_json::to_string(&Board::default()).unwrap(),
-                );
+                let title = sent["description"]
+                    .as_str()
+                    .and_then(|d| d.strip_prefix("StorySquish board: "))
+                    .unwrap_or_default();
+                let created = Board {
+                    title: title.to_owned(),
+                    ..Board::default()
+                };
+                boards.insert(repo.clone(), serde_json::to_string(&created).unwrap());
                 (201, repo_json(&repo, &boards[&repo]).to_string())
             } else if path.starts_with("/user/repos?") {
                 let listed = boards
@@ -963,11 +959,7 @@ fn fake_github(repos: &[(&str, &Board)]) -> String {
                     _ => (200, r#"{"sha":"f00d"}"#.to_owned()),
                 }
             } else {
-                let repo = path.trim_start_matches("/repos/");
-                match boards.get(repo) {
-                    Some(content) => (200, repo_json(repo, content).to_string()),
-                    None => not_found,
-                }
+                fake_repo_request(&mut boards, &method, &path, &body)
             };
             write!(
                 stream,
@@ -979,6 +971,47 @@ fn fake_github(repos: &[(&str, &Board)]) -> String {
         }
     });
     base
+}
+
+fn repo_json(repo: &str, content: &str) -> serde_json::Value {
+    let board: Board = serde_json::from_str(content).unwrap();
+    serde_json::json!({
+        "full_name": repo,
+        "private": true,
+        "description": format!("StorySquish board: {}", board.title),
+        "pushed_at": "2026-01-01T00:00:00Z",
+    })
+}
+
+/// Reads the repo, or renames it when the PATCH carries a `name`.
+fn fake_repo_request(
+    boards: &mut std::collections::HashMap<String, String>,
+    method: &str,
+    path: &str,
+    body: &[u8],
+) -> (u16, String) {
+    let repo = path.trim_start_matches("/repos/").to_owned();
+    let sent: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
+    let new_name = sent["name"]
+        .as_str()
+        .filter(|_| method == "PATCH" && boards.contains_key(&repo));
+    if let (Some(name), Some((owner, _))) = (new_name, repo.split_once('/')) {
+        let renamed = format!("{owner}/{name}");
+        if boards.contains_key(&renamed) {
+            return (
+                422,
+                r#"{"message":"name already exists on this account"}"#.to_owned(),
+            );
+        }
+        let content = boards.remove(&repo).unwrap();
+        let reply = repo_json(&renamed, &content).to_string();
+        boards.insert(renamed, content);
+        return (200, reply);
+    }
+    match boards.get(&repo) {
+        Some(content) => (200, repo_json(&repo, content).to_string()),
+        None => (404, r#"{"message":"Not Found"}"#.to_owned()),
+    }
 }
 
 fn step_until(
@@ -1023,10 +1056,13 @@ fn reopening_from_cloud_keeps_edits_made_just_before_switching_away() {
     storysquish::storage::save(&other_path, &other).unwrap();
     let mut settings = storysquish::settings::Settings::default();
     settings.github_auto_backup = true;
-    settings.set_repo(&novel_path, Some("someone/novel".to_owned()));
-    settings.set_repo(&other_path, Some("someone/other".to_owned()));
+    settings.set_repo(&novel_path, Some("someone/storysquish-novel".to_owned()));
+    settings.set_repo(&other_path, Some("someone/storysquish-other".to_owned()));
     storysquish::settings::save(&settings_path, &settings).unwrap();
-    let api_base = fake_github(&[("someone/novel", &novel), ("someone/other", &other)]);
+    let api_base = fake_github(&[
+        ("someone/storysquish-novel", &novel),
+        ("someone/storysquish-other", &other),
+    ]);
     let open_path = novel_path.clone();
     let mut harness = Harness::builder()
         .with_size(WINDOW)
@@ -1301,6 +1337,46 @@ fn a_linked_repo_that_no_longer_exists_offers_to_create_it_again() {
         h.query_by_label_contains("Backed up").is_some()
     });
     assert_eq!(linked_repo(&harness).as_deref(), Some("someone/dune-gone"));
+}
+
+#[test]
+fn opening_a_board_adds_the_prefix_to_its_repo_name() {
+    let dune = titled_board("Dune");
+    let (mut harness, dir) = launch_with_fake_github(
+        dune.clone(),
+        Some("someone/dune"),
+        &[("someone/dune", &dune)],
+    );
+
+    step_until(&mut harness, |h| {
+        linked_repo(h).as_deref() == Some("someone/storysquish-dune")
+    });
+
+    let saved = storysquish::settings::load(&dir.path().join("settings.json")).unwrap();
+    assert_eq!(
+        saved.repo(&dir.path().join("board.json")),
+        Some("someone/storysquish-dune")
+    );
+}
+
+#[test]
+fn a_new_title_renames_the_repo_on_the_next_backup() {
+    let dune = titled_board("Dune");
+    let (mut harness, _dir) = launch_with_fake_github(
+        dune.clone(),
+        Some("someone/storysquish-dune"),
+        &[("someone/storysquish-dune", &dune)],
+    );
+
+    harness.get_all_by_value("Dune").next().unwrap().focus();
+    harness.run();
+    harness.event(egui::Event::Text(" Messiah".to_owned()));
+    harness.run();
+    open_settings(&mut harness);
+    harness.get_by_label("Back up now").click();
+    step_until(&mut harness, |h| {
+        linked_repo(h).as_deref() == Some("someone/storysquish-dune-messiah")
+    });
 }
 
 fn header_title_field<'h>(harness: &'h Harness<'_, PlannerApp>) -> egui_kittest::Node<'h> {

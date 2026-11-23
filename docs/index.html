@@ -2019,18 +2019,26 @@ function numberedRepoName(baseName, attempt) {
   return attempt === 1 ? baseName : `${baseName}-${attempt}`;
 }
 
-// The base name to rename `existing` to for `title`, or null when its name
-// does not follow the title it was backed up under, e.g. one the writer
-// chose, or when the new title gives the same name.
+// The base name to rename `existing` to when `title` gives a different name
+// than the title it was last backed up under, or null when the name stays,
+// including when it already follows `title`, e.g. renamed on another device.
 function renamedRepoBase(existing, title) {
   const previousTitle = titleFromDescription(existing.description);
   if (previousTitle === null) return null;
-  const previousBase = repoNameFor(previousTitle);
   const baseName = repoNameFor(title);
   const name = existing.full_name.split("/").pop();
-  const followsPreviousTitle = Array.from({length: GITHUB_MAX_REPO_NAME_ATTEMPTS},
-    (_, i) => numberedRepoName(previousBase, i + 1)).includes(name);
-  return baseName !== previousBase && followsPreviousTitle ? baseName : null;
+  const followsTitle = Array.from({length: GITHUB_MAX_REPO_NAME_ATTEMPTS},
+    (_, i) => numberedRepoName(baseName, i + 1)).includes(name);
+  return baseName !== repoNameFor(previousTitle) && !followsTitle ? baseName : null;
+}
+
+// Compared without case, as GitHub compares repository names.
+function hasRepoPrefix(name) {
+  return name.toLowerCase().startsWith(GITHUB_REPO_NAME_PREFIX);
+}
+
+function prefixedRepoName(name) {
+  return `${GITHUB_REPO_NAME_PREFIX}${name}`.slice(0, GITHUB_MAX_REPO_NAME_LEN).replace(/-+$/, "");
 }
 
 function repoNameFor(title) {
@@ -2161,8 +2169,34 @@ async function renameRepo(repo, baseName) {
   return repo;
 }
 
+// A repository that is gone or public keeps its name; the next push reports either.
+async function addRepoPrefix(repo) {
+  if (hasRepoPrefix(repo.split("/").pop())) return repo;
+  const existing = await github(`/repos/${repo}`, {absentOn: [404]});
+  if (!existing) return repo;
+  const name = existing.full_name.split("/").pop();
+  if (!existing.private || hasRepoPrefix(name)) return existing.full_name;
+  return renameRepo(existing.full_name, prefixedRepoName(name));
+}
+
+// Runs on page load, the browser's way of opening the board.
+async function addPrefixToLinkedRepo() {
+  const repo = settings.githubRepo;
+  if (!githubBackup.token || githubBackup.busy || !repo || hasRepoPrefix(repo.split("/").pop())) return;
+  try {
+    const renamed = await runGithubJob(() => addRepoPrefix(repo));
+    if (renamed !== repo && settings.githubRepo === repo) {
+      settings.githubRepo = renamed;
+      saveSettingsReportingErrors();
+    }
+  } catch (e) {
+    githubBackup.error = `Could not rename the repository to start with ${GITHUB_REPO_NAME_PREFIX}: ${e.message}`;
+  }
+  drawModal();
+}
+
 // Refuses a public repository, so a pasted link can never publish the novel,
-// and renames one named after the previous title to follow the new one.
+// and renames the repository when the title changes.
 async function pushBoard(repo, title, json) {
   const existing = await github(`/repos/${repo}`, {absentOn: [404]});
   if (!existing) throw new MissingRepoError(repo);
@@ -2888,6 +2922,7 @@ document.addEventListener("visibilitychange", () => {
 applyTheme(schemeByKey(settings.colorScheme));
 render();
 restoreLinkedFile().catch(() => {});
+addPrefixToLinkedRepo();
 const startupAlert = boardLoad.alert ?? settingsLoad.alert;
 if (startupAlert) alertDialog(startupAlert);
 </script>

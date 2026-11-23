@@ -114,6 +114,7 @@ enum BackupTask {
     OpenCloudBoard,
     SuggestRepoName,
     CreateRepo,
+    AddRepoPrefix,
 }
 
 #[derive(Default)]
@@ -149,6 +150,9 @@ struct BackupState {
     declined_repo_creation: HashSet<PathBuf>,
     /// A board made with New, whose first change offers it a repository.
     new_board: Option<PathBuf>,
+    /// The board just opened, whose linked repo gets the `storysquish-`
+    /// prefix if it lacks it.
+    prefix_check: Option<PathBuf>,
 }
 
 /// Confirms the name of the repository about to be created for `board`;
@@ -295,6 +299,7 @@ impl PlannerApp {
         let backup = BackupState {
             token,
             repo_draft: settings.repo(&path).unwrap_or_default().to_owned(),
+            prefix_check: Some(path.clone()),
             ..BackupState::default()
         };
         let colors = settings.color_scheme.palette();
@@ -947,6 +952,7 @@ impl PlannerApp {
         self.backup.last_success = None;
         self.backup.board_changed = false;
         self.backup.push_now = false;
+        self.backup.prefix_check = Some(self.path.clone());
     }
 
     fn repo(&self) -> Option<String> {
@@ -1162,6 +1168,28 @@ impl PlannerApp {
         }
     }
 
+    /// Waits for pushes, so edits to the board switched away from reach its
+    /// repo first.
+    fn add_prefix_to_open_repo(&mut self) {
+        if self.backup.prefix_check.as_ref() != Some(&self.path)
+            || self.backup.in_flight.is_some()
+            || !self.backup.queued_pushes.is_empty()
+        {
+            return;
+        }
+        self.backup.prefix_check = None;
+        let Some(repo) = self
+            .repo()
+            .filter(|repo| !github::has_repo_prefix(github::repo_name(repo)))
+        else {
+            return;
+        };
+        self.start_github_job(
+            BackupTask::AddRepoPrefix,
+            github::Job::AddRepoPrefix { repo },
+        );
+    }
+
     /// Pushes once the board has gone unedited for `BACKUP_PUSH_DELAY`, so a
     /// burst of typing leaves one revision rather than one per keystroke.
     fn back_up_to_github_if_due(&mut self, ctx: &egui::Context) {
@@ -1257,6 +1285,7 @@ impl PlannerApp {
                     }
                 }
             }
+            github::Reply::RenamedRepo { from, to } => self.follow_renamed_repo(&from, to),
             github::Reply::CreatedRepo(repo) => self.link_created_repo(repo),
             github::Reply::Revisions { title, revisions } => {
                 if let Some(restore) = &mut self.backup.restore {
@@ -1300,6 +1329,24 @@ impl PlannerApp {
             }
             github::Reply::Failed(reason) => self.handle_github_failure(task, &reason),
         }
+    }
+
+    fn follow_renamed_repo(&mut self, from: &str, to: String) {
+        if from == to {
+            return;
+        }
+        let boards: Vec<PathBuf> = self
+            .settings
+            .boards_linked_to(from)
+            .map(Path::to_owned)
+            .collect();
+        for board in &boards {
+            self.settings.set_repo(board, Some(to.clone()));
+        }
+        if boards.contains(&self.path) {
+            self.backup.repo_draft = to;
+        }
+        self.save_settings_reporting_errors();
     }
 
     fn handle_missing_repo(&mut self, repo: String) {
@@ -1352,6 +1399,12 @@ impl PlannerApp {
             }
             BackupTask::AutoPush | BackupTask::ManualPush => {
                 self.backup.error = Some(message);
+            }
+            BackupTask::AddRepoPrefix => {
+                self.backup.error = Some(format!(
+                    "Could not rename the repository to start with {}: {reason}",
+                    github::REPO_NAME_PREFIX
+                ));
             }
             BackupTask::ListCloudBoards
             | BackupTask::OpenCloudBoard
@@ -3286,6 +3339,7 @@ impl eframe::App for PlannerApp {
         self.start_queued_dialog_job();
         self.offer_repo_for_new_board(ctx);
         self.back_up_to_github_if_due(ctx);
+        self.add_prefix_to_open_repo();
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {

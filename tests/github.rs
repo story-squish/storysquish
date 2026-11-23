@@ -358,7 +358,7 @@ fn a_repo_keeps_its_name_when_every_new_one_is_taken() {
 }
 
 #[test]
-fn a_repo_named_by_the_writer_keeps_its_name() {
+fn a_new_title_renames_a_repo_the_writer_named() {
     let (base, recorded) = mock_github(|method, path| match (method, path) {
         ("GET", "/repos/someone/my-novel") => (
             200,
@@ -369,6 +369,7 @@ fn a_repo_named_by_the_writer_keeps_its_name() {
             })
             .to_string(),
         ),
+        ("PATCH", "/repos/someone/my-novel") => (200, renamed_json()),
         ("GET", _) => not_found(),
         _ => (200, "{}".to_owned()),
     });
@@ -378,12 +379,68 @@ fn a_repo_named_by_the_writer_keeps_its_name() {
         .push("someone/my-novel", "Dune Messiah", "{}")
         .unwrap();
 
-    assert_eq!(pushed.repo, "someone/my-novel");
-    let recorded = recorded.lock().unwrap();
-    assert!(
-        recorded.iter().all(|r| !r.body.contains("\"name\"")),
-        "{recorded:?}"
+    assert_eq!(pushed.repo, RENAMED);
+    assert_eq!(
+        requested_names(&recorded.lock().unwrap()),
+        ["storysquish-dune-messiah"]
     );
+}
+
+fn unprefixed_repo_json(private: bool) -> String {
+    serde_json::json!({
+        "full_name": "someone/dune",
+        "private": private,
+        "description": "StorySquish board: Dune",
+    })
+    .to_string()
+}
+
+#[test]
+fn opening_adds_the_prefix_to_a_repo_name_without_it() {
+    let (base, recorded) = mock_github(|method, path| match (method, path) {
+        ("GET", "/repos/someone/dune") => (200, unprefixed_repo_json(true)),
+        ("PATCH", "/repos/someone/dune") => (
+            200,
+            serde_json::json!({ "full_name": REPO, "private": true }).to_string(),
+        ),
+        _ => not_found(),
+    });
+    let client = Client::with_api_base("tok", &base);
+
+    assert_eq!(client.add_repo_prefix("someone/dune").unwrap(), REPO);
+    assert_eq!(
+        requested_names(&recorded.lock().unwrap()),
+        ["storysquish-dune"]
+    );
+}
+
+#[test]
+fn a_prefixed_repo_needs_no_request() {
+    let (base, recorded) = mock_github(|_, _| not_found());
+    let client = Client::with_api_base("tok", &base);
+
+    assert_eq!(client.add_repo_prefix(REPO).unwrap(), REPO);
+    assert!(recorded.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_missing_or_public_repo_keeps_its_name() {
+    let (base, recorded) = mock_github(|_, path| match path {
+        "/repos/someone/dune" => (200, unprefixed_repo_json(false)),
+        _ => not_found(),
+    });
+    let client = Client::with_api_base("tok", &base);
+
+    assert_eq!(
+        client.add_repo_prefix("someone/gone").unwrap(),
+        "someone/gone"
+    );
+    assert_eq!(
+        client.add_repo_prefix("someone/dune").unwrap(),
+        "someone/dune"
+    );
+    let recorded = recorded.lock().unwrap();
+    assert!(recorded.iter().all(|r| r.method == "GET"), "{recorded:?}");
 }
 
 #[test]
