@@ -75,7 +75,10 @@ sudo apt-get install libxcb-render0-dev libxcb-shape0-dev \
 - Scene cards with title, summary, status (Outline, Draft, Revision, Final,
   Archived), act (I–III), POV character, location and story day
 - **Write** view: a prose editor per scene with previous/next navigation and
-  scene and manuscript word counts
+  scene and manuscript word counts, plus a distraction-free **Zen** mode that
+  hides the header, side panels and statistics
+- Optional manuscript word target (**Settings → Manuscript word target**),
+  shown as progress in the statistics panel and the Write view
 - **Timeline** view: scenes in story-day order, so flashbacks and parallel
   threads show up next to their place in the story's chronology
 - **Relationships** view: a graph of directed, labelled relationships between
@@ -86,8 +89,10 @@ sudo apt-get install libxcb-render0-dev libxcb-shape0-dev \
   later title changes unless you gave it a name of your own. **Open → Local** lists the last eight boards you
   switched away from and works offline; **Open → Cloud…** lists boards
   backed up to GitHub
-- Reorder scenes by drag or keyboard, characters and locations by keyboard or
-  buttons
+- Reorder scenes by drag or keyboard (with search and filters cleared),
+  characters and locations by keyboard or buttons
+- Deleting a scene, character or location asks first, and says how many
+  scenes lose their POV or location and how many relationships go with it
 - Search (including prose) plus filters by status, act and POV
 - Undo/redo across all board edits
 - Autosave after every change, rolling backups, and pick-up of changes synced
@@ -116,11 +121,12 @@ sudo apt-get install libxcb-render0-dev libxcb-shape0-dev \
 | `Cmd+N`                      | New scene                      |
 | `Cmd+D`                      | Duplicate selected scene       |
 | `Cmd+F`                      | Focus search                   |
+| `Cmd+Shift+F`                | Toggle Zen mode (Write view)   |
 | `Cmd+Z` / `Cmd+Shift+Z`      | Undo / redo                    |
 | `Alt+←` / `Alt+→`            | Move selected scene            |
 | `Alt+↑` / `Alt+↓`            | Move selected character or location |
-| `Delete` / `Backspace`       | Delete selected scene          |
-| `Esc`                        | Close inspector                |
+| `Delete` / `Backspace`       | Delete selected scene (asks first) |
+| `Esc`                        | Leave Zen mode, else close inspector |
 
 Undo, redo, move, delete and `Esc` act on the board only when no text field
 has focus, so they keep their usual meaning while typing.
@@ -326,7 +332,7 @@ drive the app headlessly with `egui_kittest`.
 | [`app`](src/app.rs)                      | egui UI, shortcuts, dialogs                      |
 | [`history`](src/history.rs)              | Snapshot-based undo/redo                         |
 | [`storage`](src/storage.rs)              | Board load/save, atomic writes, backups, export names |
-| [`settings`](src/settings.rs)            | Color scheme, board location, recent boards, repo links, dictionary |
+| [`settings`](src/settings.rs)            | Color scheme, board location, recent boards, repo links, word goal, dictionary |
 | [`github`](src/github.rs)                | GitHub backup client, token file, background requests |
 | [`outline`](src/outline.rs)              | Markdown outline and manuscript export           |
 | [`spelling`](src/spelling.rs)            | Dictionaries, word splitting, spellchecker       |
