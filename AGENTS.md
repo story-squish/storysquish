@@ -56,7 +56,8 @@ Import rather than by code sharing.
 - [`src/theme.rs`](src/theme.rs), [`src/migration.rs`](src/migration.rs) — color
   schemes and pre-rename data migration.
 - [`src/spelling.rs`](src/spelling.rs) — dictionaries (bundled under
-  `assets/dictionaries`, SCOWL-licensed) and the checker;
+  `assets/dictionaries`, SCOWL-licensed; other languages download from a
+  pinned `wooorm/dictionaries` commit, `DOWNLOAD_BASE`) and the checker;
   [`src/app/spellcheck.rs`](src/app/spellcheck.rs) draws underlines and the
   suggestion menu over any `TextEdit`.
 

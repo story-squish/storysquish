@@ -6,7 +6,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use eframe::egui::{self, Color32, Painter, Pos2, Response, Stroke, Ui, text::CCursor};
 
-use crate::spelling::{self, KnownWords, Speller};
+use crate::spelling::{self, DictionarySource, KnownWords, Speller};
 
 const SQUIGGLE_STEP: f32 = 2.5;
 const SQUIGGLE_HEIGHT: f32 = 1.5;
@@ -18,6 +18,10 @@ pub(super) enum Status {
     #[default]
     Off,
     Loading(Receiver<Result<Speller, String>>),
+    Downloading {
+        name: String,
+        receiver: Receiver<Result<Speller, String>>,
+    },
     Ready(Box<Speller>),
     Failed(String),
 }
@@ -36,10 +40,16 @@ pub(super) struct Spellcheck {
     by_field: HashMap<egui::Id, (u64, Misspellings)>,
     correction: Option<Correction>,
     word_to_add: Option<String>,
+    download_base: Option<String>,
 }
 
 impl Spellcheck {
-    /// Parses off the UI thread so switching dictionaries never stalls typing.
+    pub fn set_download_base(&mut self, base: &str) {
+        self.download_base = Some(base.to_owned());
+    }
+
+    /// Downloads and parses off the UI thread so switching dictionaries never
+    /// stalls typing. A downloaded dictionary is saved into the first of `dirs`.
     pub fn load(&mut self, ctx: &egui::Context, dictionary: Option<&str>, dirs: &[PathBuf]) {
         self.by_field.clear();
         self.correction = None;
@@ -54,32 +64,56 @@ impl Spellcheck {
             self.status = Status::Failed(format!("The {dictionary} dictionary is not installed."));
             return;
         };
+        let download_to = match (&info.source, dirs.first()) {
+            (DictionarySource::Downloadable, None) => {
+                self.status = Status::Failed("No folder to download dictionaries into.".to_owned());
+                return;
+            }
+            (DictionarySource::Downloadable, Some(dir)) => Some(dir.clone()),
+            _ => None,
+        };
+        let download_base = self
+            .download_base
+            .clone()
+            .unwrap_or_else(|| spelling::DOWNLOAD_BASE.to_owned());
         let (sender, receiver) = mpsc::channel();
+        self.status = match download_to {
+            Some(_) => Status::Downloading {
+                name: info.name.clone(),
+                receiver,
+            },
+            None => Status::Loading(receiver),
+        };
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let loaded = spelling::load_dictionary(&info)
-                .map(Speller::new)
-                .map_err(|e| format!("{e:#}"));
+            let dictionary = match download_to {
+                Some(dir) => spelling::download_dictionary(&info.id, &download_base, &dir),
+                None => spelling::load_dictionary(&info),
+            };
+            let loaded = dictionary.map(Speller::new).map_err(|e| format!("{e:#}"));
             if sender.send(loaded).is_ok() {
                 ctx.request_repaint();
             }
         });
-        self.status = Status::Loading(receiver);
     }
 
-    pub fn receive_loaded(&mut self) {
-        let Status::Loading(receiver) = &self.status else {
-            return;
+    /// Returns whether a dictionary finished loading or downloading, so
+    /// the list of dictionaries can be refreshed.
+    pub fn receive_loaded(&mut self) -> bool {
+        let (Status::Loading(receiver) | Status::Downloading { receiver, .. }) = &self.status
+        else {
+            return false;
         };
         self.status = match receiver.try_recv() {
             Ok(Ok(speller)) => Status::Ready(Box::new(speller)),
             Ok(Err(error)) => Status::Failed(error),
-            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Empty) => return false,
             Err(TryRecvError::Disconnected) => {
                 Status::Failed("Loading the dictionary stopped unexpectedly.".to_owned())
             }
         };
         self.by_field.clear();
+        true
     }
 
     pub fn is_ready(&self) -> bool {

@@ -79,9 +79,10 @@ sudo apt-get install libxcb-render0-dev libxcb-shape0-dev \
   numbers)
 - Ten color schemes, light and dark
 - Spellcheck in prose, summaries and notes, with suggestions on right-click.
-  English (US) and English (UK) are built in; pick another language in
-  Settings from any Hunspell dictionary installed on the computer. Character
-  and location names always count as correct.
+  English (US) and English (UK) are built in; German, Spanish, French and
+  Russian download on first use from Settings. Any Hunspell dictionary
+  installed on the computer is offered too. Character and location names
+  always count as correct.
 
 ## Keyboard shortcuts
 
@@ -109,7 +110,7 @@ has focus, so they keep their usual meaning while typing.
 | Backups  | `<board>-backups/` next to the board file, e.g. `board-backups/` |
 | Settings | `$XDG_CONFIG_HOME/storysquish/settings.json`, falling back to `~/.config/storysquish/settings.json` on every platform |
 | GitHub token | `github-token` next to `settings.json`, readable only by you |
-| Dictionaries | Hunspell `.aff` + `.dic` pairs in `dictionaries/` next to `settings.json`, then `~/Library/Spelling` and the usual system `hunspell`/`myspell` dirs |
+| Dictionaries | Hunspell `.aff` + `.dic` pairs in `dictionaries/` next to `settings.json` (where downloaded ones are saved), then `~/Library/Spelling` and the usual system `hunspell`/`myspell` dirs |
 
 Platform data dir:
 
