@@ -8,5 +8,6 @@ pub mod settings;
 pub mod spelling;
 pub mod storage;
 pub mod theme;
+pub mod thesaurus;
 
 pub const APP_NAME: &str = "storysquish";

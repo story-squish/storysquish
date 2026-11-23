@@ -103,6 +103,9 @@ sudo apt-get install libxcb-render0-dev libxcb-shape0-dev \
   Russian download on first use from Settings. Any Hunspell dictionary
   installed on the computer is offered too. Character and location names
   always count as correct.
+- Optional thesaurus: right-click a word for synonyms in the spellcheck
+  language (English, German, Spanish, French or Russian, from LibreOffice's
+  dictionaries; downloaded once when turned on in Settings)
 
 ## Keyboard shortcuts
 
@@ -131,6 +134,7 @@ has focus, so they keep their usual meaning while typing.
 | Settings | `$XDG_CONFIG_HOME/storysquish/settings.json`, falling back to `~/.config/storysquish/settings.json` on every platform |
 | GitHub token | `github-token` next to `settings.json`, readable only by you |
 | Dictionaries | Hunspell `.aff` + `.dic` pairs in `dictionaries/` next to `settings.json` (where downloaded ones are saved), then `~/Library/Spelling` and the usual system `hunspell`/`myspell` dirs |
+| Thesauri | `th_<language>.dat` (MyThes, UTF-8) in the same `dictionaries/` folder |
 
 Platform data dir:
 
@@ -326,5 +330,6 @@ drive the app headlessly with `egui_kittest`.
 | [`github`](src/github.rs)                | GitHub backup client, token file, background requests |
 | [`outline`](src/outline.rs)              | Markdown outline and manuscript export           |
 | [`spelling`](src/spelling.rs)            | Dictionaries, word splitting, spellchecker       |
+| [`thesaurus`](src/thesaurus.rs)          | MyThes thesaurus download, parsing and lookup    |
 | [`theme`](src/theme.rs)                  | Color schemes and palettes                       |
 | [`migration`](src/migration.rs)          | Move data from pre-rename directories            |
