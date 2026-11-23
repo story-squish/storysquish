@@ -43,6 +43,8 @@ pub struct Settings {
     /// Added through "Add to dictionary", checked with every dictionary.
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     pub spelling_words: BTreeSet<String>,
+    /// Offers synonyms on right-click, in the spellcheck dictionary's language.
+    pub thesaurus: bool,
 }
 
 /// `None`, saved as `null`, turns spellchecking off.

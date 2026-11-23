@@ -1,15 +1,17 @@
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use eframe::egui::{self, Color32, Painter, Pos2, Response, Stroke, Ui, text::CCursor};
 
 use crate::spelling::{self, DictionarySource, KnownWords, Speller};
+use crate::thesaurus::{self, Meaning, Thesaurus, ThesaurusSource};
 
 const SQUIGGLE_STEP: f32 = 2.5;
 const SQUIGGLE_HEIGHT: f32 = 1.5;
+const SYNONYM_MENU_HEIGHT: f32 = 360.0;
 
 type Misspellings = Vec<(Range<usize>, String)>;
 
@@ -26,11 +28,28 @@ pub(super) enum Status {
     Failed(String),
 }
 
-struct Correction {
+#[derive(Default)]
+pub(super) enum ThesaurusStatus {
+    #[default]
+    Off,
+    Loading {
+        source: &'static ThesaurusSource,
+        receiver: Receiver<Result<Thesaurus, String>>,
+    },
+    Ready(Box<Thesaurus>),
+    Failed(String),
+}
+
+enum Suggestions {
+    Corrections(Vec<String>),
+    Synonyms(Vec<Meaning>),
+}
+
+struct WordMenu {
     field: egui::Id,
     chars: Range<usize>,
     word: String,
-    suggestions: Vec<String>,
+    suggestions: Suggestions,
 }
 
 #[derive(Default)]
@@ -38,9 +57,12 @@ pub(super) struct Spellcheck {
     pub status: Status,
     known: KnownWords,
     by_field: HashMap<egui::Id, (u64, Misspellings)>,
-    correction: Option<Correction>,
+    menu: Option<WordMenu>,
     word_to_add: Option<String>,
     download_base: Option<String>,
+    pub thesaurus: ThesaurusStatus,
+    thesaurus_source: Option<&'static ThesaurusSource>,
+    thesaurus_download_base: Option<String>,
 }
 
 impl Spellcheck {
@@ -48,11 +70,15 @@ impl Spellcheck {
         self.download_base = Some(base.to_owned());
     }
 
+    pub fn set_thesaurus_download_base(&mut self, base: &str) {
+        self.thesaurus_download_base = Some(base.to_owned());
+    }
+
     /// Downloads and parses off the UI thread so switching dictionaries never
     /// stalls typing. A downloaded dictionary is saved into the first of `dirs`.
     pub fn load(&mut self, ctx: &egui::Context, dictionary: Option<&str>, dirs: &[PathBuf]) {
         self.by_field.clear();
-        self.correction = None;
+        self.menu = None;
         let Some(dictionary) = dictionary else {
             self.status = Status::Off;
             return;
@@ -120,6 +146,68 @@ impl Spellcheck {
         matches!(self.status, Status::Ready(_))
     }
 
+    /// Loads, downloading into `dir` the first time, the thesaurus for the
+    /// dictionary's language. Keeps the current one when the language is
+    /// unchanged, so switching between English variants downloads nothing.
+    pub fn load_thesaurus(
+        &mut self,
+        ctx: &egui::Context,
+        dictionary: Option<&str>,
+        enabled: bool,
+        dir: Option<&Path>,
+    ) {
+        let source = dictionary
+            .filter(|_| enabled)
+            .and_then(thesaurus::source_for_dictionary);
+        let same_source = source.map(|s| s.name) == self.thesaurus_source.map(|s| s.name);
+        if same_source && !matches!(self.thesaurus, ThesaurusStatus::Failed(_)) {
+            return;
+        }
+        self.thesaurus_source = source;
+        self.menu = None;
+        let Some(source) = source else {
+            self.thesaurus = ThesaurusStatus::Off;
+            return;
+        };
+        let Some(dir) = dir.map(Path::to_owned) else {
+            self.thesaurus =
+                ThesaurusStatus::Failed("No folder to download the thesaurus into.".to_owned());
+            return;
+        };
+        let base = self
+            .thesaurus_download_base
+            .clone()
+            .unwrap_or_else(|| thesaurus::DOWNLOAD_BASE.to_owned());
+        let (sender, receiver) = mpsc::channel();
+        self.thesaurus = ThesaurusStatus::Loading { source, receiver };
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let loaded =
+                thesaurus::load_or_download(source, &base, &dir).map_err(|e| format!("{e:#}"));
+            if sender.send(loaded).is_ok() {
+                ctx.request_repaint();
+            }
+        });
+    }
+
+    pub fn receive_thesaurus(&mut self) {
+        let ThesaurusStatus::Loading { receiver, .. } = &self.thesaurus else {
+            return;
+        };
+        self.thesaurus = match receiver.try_recv() {
+            Ok(Ok(thesaurus)) => ThesaurusStatus::Ready(Box::new(thesaurus)),
+            Ok(Err(error)) => ThesaurusStatus::Failed(error),
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => {
+                ThesaurusStatus::Failed("Loading the thesaurus stopped unexpectedly.".to_owned())
+            }
+        };
+    }
+
+    pub fn thesaurus_ready(&self) -> bool {
+        matches!(self.thesaurus, ThesaurusStatus::Ready(_))
+    }
+
     pub fn set_known_words(&mut self, known: KnownWords) {
         if known != self.known {
             self.known = known;
@@ -131,8 +219,9 @@ impl Spellcheck {
         self.word_to_add.take()
     }
 
-    /// Underlines misspellings in an edited field and offers corrections on
-    /// right-click. A correction marks the returned response as changed.
+    /// Underlines misspellings in an edited field and, on right-click,
+    /// offers corrections for a misspelled word or synonyms for any other.
+    /// A replacement marks the returned response as changed.
     pub fn check_field(
         &mut self,
         ui: &Ui,
@@ -140,11 +229,61 @@ impl Spellcheck {
         text: &mut String,
         color: Color32,
     ) -> Response {
+        let field = output.response.response.id;
+        self.underline_misspellings(ui, &output, field, text, color);
+
+        if output.response.response.secondary_clicked() {
+            let clicked_at = ui.input(|input| input.pointer.interact_pos());
+            self.menu = clicked_at.and_then(|clicked_at| {
+                let under: usize = output
+                    .galley
+                    .cursor_from_pos(clicked_at - output.galley_pos)
+                    .index
+                    .into();
+                self.word_menu(field, text, under)
+            });
+        }
+
         let mut response = output.response.response;
-        let Status::Ready(speller) = &mut self.status else {
+        let Some(menu) = self.menu.as_ref().filter(|menu| menu.field == field) else {
             return response;
         };
-        let field = response.id;
+        let mut replacement = None;
+        let mut add_word = false;
+        response.context_menu(|ui| match &menu.suggestions {
+            Suggestions::Corrections(suggestions) => {
+                replacement = corrections_menu(ui, suggestions);
+                ui.separator();
+                add_word = ui
+                    .button(format!("Add “{}” to dictionary", menu.word))
+                    .clicked();
+            }
+            Suggestions::Synonyms(meanings) => {
+                replacement = synonyms_menu(ui, &menu.word, meanings);
+            }
+        });
+        if let Some(replacement) = replacement
+            && spelling::replace_word(text, menu.chars.clone(), &menu.word, &replacement)
+        {
+            response.mark_changed();
+        }
+        if add_word {
+            self.word_to_add = Some(menu.word.clone());
+        }
+        response
+    }
+
+    fn underline_misspellings(
+        &mut self,
+        ui: &Ui,
+        output: &egui::text_edit::TextEditOutput,
+        field: egui::Id,
+        text: &str,
+        color: Color32,
+    ) {
+        let Status::Ready(speller) = &mut self.status else {
+            return;
+        };
         let text_hash = hash_of(text);
         let misspellings = match self.by_field.get(&field) {
             Some((hash, misspellings)) if *hash == text_hash => misspellings,
@@ -187,61 +326,75 @@ impl Spellcheck {
                 paint_squiggle(&painter, baseline, end.min.x - start.min.x, color);
             }
         }
+    }
 
-        if response.secondary_clicked() {
-            let clicked_at = ui.input(|input| input.pointer.interact_pos());
-            self.correction = clicked_at.and_then(|clicked_at| {
-                let under: usize = output
-                    .galley
-                    .cursor_from_pos(clicked_at - output.galley_pos)
-                    .index
-                    .into();
-                let (chars, word) = misspellings
-                    .iter()
-                    .find(|(chars, _)| chars.start <= under && under <= chars.end)?;
-                Some(Correction {
-                    field,
-                    chars: chars.clone(),
-                    word: word.clone(),
-                    suggestions: speller.suggestions(word),
-                })
+    /// `under` is the character index right-clicked; a word ending exactly
+    /// there counts, so clicking just past a word still picks it.
+    fn word_menu(&self, field: egui::Id, text: &str, under: usize) -> Option<WordMenu> {
+        let touches = |chars: &Range<usize>| chars.start <= under && under <= chars.end;
+        if let Status::Ready(speller) = &self.status
+            && let Some((text_hash, misspellings)) = self.by_field.get(&field)
+            && *text_hash == hash_of(text)
+            && let Some((chars, word)) = misspellings.iter().find(|(chars, _)| touches(chars))
+        {
+            return Some(WordMenu {
+                field,
+                chars: chars.clone(),
+                word: word.clone(),
+                suggestions: Suggestions::Corrections(speller.suggestions(word)),
             });
         }
-
-        let Some(correction) = self.correction.as_ref().filter(|c| c.field == field) else {
-            return response;
+        let ThesaurusStatus::Ready(thesaurus) = &self.thesaurus else {
+            return None;
         };
-        let mut replacement = None;
-        let mut add_word = false;
-        response.context_menu(|ui| {
-            if correction.suggestions.is_empty() {
-                ui.weak("No suggestions");
-            }
-            for suggestion in &correction.suggestions {
-                if ui.button(suggestion).clicked() {
-                    replacement = Some(suggestion.clone());
+        let (chars, word) = spelling::words(text).find(|(chars, _)| touches(chars))?;
+        Some(WordMenu {
+            field,
+            chars,
+            word: word.to_owned(),
+            suggestions: Suggestions::Synonyms(thesaurus.meanings(word)),
+        })
+    }
+}
+
+fn corrections_menu(ui: &mut Ui, suggestions: &[String]) -> Option<String> {
+    if suggestions.is_empty() {
+        ui.weak("No suggestions");
+    }
+    let mut chosen = None;
+    for suggestion in suggestions {
+        if ui.button(suggestion).clicked() {
+            chosen = Some(suggestion.clone());
+        }
+    }
+    chosen
+}
+
+fn synonyms_menu(ui: &mut Ui, word: &str, meanings: &[Meaning]) -> Option<String> {
+    if meanings.is_empty() {
+        ui.weak(format!("No synonyms for “{word}”"));
+        return None;
+    }
+    let mut chosen = None;
+    egui::ScrollArea::vertical()
+        .max_height(SYNONYM_MENU_HEIGHT)
+        .show(ui, |ui| {
+            for (index, meaning) in meanings.iter().enumerate() {
+                if index > 0 {
+                    ui.separator();
+                }
+                if !meaning.part_of_speech.is_empty() {
+                    ui.weak(&meaning.part_of_speech);
+                }
+                for synonym in &meaning.synonyms {
+                    let synonym = thesaurus::match_case(word, synonym);
+                    if ui.button(&synonym).clicked() {
+                        chosen = Some(synonym);
+                    }
                 }
             }
-            ui.separator();
-            add_word = ui
-                .button(format!("Add “{}” to dictionary", correction.word))
-                .clicked();
         });
-        if let Some(replacement) = replacement
-            && spelling::replace_word(
-                text,
-                correction.chars.clone(),
-                &correction.word,
-                &replacement,
-            )
-        {
-            response.mark_changed();
-        }
-        if add_word {
-            self.word_to_add = Some(correction.word.clone());
-        }
-        response
-    }
+    chosen
 }
 
 fn hash_of(text: &str) -> u64 {

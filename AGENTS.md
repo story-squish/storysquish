@@ -60,6 +60,9 @@ Import rather than by code sharing.
   pinned `wooorm/dictionaries` commit, `DOWNLOAD_BASE`) and the checker;
   [`src/app/spellcheck.rs`](src/app/spellcheck.rs) draws underlines and the
   suggestion menu over any `TextEdit`.
+- [`src/thesaurus.rs`](src/thesaurus.rs) — MyThes thesauri from a pinned
+  `LibreOffice/dictionaries` commit, picked by the dictionary's language and
+  offered in the same right-click menu for correctly spelled words.
 
 ## Tests
 

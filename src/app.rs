@@ -16,6 +16,7 @@ use crate::model::{Act, Board, Character, Id, Location, Scene, Status};
 use crate::settings::{self, Settings, SpellcheckDictionary};
 use crate::spelling::{self, DictionaryInfo, DictionarySource, KnownWords};
 use crate::theme::{ColorScheme, Palette};
+use crate::thesaurus;
 use crate::{outline, storage};
 
 const SAVE_DEBOUNCE: Duration = Duration::from_secs(2);
@@ -421,14 +422,36 @@ impl PlannerApp {
         self
     }
 
+    #[must_use]
+    pub fn with_thesaurus_download_base(mut self, base: &str) -> Self {
+        self.spellcheck.set_thesaurus_download_base(base);
+        self
+    }
+
     pub fn spellcheck_ready(&self) -> bool {
         self.spellcheck.is_ready()
+    }
+
+    pub fn thesaurus_ready(&self) -> bool {
+        self.spellcheck.thesaurus_ready()
     }
 
     fn load_spellcheck_dictionary(&mut self, ctx: &egui::Context) {
         let dirs = dictionary_dirs(&self.settings_path);
         let dictionary = self.settings.spellcheck_dictionary.0.clone();
         self.spellcheck.load(ctx, dictionary.as_deref(), &dirs);
+        self.spellcheck.load_thesaurus(
+            ctx,
+            dictionary.as_deref(),
+            self.settings.thesaurus,
+            dirs.first().map(PathBuf::as_path),
+        );
+    }
+
+    fn set_thesaurus(&mut self, ctx: &egui::Context, enabled: bool) {
+        self.settings.thesaurus = enabled;
+        self.save_settings_reporting_errors();
+        self.load_spellcheck_dictionary(ctx);
     }
 
     fn set_spellcheck_dictionary(&mut self, ctx: &egui::Context, dictionary: Option<String>) {
@@ -3668,6 +3691,42 @@ impl PlannerApp {
         ui.label(RichText::new(note).small().color(color));
     }
 
+    fn thesaurus_section(&self, ui: &mut Ui, dictionary: Option<&str>, enabled: &mut bool) {
+        let colors = self.colors;
+        let source = dictionary.and_then(thesaurus::source_for_dictionary);
+        ui.add_enabled(
+            source.is_some(),
+            egui::Checkbox::new(enabled, "Synonyms on right-click"),
+        );
+        let (note, color) = match (&self.spellcheck.thesaurus, source) {
+            (_, None) if dictionary.is_none() => (
+                "Turn spellcheck on to choose the thesaurus language.".to_owned(),
+                colors.muted,
+            ),
+            (_, None) => (
+                "No thesaurus for this dictionary's language.".to_owned(),
+                colors.muted,
+            ),
+            (spellcheck::ThesaurusStatus::Loading { source, .. }, _) => (
+                format!("Loading the {} thesaurus…", source.name),
+                colors.muted,
+            ),
+            (spellcheck::ThesaurusStatus::Failed(error), _) => (error.clone(), colors.danger),
+            (_, Some(source)) if !*enabled => (
+                format!(
+                    "Downloads the {} thesaurus ({} MB) once.",
+                    source.name, source.download_megabytes
+                ),
+                colors.muted,
+            ),
+            (_, Some(_)) => (
+                "Right-click a correctly spelled word for synonyms.".to_owned(),
+                colors.muted,
+            ),
+        };
+        ui.label(RichText::new(note).small().color(color));
+    }
+
     fn board_file_section(&self, ui: &mut Ui) -> Option<BoardFileAction> {
         let colors = self.colors;
         let mut action = None;
@@ -3720,6 +3779,7 @@ impl PlannerApp {
         let colors = self.colors;
         let mut chosen = self.settings.color_scheme;
         let mut chosen_dictionary = self.settings.spellcheck_dictionary.0.clone();
+        let mut chosen_thesaurus = self.settings.thesaurus;
         let mut chosen_goal = self
             .settings
             .word_goal
@@ -3734,6 +3794,7 @@ impl PlannerApp {
             color_scheme_picker(ui, colors, &mut chosen);
 
             self.spellcheck_section(ui, &dictionaries, &mut chosen_dictionary);
+            self.thesaurus_section(ui, chosen_dictionary.as_deref(), &mut chosen_thesaurus);
 
             let goal_label = field_label(ui, colors, "Manuscript word target");
             ui.add(
@@ -3770,6 +3831,9 @@ impl PlannerApp {
         }
         if chosen_dictionary != self.settings.spellcheck_dictionary.0 {
             self.set_spellcheck_dictionary(ctx, chosen_dictionary);
+        }
+        if chosen_thesaurus != self.settings.thesaurus {
+            self.set_thesaurus(ctx, chosen_thesaurus);
         }
         if let Ok(goal) = parse_word_goal(&chosen_goal)
             && goal != self.settings.word_goal
@@ -3992,6 +4056,7 @@ impl eframe::App for PlannerApp {
         {
             dialog.dictionaries = None;
         }
+        self.spellcheck.receive_thesaurus();
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {

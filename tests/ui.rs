@@ -1903,12 +1903,29 @@ fn closing_on_a_network_that_never_answers_gives_up_and_flags_the_board() {
 }
 
 fn wait_for_spellcheck(harness: &mut Harness<'_, PlannerApp>) {
+    wait_until(
+        harness,
+        PlannerApp::spellcheck_ready,
+        "dictionary never loaded",
+    );
+}
+
+fn wait_for_thesaurus(harness: &mut Harness<'_, PlannerApp>) {
+    wait_until(
+        harness,
+        PlannerApp::thesaurus_ready,
+        "thesaurus never loaded",
+    );
+}
+
+fn wait_until(
+    harness: &mut Harness<'_, PlannerApp>,
+    ready: impl Fn(&PlannerApp) -> bool,
+    timeout_message: &str,
+) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while !harness.state().spellcheck_ready() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "dictionary never loaded"
-        );
+    while !ready(harness.state()) {
+        assert!(std::time::Instant::now() < deadline, "{timeout_message}");
         std::thread::sleep(std::time::Duration::from_millis(20));
         harness.step();
     }
@@ -2001,6 +2018,15 @@ fn choosing_a_dictionary_in_settings_saves_and_loads_it() {
 }
 
 fn fake_dictionary_host(dic: &'static str) -> String {
+    fake_host(vec![
+        ("/de/index.aff", "SET UTF-8\n"),
+        ("/de/index.dic", dic),
+    ])
+}
+
+/// Answers each request for a listed path with its body, and anything else
+/// with a 404, returning the base URL.
+fn fake_host(files: Vec<(&'static str, &'static str)>) -> String {
     use std::io::{BufRead, BufReader, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -2011,11 +2037,11 @@ fn fake_dictionary_host(dic: &'static str) -> String {
             BufReader::new(stream.try_clone().unwrap())
                 .read_line(&mut request_line)
                 .unwrap();
-            let body = match request_line.split_whitespace().nth(1) {
-                Some("/de/index.aff") => "SET UTF-8\n",
-                Some("/de/index.dic") => dic,
-                _ => "",
-            };
+            let requested = request_line.split_whitespace().nth(1);
+            let body = files
+                .iter()
+                .find(|(path, _)| Some(*path) == requested)
+                .map_or("", |(_, body)| *body);
             let status = if body.is_empty() { 404 } else { 200 };
             write!(
                 stream,
@@ -2075,6 +2101,90 @@ fn choosing_a_downloadable_dictionary_downloads_and_uses_it() {
     labelled_text_input(&harness, "SCENE 01  Rain").click_secondary();
     harness.run();
     assert!(harness.query_by_label("Add “rain” to dictionary").is_some());
+}
+
+#[test]
+fn enabling_the_thesaurus_downloads_it_and_offers_synonyms() {
+    let base = fake_host(vec![(
+        "/en/th_en_US_v2.dat",
+        "UTF-8\nhappy|1\n(adj)|glad (similar term)|unhappy (antonym)|cheerful\n",
+    )]);
+    let dir = tempfile::tempdir().unwrap();
+    let settings_path = dir.path().join("config/storysquish/settings.json");
+    let board = board_with_scenes(&["Rain"]);
+    let board_path = dir.path().join("board.json");
+    let app_settings_path = settings_path.clone();
+    let mut harness = Harness::builder()
+        .with_size(WINDOW)
+        .build_eframe(move |cc| {
+            PlannerApp::new(cc, board, board_path, app_settings_path, None)
+                .with_thesaurus_download_base(&base)
+        });
+    harness.run();
+    wait_for_spellcheck(&mut harness);
+    assert!(!harness.state().thesaurus_ready());
+
+    harness.get_by_label("Settings").click();
+    harness.run();
+    harness.get_by_label("Synonyms on right-click").click();
+    wait_for_thesaurus(&mut harness);
+
+    assert!(
+        storysquish::settings::load(&settings_path)
+            .unwrap()
+            .thesaurus
+    );
+    assert!(
+        dir.path()
+            .join("config/storysquish/dictionaries/th_en.dat")
+            .is_file()
+    );
+
+    harness.get_by_label("Close").click();
+    harness.run();
+    open_prose(&mut harness, "Happy");
+    labelled_text_input(&harness, "SCENE 01  Rain").click_secondary();
+    harness.run();
+    assert!(harness.query_by_label("Unhappy").is_none());
+    harness.get_by_label("Glad").click();
+    harness.run();
+    assert_eq!(harness.state().board().scenes[0].text, "Glad");
+
+    labelled_text_input(&harness, "SCENE 01  Rain").focus();
+    harness.run();
+    labelled_text_input(&harness, "SCENE 01  Rain").type_text(" wrold");
+    harness.run();
+    labelled_text_input(&harness, "SCENE 01  Rain").click_secondary();
+    harness.run();
+    assert!(harness.query_by_label("world").is_some());
+}
+
+#[test]
+fn the_thesaurus_needs_spellcheck_for_its_language() {
+    let Fixture { mut harness, .. } = launch(board_with_scenes(&["Rain"]));
+    harness.get_by_label("Settings").click();
+    harness.run();
+    harness
+        .get_by(|node| {
+            node.role() == egui::accesskit::Role::ComboBox
+                && node.label().as_deref() == Some("SPELLCHECK")
+        })
+        .click();
+    harness.run();
+    harness.get_by_label("Off").click();
+    harness.run();
+
+    assert!(
+        harness
+            .get_by_label("Synonyms on right-click")
+            .accesskit_node()
+            .is_disabled()
+    );
+    assert!(
+        harness
+            .query_by_label("Turn spellcheck on to choose the thesaurus language.")
+            .is_some()
+    );
 }
 
 fn open_write_view(harness: &mut Harness<'_, PlannerApp>, scene: &str) {
