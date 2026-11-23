@@ -195,6 +195,17 @@ impl Client {
     /// name.
     pub fn suggest_repo_name(&self, title: &str) -> Result<String> {
         let login = self.login()?;
+        self.free_repo_name(&login, title)
+    }
+
+    /// [`Self::suggest_repo_name`] as `owner/name` on the token's account.
+    pub fn suggest_repo(&self, title: &str) -> Result<String> {
+        let login = self.login()?;
+        let name = self.free_repo_name(&login, title)?;
+        Ok(format!("{login}/{name}"))
+    }
+
+    fn free_repo_name(&self, login: &str, title: &str) -> Result<String> {
         let base_name = suggested_repo_name(title);
         for attempt in 1..=MAX_REPO_NAME_ATTEMPTS {
             let name = numbered_repo_name(&base_name, attempt);
@@ -482,19 +493,33 @@ pub fn suggested_repo_name(title: &str) -> String {
     name.trim_end_matches('-').to_owned()
 }
 
+/// [`suggested_repo_name`] without the `storysquish-` prefix, the form a
+/// writer gets by trimming it off the offered name.
+fn unprefixed_repo_name(title: &str) -> String {
+    let name = suggested_repo_name(title);
+    match name.strip_prefix(REPO_NAME_PREFIX) {
+        Some(slug) if name != UNTITLED_REPO_NAME => slug.to_owned(),
+        _ => name,
+    }
+}
+
 /// The base name to rename `existing` to for `title`, or `None` when its name
 /// does not follow the title it was backed up under, e.g. one the writer
-/// chose, or when the new title gives the same name.
+/// chose, or when it already follows `title`. A name that lost its
+/// `storysquish-` prefix gets it back even when the title is unchanged.
 fn renamed_repo_base(existing: &RepoResponse, title: &str) -> Option<String> {
     let description = existing.description.as_deref().unwrap_or_default();
     if !is_board_description(description) {
         return None;
     }
-    let previous_base = suggested_repo_name(&title_from_description(description));
+    let previous_title = title_from_description(description);
+    let name = repo_name(&existing.full_name);
     let base_name = suggested_repo_name(title);
-    (base_name != previous_base
-        && is_numbered_repo_name(repo_name(&existing.full_name), &previous_base))
-    .then_some(base_name)
+    let previous_base = suggested_repo_name(&previous_title);
+    if is_numbered_repo_name(name, &previous_base) {
+        return (base_name != previous_base).then_some(base_name);
+    }
+    is_numbered_repo_name(name, &unprefixed_repo_name(&previous_title)).then_some(base_name)
 }
 
 fn is_numbered_repo_name(name: &str, base_name: &str) -> bool {
@@ -605,6 +630,9 @@ pub enum Job {
     SuggestRepoName {
         title: String,
     },
+    SuggestRepo {
+        title: String,
+    },
     CreateRepo {
         name: String,
         title: String,
@@ -636,6 +664,7 @@ pub enum Reply {
         repo: String,
     },
     SuggestedRepoName(String),
+    SuggestedRepo(String),
     CreatedRepo(String),
     Fetched(String),
     Boards(Vec<CloudBoard>),
@@ -689,6 +718,7 @@ pub fn run(client: &Client, job: Job) -> Reply {
         Job::SuggestRepoName { title } => client
             .suggest_repo_name(&title)
             .map(Reply::SuggestedRepoName),
+        Job::SuggestRepo { title } => client.suggest_repo(&title).map(Reply::SuggestedRepo),
         Job::CreateRepo { name, title } => {
             client.create_repo(&name, &title).map(Reply::CreatedRepo)
         }
@@ -785,6 +815,20 @@ mod tests {
         assert_eq!(
             renamed_repo_base(&untitled, "Dune").as_deref(),
             Some("storysquish-dune")
+        );
+
+        let unprefixed = repo("someone/lost-in-fate-2", "StorySquish board: Lost in fate");
+        assert_eq!(
+            renamed_repo_base(&unprefixed, "Lost in slate").as_deref(),
+            Some("storysquish-lost-in-slate")
+        );
+        assert_eq!(
+            renamed_repo_base(&unprefixed, "Lost in fate").as_deref(),
+            Some("storysquish-lost-in-fate")
+        );
+        assert_eq!(
+            renamed_repo_base(&unprefixed, "").as_deref(),
+            Some("storysquish-board")
         );
 
         let chosen = repo("someone/my-novel", "StorySquish board: Dune");
