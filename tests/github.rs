@@ -7,7 +7,7 @@ use std::thread;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use storysquish::github::{
-    BOARD_FILE_NAME, Client, CloudBoard, MissingRepo, Revision, SuggestedRepo,
+    self, BOARD_FILE_NAME, Client, CloudBoard, Job, MissingRepo, Reply, Revision, SuggestedRepo,
 };
 
 #[derive(Debug, Clone)]
@@ -512,6 +512,28 @@ fn failures_name_the_likely_cause() {
         error,
         "the token is invalid or expired (HTTP 401: Bad credentials)"
     );
+}
+
+#[test]
+fn an_unreachable_github_is_offline_but_an_error_reply_is_not() {
+    let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", closed.local_addr().unwrap());
+    drop(closed);
+    let push = || Job::Push {
+        repo: REPO.to_owned(),
+        title: String::new(),
+        board_json: "{}".to_owned(),
+    };
+    assert!(matches!(
+        github::run(&Client::with_api_base("t", &base), push()),
+        Reply::Offline(_)
+    ));
+
+    let (base, _) = mock_github(|_, _| (401, r#"{"message":"Bad credentials"}"#.to_owned()));
+    assert!(matches!(
+        github::run(&Client::with_api_base("t", &base), push()),
+        Reply::Failed(_)
+    ));
 }
 
 #[test]

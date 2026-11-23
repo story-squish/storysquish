@@ -3,7 +3,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use base64::Engine;
@@ -27,6 +27,9 @@ const REVISIONS_LISTED: usize = 30;
 const REPOS_PER_PAGE: usize = 100;
 const MAX_REPO_PAGES: usize = 10;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Shorter than `REQUEST_TIMEOUT` so a network that swallows packets is
+/// recognised as offline without waiting for a whole request to time out.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_RESPONSE_BYTES: u64 = 100 * 1024 * 1024;
 const RAW_MEDIA_TYPE: &str = "application/vnd.github.raw+json";
 const JSON_MEDIA_TYPE: &str = "application/vnd.github+json";
@@ -122,6 +125,8 @@ impl Client {
     pub fn with_api_base(token: &str, api_base: &str) -> Self {
         let agent = Agent::config_builder()
             .timeout_global(Some(REQUEST_TIMEOUT))
+            .timeout_resolve(Some(CONNECT_TIMEOUT))
+            .timeout_connect(Some(CONNECT_TIMEOUT))
             .http_status_as_error(false)
             // GitHub answers a renamed repository's old name with a redirect
             // that only resolves for private repositories when authorized.
@@ -690,6 +695,9 @@ pub enum Reply {
         repo: String,
         board_json: String,
     },
+    /// GitHub could not be reached at all, as opposed to answering with an
+    /// error, so the request is worth repeating later unchanged.
+    Offline(String),
     Failed(String),
 }
 
@@ -716,10 +724,18 @@ impl Pending {
         }
     }
 
-    pub fn wait(self) -> Reply {
-        self.0
-            .recv()
-            .unwrap_or_else(|_| Reply::Failed("the GitHub request stopped unexpectedly".to_owned()))
+    /// `None` once `deadline` passes; the request keeps running detached.
+    pub fn wait_until(self, deadline: Instant) -> Option<Reply> {
+        match self
+            .0
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        {
+            Ok(reply) => Some(reply),
+            Err(mpsc::RecvTimeoutError::Timeout) => None,
+            Err(mpsc::RecvTimeoutError::Disconnected) => Some(Reply::Failed(
+                "the GitHub request stopped unexpectedly".to_owned(),
+            )),
+        }
     }
 }
 
@@ -754,7 +770,32 @@ pub fn run(client: &Client, job: Job) -> Reply {
             .latest_board(&repo)
             .map(|board_json| Reply::FetchedLatest { repo, board_json }),
     };
-    result.unwrap_or_else(|e| Reply::Failed(format!("{e:#}")))
+    result.unwrap_or_else(|e| {
+        if is_unreachable(&e) {
+            Reply::Offline(format!("{e:#}"))
+        } else {
+            Reply::Failed(format!("{e:#}"))
+        }
+    })
+}
+
+/// Transport failures: no DNS, no route, refused or stalled connections.
+/// HTTP errors and malformed responses mean GitHub answered, so they stay
+/// real failures.
+fn is_unreachable(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause.downcast_ref::<std::io::Error>().is_some()
+            || cause.downcast_ref::<ureq::Error>().is_some_and(|e| {
+                matches!(
+                    e,
+                    ureq::Error::Io(_)
+                        | ureq::Error::Timeout(_)
+                        | ureq::Error::HostNotFound
+                        | ureq::Error::ConnectionFailed
+                        | ureq::Error::ConnectProxyFailed(_)
+                )
+            })
+    })
 }
 
 #[cfg(test)]

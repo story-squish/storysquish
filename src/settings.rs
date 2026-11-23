@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -23,6 +23,11 @@ pub struct Settings {
     /// novel keeps its own history.
     #[serde(rename = "github-repos", skip_serializing_if = "BTreeMap::is_empty")]
     repos: BTreeMap<PathBuf, String>,
+    /// Boards with edits that have not reached their repo yet, e.g. made
+    /// offline, so the next launch backs them up and does not let the older
+    /// cloud copy replace them.
+    #[serde(rename = "github-unpushed", skip_serializing_if = "BTreeSet::is_empty")]
+    unpushed: BTreeSet<PathBuf>,
     #[serde(alias = "gist-auto-backup")]
     pub github_auto_backup: bool,
 }
@@ -50,6 +55,27 @@ impl Settings {
     pub fn move_repo(&mut self, from: &Path, to: &Path) {
         let repo = self.repos.remove(&board_key(from));
         self.set_repo(to, repo);
+        if self.unpushed.remove(&board_key(from)) {
+            self.unpushed.insert(board_key(to));
+        }
+    }
+
+    pub fn is_unpushed(&self, board: &Path) -> bool {
+        self.unpushed.contains(&board_key(board))
+    }
+
+    /// Returns whether this changed anything, so callers save only then.
+    pub fn set_unpushed(&mut self, board: &Path, unpushed: bool) -> bool {
+        let key = board_key(board);
+        if unpushed {
+            self.unpushed.insert(key)
+        } else {
+            self.unpushed.remove(&key)
+        }
+    }
+
+    pub fn unpushed_boards(&self) -> impl Iterator<Item = &Path> {
+        self.unpushed.iter().map(PathBuf::as_path)
     }
 }
 
@@ -145,6 +171,27 @@ mod tests {
 
         settings.set_repo(Path::new("/sync/dune.json"), None);
         assert_eq!(settings.repo(Path::new("/sync/dune.json")), None);
+    }
+
+    #[test]
+    fn unpushed_boards_persist_and_follow_a_move() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let board = dir.path().join("dune.json");
+        let moved = dir.path().join("sync/dune.json");
+        let mut settings = Settings::default();
+        assert!(settings.set_unpushed(&board, true));
+        assert!(!settings.set_unpushed(&board, true));
+        save(&path, &settings).unwrap();
+        let mut settings = load(&path).unwrap();
+        assert!(settings.is_unpushed(&board));
+
+        settings.move_repo(&board, &moved);
+        assert!(!settings.is_unpushed(&board));
+        assert_eq!(settings.unpushed_boards().collect::<Vec<_>>(), [&moved]);
+        assert!(settings.set_unpushed(&moved, false));
+        save(&path, &settings).unwrap();
+        assert!(!fs::read_to_string(&path).unwrap().contains("unpushed"));
     }
 
     #[test]
