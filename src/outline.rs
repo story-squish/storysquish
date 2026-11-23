@@ -138,7 +138,7 @@ pub fn combined_markdown(board: &Board) -> String {
             continue;
         }
         for line in body.lines() {
-            if line.starts_with('#') {
+            if is_markdown_heading(line) {
                 out.push('#');
             }
             out.push_str(line);
@@ -153,6 +153,11 @@ fn without_title(document: &str) -> &str {
     document
         .split_once('\n')
         .map_or("", |(_, rest)| rest.trim_start_matches('\n'))
+}
+
+fn is_markdown_heading(line: &str) -> bool {
+    let hashes = line.bytes().take_while(|&b| b == b'#').count();
+    (1..=6).contains(&hashes) && line[hashes..].starts_with(' ')
 }
 
 fn novel_title(board: &Board) -> &str {
@@ -286,6 +291,22 @@ mod tests {
              ### Arrakis\n\n\
              The spice must flow.\n"
         );
+    }
+
+    #[test]
+    fn combined_leaves_non_heading_hashes_alone() {
+        let mut board = Board {
+            title: "Dune".into(),
+            ..Board::default()
+        };
+        let opening = board.add_scene();
+        let scene = board.scene_mut(&opening).unwrap();
+        scene.title = "Opening".into();
+        scene.text = "#1 on the charts with #trending topic".into();
+
+        let md = combined_markdown(&board);
+        assert!(md.contains("#1 on the charts with #trending topic"));
+        assert!(!md.contains("##1"));
     }
 
     #[test]

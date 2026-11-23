@@ -538,9 +538,71 @@ fn deleting_location_from_inspector_clears_it_from_scenes() {
     assert!(harness.query_by_label("Setting of 1 scene").is_some());
     harness.get_by_label("Delete location").click();
     harness.run();
+    assert!(
+        harness
+            .query_by_label("This clears the location in 1 scene.")
+            .is_some()
+    );
+    harness.get_by_label("Delete").click();
+    harness.run();
 
     assert_eq!(harness.state().board().locations.len(), 0);
     assert_eq!(harness.state().board().scenes[0].location, None);
+}
+
+#[test]
+fn cancelling_location_delete_keeps_it() {
+    let mut board = board_with_scenes(&["Rain"]);
+    board.add_location("Harbor");
+    let Fixture { mut harness, .. } = launch(board);
+
+    harness.get_by_label("Harbor").click();
+    harness.run();
+    harness.get_by_label("Delete location").click();
+    harness.run();
+    harness.get_by_label("Cancel").click();
+    harness.run();
+
+    assert_eq!(harness.state().board().locations.len(), 1);
+}
+
+#[test]
+fn deleting_character_asks_first_and_names_what_it_clears() {
+    let mut board = board_with_scenes(&["Rain"]);
+    board.add_character("Ada");
+    board.add_character("Bo");
+    let ada = board.characters[0].id.clone();
+    let bo = board.characters[1].id.clone();
+    board.scenes[0].pov = Some(ada.clone());
+    board.add_relationship(&ada, &bo, "mentor");
+    let Fixture { mut harness, .. } = launch(board);
+
+    harness.get_by_label("Ada").click();
+    harness.run();
+    harness.get_by_label("Delete character").click();
+    harness.run();
+    assert!(
+        harness
+            .query_by_label("This clears POV in 1 scene and removes 1 relationship.")
+            .is_some()
+    );
+    harness.get_by_label("Cancel").click();
+    harness.run();
+    assert_eq!(harness.state().board().characters.len(), 2);
+
+    harness.get_by_label("Delete character").click();
+    harness.run();
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    assert_eq!(harness.state().board().characters.len(), 2);
+
+    harness.get_by_label("Delete character").click();
+    harness.run();
+    harness.get_by_label("Delete").click();
+    harness.run();
+    assert_eq!(harness.state().board().characters.len(), 1);
+    assert_eq!(harness.state().board().scenes[0].pov, None);
+    assert_eq!(harness.state().board().relationships.len(), 0);
 }
 
 #[test]
@@ -2013,4 +2075,167 @@ fn choosing_a_downloadable_dictionary_downloads_and_uses_it() {
     labelled_text_input(&harness, "SCENE 01  Rain").click_secondary();
     harness.run();
     assert!(harness.query_by_label("Add “rain” to dictionary").is_some());
+}
+
+fn open_write_view(harness: &mut Harness<'_, PlannerApp>, scene: &str) {
+    harness.get_by_label(scene).click();
+    harness.run();
+    harness.get_by_label("Write prose").click();
+    harness.run();
+}
+
+fn zen_shortcut(harness: &mut Harness<'_, PlannerApp>) {
+    harness.key_press_modifiers(
+        egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
+        egui::Key::F,
+    );
+    harness.run();
+}
+
+fn panels_shown(harness: &Harness<'_, PlannerApp>) -> bool {
+    harness.query_by_label("Filter").is_some() && harness.query_by_label("Board").is_some()
+}
+
+#[test]
+fn zen_shortcut_hides_panels_without_focusing_search() {
+    let Fixture { mut harness, .. } = launch(board_with_scenes(&["Rain"]));
+    open_write_view(&mut harness, "Rain");
+    assert!(panels_shown(&harness));
+
+    zen_shortcut(&mut harness);
+    assert!(!panels_shown(&harness));
+    assert!(harness.query_by_label("Exit Zen").is_some());
+
+    zen_shortcut(&mut harness);
+    assert!(panels_shown(&harness));
+    harness.event(egui::Event::Text("x".to_owned()));
+    harness.run();
+    assert!(harness.query_by_label("Clear filters").is_none());
+}
+
+#[test]
+fn zen_shortcut_does_nothing_outside_write_view() {
+    let Fixture { mut harness, .. } = launch(board_with_scenes(&["Rain"]));
+
+    zen_shortcut(&mut harness);
+    assert!(panels_shown(&harness));
+}
+
+#[test]
+fn escape_leaves_zen_before_closing_the_scene() {
+    let Fixture { mut harness, .. } = launch(board_with_scenes(&["Rain"]));
+    open_write_view(&mut harness, "Rain");
+    harness.get_by_label("Zen").click();
+    harness.run();
+    assert!(!panels_shown(&harness));
+
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    assert!(panels_shown(&harness));
+    assert!(harness.query_by_label("Delete scene").is_some());
+
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    assert!(harness.query_by_label("Delete scene").is_none());
+}
+
+#[test]
+fn find_leaves_zen_and_focuses_search() {
+    let Fixture { mut harness, .. } = launch(board_with_scenes(&["Rain", "Sun"]));
+    open_write_view(&mut harness, "Rain");
+    zen_shortcut(&mut harness);
+
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F);
+    harness.run();
+    harness.event(egui::Event::Text("Sun".to_owned()));
+    harness.run();
+
+    assert!(panels_shown(&harness));
+    assert_eq!(harness.state().board().scenes[0].text, "");
+    assert!(harness.query_by_label("Clear filters").is_some());
+}
+
+#[test]
+fn new_scene_shortcut_focuses_its_title() {
+    let Fixture { mut harness, .. } = launch(board_with_scenes(&["Rain"]));
+
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::N);
+    harness.run();
+    harness.event(egui::Event::Text("Storm".to_owned()));
+    harness.run();
+
+    assert_eq!(scene_titles(&harness), ["Rain", "Storm"]);
+    assert_eq!(harness.state().board().scenes.len(), 2);
+}
+
+#[test]
+fn new_scene_in_zen_does_not_steal_focus_after_leaving_zen() {
+    let Fixture { mut harness, .. } = launch(board_with_scenes(&["Rain"]));
+    open_write_view(&mut harness, "Rain");
+    zen_shortcut(&mut harness);
+
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::N);
+    harness.run();
+    zen_shortcut(&mut harness);
+    harness.run();
+    harness.event(egui::Event::Text("x".to_owned()));
+    harness.run();
+
+    assert_eq!(scene_titles(&harness), ["Rain", ""]);
+}
+
+#[test]
+fn word_goal_from_settings_shows_progress_and_survives_a_typo() {
+    let Fixture { mut harness, dir } = launch(board_with_scenes(&["Rain"]));
+    let settings_path = dir.path().join("config/storysquish/settings.json");
+
+    open_settings(&mut harness);
+    labelled_text_input(&harness, "MANUSCRIPT WORD TARGET").focus();
+    harness.run();
+    labelled_text_input(&harness, "MANUSCRIPT WORD TARGET").type_text("1,000");
+    harness.run();
+    labelled_text_input(&harness, "MANUSCRIPT WORD TARGET").type_text("x");
+    harness.run();
+    assert_eq!(harness.state().settings().word_goal, Some(1_000));
+    assert_eq!(
+        storysquish::settings::load(&settings_path)
+            .unwrap()
+            .word_goal,
+        Some(1_000)
+    );
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+
+    open_write_view(&mut harness, "Rain");
+    assert!(
+        harness
+            .query_by_label("0 words · 0 / 1,000 goal in manuscript")
+            .is_some()
+    );
+}
+
+#[test]
+fn cards_cannot_be_reordered_while_filtered() {
+    let Fixture { mut harness, .. } = launch(board_with_scenes(&["Rain A", "Rain B", "Sun"]));
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F);
+    harness.run();
+    harness.event(egui::Event::Text("Rain".to_owned()));
+    harness.run();
+
+    let from = harness.get_by_label("Rain B").rect().center();
+    let to = harness.get_by_label("Rain A").rect().center();
+    harness.hover_at(from);
+    harness.run();
+    harness.drag_at(from);
+    harness.run();
+    for step in 1..=10 {
+        #[expect(clippy::cast_precision_loss, reason = "tiny step count")]
+        let t = step as f32 / 10.0;
+        harness.hover_at(from.lerp(to, t));
+        harness.run();
+    }
+    harness.drop_at(to);
+    harness.run();
+
+    assert_eq!(scene_titles(&harness), ["Rain A", "Rain B", "Sun"]);
 }

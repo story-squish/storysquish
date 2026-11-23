@@ -460,18 +460,16 @@ impl Board {
                         .as_ref()
                         .and_then(|id| self.location(id))
                         .map_or("", |l| l.name.as_str());
-                    let haystack = format!(
-                        "{} {} {} {} {} {} {}",
-                        scene.title,
-                        scene.summary,
-                        scene.status,
-                        scene.act.map_or_else(String::new, |a| a.to_string()),
-                        pov_name,
-                        location_name,
-                        scene.text,
-                    )
-                    .to_lowercase();
-                    if !haystack.contains(&needle) {
+                    let matches_field = contains_case_insensitive(&scene.title, &needle)
+                        || contains_case_insensitive(&scene.summary, &needle)
+                        || contains_case_insensitive(status_str(scene.status), &needle)
+                        || scene
+                            .act
+                            .is_some_and(|a| contains_case_insensitive(act_str(a), &needle))
+                        || contains_case_insensitive(pov_name, &needle)
+                        || contains_case_insensitive(location_name, &needle)
+                        || contains_case_insensitive(&scene.text, &needle);
+                    if !matches_field {
                         return false;
                     }
                 }
@@ -495,6 +493,39 @@ fn shift_by<T>(items: &mut Vec<T>, is_target: impl Fn(&T) -> bool, offset: isize
     let item = items.remove(from);
     items.insert(to, item);
     true
+}
+
+const fn status_str(status: Status) -> &'static str {
+    match status {
+        Status::Outline => "Outline",
+        Status::Draft => "Draft",
+        Status::Revision => "Revision",
+        Status::Final => "Final",
+        Status::Archived => "Archived",
+    }
+}
+
+const fn act_str(act: Act) -> &'static str {
+    match act {
+        Act::One => "Act I",
+        Act::Two => "Act II",
+        Act::Three => "Act III",
+    }
+}
+
+fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if haystack.is_ascii() && needle.is_ascii() {
+        let needle_bytes = needle.as_bytes();
+        haystack
+            .as_bytes()
+            .windows(needle_bytes.len())
+            .any(|window| window.eq_ignore_ascii_case(needle_bytes))
+    } else {
+        haystack.to_lowercase().contains(needle)
+    }
 }
 
 /// The HTML planner encoded "no value" as `""`; keep reading and writing that.
@@ -794,6 +825,34 @@ mod tests {
         );
         assert_eq!(board.matching_indices("DRAFT", None, None, None), vec![0]);
         assert_eq!(board.matching_indices("act ii", None, None, None), vec![0]);
+    }
+
+    #[test]
+    fn search_matches_non_ascii_text_and_not_across_fields() {
+        let mut board = Board::default();
+        let id = board.add_scene();
+        let scene = board.scene_mut(&id).unwrap();
+        scene.title = "Ärger im Café".into();
+        scene.summary = "Rain".into();
+        board.add_scene();
+
+        assert_eq!(board.matching_indices("ärger", None, None, None), vec![0]);
+        assert_eq!(board.matching_indices("CAFÉ", None, None, None), vec![0]);
+        assert_eq!(
+            board.matching_indices("café rain", None, None, None),
+            Vec::<usize>::new()
+        );
+    }
+
+    #[test]
+    fn case_insensitive_contains_handles_short_haystacks_and_changing_widths() {
+        assert!(contains_case_insensitive("anything", ""));
+        assert!(!contains_case_insensitive("ab", "abc"));
+        assert!(contains_case_insensitive("ἈΘΉΝΑ", "ἀθήνα"));
+        assert!(contains_case_insensitive(
+            "İstanbul",
+            &"İstanbul".to_lowercase()
+        ));
     }
 
     #[test]
