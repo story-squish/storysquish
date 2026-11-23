@@ -347,6 +347,7 @@ const GITHUB_API = "https://api.github.com";
 const GITHUB_BOARD_FILE = "storysquish-board.json";
 const GITHUB_BACKUP_INTERVAL_MS = 5 * 60 * 1000;
 const GITHUB_CHECK_MS = 30 * 1000;
+const GITHUB_SUGGEST_DELAY_MS = 400;
 const GITHUB_REVISIONS_LISTED = 30;
 const GITHUB_REPO_NAME_PREFIX = "storysquish-";
 const GITHUB_UNTITLED_REPO_NAME = "storysquish-board";
@@ -824,7 +825,7 @@ function loadBoard() {
   let raw;
   try { raw = localStorage.getItem(BOARD_KEY); }
   catch (e) { return {board: defaultBoard(), alert: `Could not open your board: ${e.message}`}; }
-  if (raw === null) return {board: defaultBoard(), alert: migrationAlert};
+  if (raw === null) return {board: defaultBoard(), alert: migrationAlert, neverSaved: true};
 
   try {
     return {board: parseBoard(raw), alert: migrationAlert};
@@ -957,6 +958,10 @@ const githubBackup = {
   boardChanged: false, lastAttemptAt: 0, lastSuccessAt: 0, lastPushedJson: null,
   // A cancelled repo creation stops automatic backup from asking again this visit.
   repoCreationOpen: false, repoCreationDeclined: false,
+  // A board never saved in this browser, or just reset, whose first change offers it a repository.
+  newBoard: boardLoad.neverSaved === true,
+  // {repo, before, after}: the link a Reset removed, with the boards on either side of it.
+  resetLink: null,
 };
 
 function isSelected(kind, id) {
@@ -1012,6 +1017,7 @@ function saveNow() {
   writeToLinkedFile(json);
   githubBackup.boardChanged = true;
   render();
+  offerRepoForNewBoard();
 }
 
 // Runs before the session's first write and then periodically, so backups
@@ -1069,6 +1075,7 @@ async function writeBoardFile(target, json) {
 function replaceBoard(loaded, kind) {
   history.commit(board);
   board = loaded;
+  githubBackup.newBoard = false;
   githubBackup.boardChanged = true;
   history.commit(board);
   try { localStorage.setItem(BOARD_KEY, serializeBoard(board)); } catch { /* next save retries */ }
@@ -1198,18 +1205,50 @@ function markDirty() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(saveNow, SAVE_DEBOUNCE_MS);
   render();
+  offerRepoForNewBoard();
 }
 
 /* ---------- actions ---------- */
 
 function undo() {
   const restored = history.undo(board);
-  if (restored) { board = restored; saveNow(); }
+  if (restored) restoreBoard(restored);
 }
 
 function redo() {
   const restored = history.redo(board);
-  if (restored) { board = restored; saveNow(); }
+  if (restored) restoreBoard(restored);
+}
+
+function restoreBoard(restored) {
+  board = restored;
+  const unlinked = followResetLink();
+  saveNow();
+  if (unlinked) startNewBoard();
+}
+
+// Saved but not yet changed, so the repository offer waits for a real edit.
+function startNewBoard() {
+  githubBackup.boardChanged = false;
+  githubBackup.newBoard = true;
+}
+
+// Undoing a Reset brings back the story, so it gets its repository back too;
+// redoing it unlinks again. A repository linked since then is left alone.
+// Returns whether it unlinked.
+function followResetLink() {
+  const reset = githubBackup.resetLink;
+  if (!reset) return false;
+  const current = JSON.stringify(board);
+  if (current === reset.before && !settings.githubRepo) {
+    linkRepo(reset.repo);
+    githubBackup.newBoard = false;
+  } else if (current === reset.after && settings.githubRepo === reset.repo) {
+    linkRepo(null);
+    githubBackup.newBoard = false;
+    return true;
+  }
+  return false;
 }
 
 function addScene() {
@@ -1250,11 +1289,24 @@ function confirmDeleteScene(id) {
   });
 }
 
+// The story's repository holds the story, not this browser's slot, so a
+// Reset unlinks it; otherwise the next backup would overwrite it with the
+// empty board. The first change then offers a repository, as on a first visit.
 function confirmReset() {
-  confirmDialog("Delete ALL scenes, characters and locations? You can still undo this.", () => {
+  const repo = settings.githubRepo;
+  const unlinkNote = repo ? ` This board stops backing up to ${repo}, which stays on GitHub.` : "";
+  confirmDialog(`Delete ALL scenes, characters and locations?${unlinkNote} You can still undo this.`, () => {
+    if (saveState.kind === "pending") saveNow();
+    const before = JSON.stringify(board);
     board = defaultBoard();
     selected = null;
+    githubBackup.newBoard = false;
+    if (repo) {
+      githubBackup.resetLink = {repo, before, after: JSON.stringify(board)};
+      linkRepo(null);
+    }
     saveNow();
+    startNewBoard();
   });
 }
 
@@ -2083,13 +2135,14 @@ async function createRepo(name, title) {
   }
 }
 
-// The title's slug, numbered past names the account already uses.
+// The title's slug, numbered past names the account already uses, with the
+// account it would be created on.
 async function suggestRepoName(title) {
   const {login} = await github("/user");
   const baseName = repoNameFor(title);
   for (let attempt = 1; attempt <= GITHUB_MAX_REPO_NAME_ATTEMPTS; attempt++) {
     const name = numberedRepoName(baseName, attempt);
-    if (await github(`/repos/${login}/${name}`, {absentOn: [404]}) === null) return name;
+    if (await github(`/repos/${login}/${name}`, {absentOn: [404]}) === null) return {owner: login, name};
   }
   throw new Error(`every repository name tried for this board, from ${baseName}, is taken`);
 }
@@ -2175,17 +2228,64 @@ async function backUpToGithub(kind) {
   drawModal();
 }
 
+function hasPlaceholderTitle() {
+  const title = board.title.trim();
+  return !title || title === DEFAULT_TITLE;
+}
+
+// Waits while the header title is being typed, which the dialog would
+// otherwise interrupt after the first keystroke; its blur tries again.
+function offerRepoForNewBoard() {
+  if (!githubBackup.newBoard || !githubBackup.token || githubBackup.repoCreationOpen) return;
+  if (!githubBackup.boardChanged && saveState.kind !== "pending") return;
+  if (document.activeElement === $("bookTitle")) return;
+  githubBackup.newBoard = false;
+  if (!settings.githubRepo) repoCreationDialog(null);
+}
+
+// A placeholder title is asked for first, since the suggested name comes from it.
 function repoCreationDialog(missingRepo) {
+  const askTitle = !missingRepo && hasPlaceholderTitle();
   const state = {
-    name: missingRepo ? missingRepo.split("/").pop() : repoNameFor(board.title),
+    owner: missingRepo ? missingRepo.split("/")[0] : null,
+    name: missingRepo ? missingRepo.split("/").pop() : repoNameFor(askTitle ? "" : board.title),
+    titleDraft: askTitle ? "" : null,
+    focus: askTitle ? "title" : "name",
     edited: false, suggesting: !missingRepo, creating: false, error: null,
   };
+  let suggestion = 0;
+  let suggestTimer = null;
+  const currentTitle = () => state.titleDraft ?? board.title;
   const redraw = () => { if (modalStack.at(-1) === dialog) drawModal(); };
+  const suggest = () => {
+    const title = currentTitle();
+    const ticket = ++suggestion;
+    suggestRepoName(title)
+      .then(suggested => {
+        if (ticket !== suggestion) return;
+        state.owner = suggested.owner;
+        if (!state.edited) state.name = suggested.name;
+      }, e => {
+        if (ticket === suggestion) state.error = `Could not check which names are free: ${e.message}`;
+      })
+      .finally(() => {
+        if (ticket !== suggestion) return;
+        state.suggesting = false;
+        redraw();
+      });
+  };
   const decline = () => {
+    clearTimeout(suggestTimer);
     githubBackup.repoCreationOpen = false;
     githubBackup.repoCreationDeclined = true;
   };
   const create = async () => {
+    clearTimeout(suggestTimer);
+    if (state.titleDraft !== null) {
+      board.title = state.titleDraft.trim();
+      state.titleDraft = null;
+      saveNow();
+    }
     state.creating = true;
     state.error = null;
     redraw();
@@ -2209,27 +2309,61 @@ function repoCreationDialog(missingRepo) {
     onDismiss: decline,
     draw(box) {
       const heading = document.createElement("h2");
-      heading.textContent = "Create a GitHub repository";
+      heading.textContent = "Save to a GitHub repository";
       box.append(heading);
       if (missingRepo) box.append(message(`${missingRepo} does not exist, or the token cannot see it.`));
-      box.append(message(`Back up “${board.title.trim() || "Untitled"}” to a new private repository ` +
-        "on your GitHub account."));
-      const input = document.createElement("input");
-      input.className = "repo-input";
-      input.value = state.name;
-      input.disabled = state.creating;
-      input.setAttribute("aria-label", "Repository name");
+      const createButton = button("Create", "", create);
       const invalid = hint("Use letters, digits, '-', '_' or '.'");
       invalid.style.color = "var(--danger)";
-      const createButton = button("Create", "", create);
       const sync = () => {
         const valid = isValidRepoName(state.name.trim());
+        const titled = state.titleDraft === null || state.titleDraft.trim() !== "";
         invalid.hidden = valid;
-        createButton.disabled = !valid || state.suggesting || state.creating;
+        createButton.disabled = !valid || !titled || state.suggesting || state.creating;
       };
-      input.addEventListener("input", () => { state.name = input.value; state.edited = true; sync(); });
-      input.addEventListener("keydown", e => { if (e.key === "Enter" && !createButton.disabled) create(); });
-      box.append(fieldLabel("Repository name"), input, invalid);
+      const submitOnEnter = e => { if (e.key === "Enter" && !createButton.disabled) create(); };
+
+      let titleInput = null;
+      if (state.titleDraft !== null) {
+        box.append(message("Give the story a title; the repository is named after it."));
+        titleInput = document.createElement("input");
+        titleInput.value = state.titleDraft;
+        titleInput.placeholder = DEFAULT_TITLE;
+        titleInput.disabled = state.creating;
+        titleInput.setAttribute("aria-label", "Story title");
+        titleInput.addEventListener("focus", () => { state.focus = "title"; });
+        titleInput.addEventListener("input", () => {
+          state.titleDraft = titleInput.value;
+          state.error = null;
+          if (!state.edited) { state.name = repoNameFor(state.titleDraft); nameInput.value = state.name; }
+          state.suggesting = true;
+          suggestion++;
+          clearTimeout(suggestTimer);
+          suggestTimer = setTimeout(suggest, GITHUB_SUGGEST_DELAY_MS);
+          sync();
+        });
+        titleInput.addEventListener("keydown", submitOnEnter);
+        box.append(fieldLabel("Story title"), titleInput);
+      } else {
+        box.append(message(`Back up “${board.title.trim() || "Untitled"}” to a new private repository ` +
+          "on your GitHub account."));
+      }
+
+      const nameInput = document.createElement("input");
+      nameInput.className = "repo-input";
+      nameInput.value = state.name;
+      nameInput.disabled = state.creating;
+      nameInput.setAttribute("aria-label", "Repository name");
+      nameInput.addEventListener("focus", () => { state.focus = "name"; });
+      nameInput.addEventListener("input", () => { state.name = nameInput.value; state.edited = true; sync(); });
+      nameInput.addEventListener("keydown", submitOnEnter);
+      const owner = hint(`${state.owner ?? "…"} /`);
+      owner.style.margin = "0";
+      box.append(fieldLabel("Repository name"), row(owner, nameInput), invalid);
+      if (!missingRepo) {
+        box.append(hint("You can change the title later in the header; a repository named after the " +
+          "title is renamed to match on the next backup."));
+      }
       if (state.error) {
         const error = hint(state.error);
         error.style.color = "var(--danger)";
@@ -2242,19 +2376,16 @@ function repoCreationDialog(missingRepo) {
       box.append(row(createButton, cancel));
       sync();
       if (!state.creating) {
-        input.focus();
-        input.setSelectionRange(input.value.length, input.value.length);
+        // Redraws rebuild the fields, so focus and caret go back where they were.
+        const focused = state.focus === "title" && titleInput ? titleInput : nameInput;
+        focused.focus();
+        focused.setSelectionRange(focused.value.length, focused.value.length);
       }
     },
   };
   githubBackup.repoCreationOpen = true;
   openModal(dialog);
-  if (state.suggesting) {
-    suggestRepoName(board.title)
-      .then(name => { if (!state.edited) state.name = name; },
-            e => { state.error = `Could not check which names are free: ${e.message}`; })
-      .finally(() => { state.suggesting = false; redraw(); });
-  }
+  if (!missingRepo) suggest();
 }
 
 // At most once per interval and only after the board changed, so a long
@@ -2307,9 +2438,15 @@ function setGithubRepo(input) {
   const repo = trimmed ? parseRepo(trimmed) : null;
   githubBackup.repoInvalid = trimmed !== "" && repo === null;
   if (githubBackup.repoInvalid || repo === settings.githubRepo) return;
+  linkRepo(repo);
+}
+
+function linkRepo(repo) {
   settings.githubRepo = repo;
   githubBackup.repoCreationDeclined = false;
   githubBackup.lastPushedJson = null;
+  githubBackup.lastSuccessAt = 0;
+  githubBackup.error = null;
   saveSettingsReportingErrors();
 }
 
@@ -2469,6 +2606,7 @@ function withSelectedCharacter(fn) {
 }
 
 $("bookTitle").addEventListener("input", e => { board.title = e.target.value; markDirty(); });
+$("bookTitle").addEventListener("blur", offerRepoForNewBoard);
 $("statsToggle").addEventListener("change", e => { showStats = e.target.checked; render(); });
 $("settingsBtn").addEventListener("click", settingsDialog);
 const exportMenu = $("exportMenu");

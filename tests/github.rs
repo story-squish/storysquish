@@ -6,7 +6,9 @@ use std::thread;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use storysquish::github::{BOARD_FILE_NAME, Client, CloudBoard, MissingRepo, Revision};
+use storysquish::github::{
+    BOARD_FILE_NAME, Client, CloudBoard, MissingRepo, Revision, SuggestedRepo,
+};
 
 #[derive(Debug, Clone)]
 struct Recorded {
@@ -162,7 +164,10 @@ fn the_suggested_name_skips_names_the_account_already_uses() {
 
     assert_eq!(
         client.suggest_repo_name("Dune").unwrap(),
-        "storysquish-dune-2"
+        SuggestedRepo {
+            owner: "someone".to_owned(),
+            name: "storysquish-dune-2".to_owned(),
+        }
     );
 }
 

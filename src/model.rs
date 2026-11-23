@@ -2,6 +2,8 @@ use std::fmt;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+pub const DEFAULT_TITLE: &str = "Untitled Novel";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Status {
     #[default]
@@ -154,7 +156,7 @@ pub struct Board {
 impl Default for Board {
     fn default() -> Self {
         Self {
-            title: "Untitled Novel".to_owned(),
+            title: DEFAULT_TITLE.to_owned(),
             characters: Vec::new(),
             scenes: Vec::new(),
             locations: Vec::new(),
@@ -170,6 +172,11 @@ impl Board {
             && self.characters.is_empty()
             && self.locations.is_empty()
             && self.relationships.is_empty()
+    }
+
+    pub fn has_placeholder_title(&self) -> bool {
+        let title = self.title.trim();
+        title.is_empty() || title == DEFAULT_TITLE
     }
 
     pub fn add_scene(&mut self) -> Id {
@@ -852,5 +859,17 @@ mod tests {
             board.act_counts(),
             vec![(Act::One, 0), (Act::Two, 0), (Act::Three, 1)]
         );
+    }
+
+    #[test]
+    fn blank_and_default_titles_are_placeholders() {
+        let titled = |title: &str| Board {
+            title: title.to_owned(),
+            ..Board::default()
+        };
+        assert!(Board::default().has_placeholder_title());
+        assert!(titled("").has_placeholder_title());
+        assert!(titled("  Untitled Novel ").has_placeholder_title());
+        assert!(!titled("Dune").has_placeholder_title());
     }
 }
