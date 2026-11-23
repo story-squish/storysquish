@@ -250,8 +250,68 @@ fn editing_the_title_saves_without_waiting() {
     harness.event(egui::Event::Text(" Messiah".to_owned()));
     harness.run();
 
-    let saved = storysquish::storage::load(&dir.path().join("board.json")).unwrap();
+    let saved = storysquish::storage::load(&dir.path().join("Dune_Messiah.json")).unwrap();
     assert_eq!(saved.title, "Dune Messiah");
+}
+
+#[test]
+fn a_board_file_named_after_its_title_follows_a_new_title() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("Untitled_Novel_2.json");
+    let board = Board {
+        title: "Dune".to_owned(),
+        ..Board::default()
+    };
+    storysquish::storage::save(&path, &board).unwrap();
+    storysquish::storage::back_up(&path, "", 5).unwrap();
+    let settings_path = dir.path().join("settings.json");
+    let mut harness = Harness::builder()
+        .with_size(WINDOW)
+        .build_eframe(move |cc| PlannerApp::new(cc, board, path, settings_path, None));
+    harness.run();
+    assert_eq!(harness.state().board_path(), dir.path().join("Dune.json"));
+
+    harness.get_all_by_value("Dune").next().unwrap().focus();
+    harness.run();
+    harness.event(egui::Event::Text(" Messiah".to_owned()));
+    harness.run();
+
+    let renamed = dir.path().join("Dune_Messiah.json");
+    assert_eq!(harness.state().board_path(), renamed);
+    assert_eq!(
+        storysquish::storage::load(&renamed).unwrap().title,
+        "Dune Messiah"
+    );
+    assert!(!dir.path().join("Dune.json").exists());
+    assert!(!dir.path().join("Untitled_Novel_2-backups").exists());
+    let backups = storysquish::storage::list_backups(&renamed).unwrap();
+    assert!(!backups.is_empty());
+    assert!(backups.iter().all(|backup| backup.saved_at.is_some()));
+    let settings = storysquish::settings::load(&dir.path().join("settings.json")).unwrap();
+    assert_eq!(settings.board_path.as_deref(), Some(renamed.as_path()));
+}
+
+#[test]
+fn a_board_file_named_by_hand_keeps_its_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("draft.json");
+    let board = Board {
+        title: "Dune".to_owned(),
+        ..Board::default()
+    };
+    storysquish::storage::save(&path, &board).unwrap();
+    let settings_path = dir.path().join("settings.json");
+    let mut harness = Harness::builder()
+        .with_size(WINDOW)
+        .build_eframe(move |cc| PlannerApp::new(cc, board, path, settings_path, None));
+    harness.run();
+
+    harness.get_all_by_value("Dune").next().unwrap().focus();
+    harness.run();
+    harness.event(egui::Event::Text(" Messiah".to_owned()));
+    harness.run();
+
+    assert_eq!(harness.state().board_path(), dir.path().join("draft.json"));
 }
 
 #[test]
@@ -756,6 +816,27 @@ fn new_starts_an_empty_board_in_its_own_file() {
     assert_eq!(
         saved.previous_board_path.as_deref(),
         Some(old_path.as_path())
+    );
+}
+
+#[test]
+fn new_from_an_opened_backup_starts_outside_the_backups_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let backup = dir.path().join("board-backups/board-001795342060789.json");
+    let board = board_with_scenes(&["Opening"]);
+    storysquish::storage::save(&backup, &board).unwrap();
+    let settings_path = dir.path().join("settings.json");
+    let mut harness = Harness::builder()
+        .with_size(WINDOW)
+        .build_eframe(move |cc| PlannerApp::new(cc, board, backup, settings_path, None));
+    harness.run();
+
+    harness.get_by_label("New").click();
+    harness.run();
+
+    assert_eq!(
+        harness.state().board_path(),
+        dir.path().join("Untitled_Novel.json")
     );
 }
 
@@ -1380,7 +1461,7 @@ fn opening_a_board_adds_the_prefix_to_its_repo_name() {
 
     let saved = storysquish::settings::load(&dir.path().join("settings.json")).unwrap();
     assert_eq!(
-        saved.repo(&dir.path().join("board.json")),
+        saved.repo(&dir.path().join("Dune.json")),
         Some("someone/storysquish-dune")
     );
 }
