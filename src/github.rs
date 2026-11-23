@@ -195,6 +195,17 @@ impl Client {
     /// name.
     pub fn suggest_repo_name(&self, title: &str) -> Result<String> {
         let login = self.login()?;
+        self.free_repo_name(&login, title)
+    }
+
+    /// [`Self::suggest_repo_name`] as `owner/name` on the token's account.
+    pub fn suggest_repo(&self, title: &str) -> Result<String> {
+        let login = self.login()?;
+        let name = self.free_repo_name(&login, title)?;
+        Ok(format!("{login}/{name}"))
+    }
+
+    fn free_repo_name(&self, login: &str, title: &str) -> Result<String> {
         let base_name = suggested_repo_name(title);
         for attempt in 1..=MAX_REPO_NAME_ATTEMPTS {
             let name = numbered_repo_name(&base_name, attempt);
@@ -619,6 +630,9 @@ pub enum Job {
     SuggestRepoName {
         title: String,
     },
+    SuggestRepo {
+        title: String,
+    },
     CreateRepo {
         name: String,
         title: String,
@@ -650,6 +664,7 @@ pub enum Reply {
         repo: String,
     },
     SuggestedRepoName(String),
+    SuggestedRepo(String),
     CreatedRepo(String),
     Fetched(String),
     Boards(Vec<CloudBoard>),
@@ -703,6 +718,7 @@ pub fn run(client: &Client, job: Job) -> Reply {
         Job::SuggestRepoName { title } => client
             .suggest_repo_name(&title)
             .map(Reply::SuggestedRepoName),
+        Job::SuggestRepo { title } => client.suggest_repo(&title).map(Reply::SuggestedRepo),
         Job::CreateRepo { name, title } => {
             client.create_repo(&name, &title).map(Reply::CreatedRepo)
         }
