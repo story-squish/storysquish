@@ -120,11 +120,6 @@ struct BackupState {
     token: Option<String>,
     token_draft: String,
     repo_draft: String,
-    /// The board the repo field was last offered a name for since Settings
-    /// opened, so a failed or ignored suggestion is not fetched again.
-    repo_draft_suggested_for: Option<PathBuf>,
-    /// Apart from `in_flight` so the lookup never holds up a backup.
-    repo_draft_suggestion: Option<github::Pending>,
     repo_invalid: bool,
     in_flight: Option<(BackupTask, github::Pending)>,
     board_changed: bool,
@@ -1085,53 +1080,6 @@ impl PlannerApp {
         }
     }
 
-    /// Fills the empty repo field of an unlinked board with a free
-    /// `owner/name` from the token's account and the board title; it stays
-    /// a draft until edited, and the first backup offers to create it.
-    fn suggest_repo_draft(&mut self) {
-        if self.settings_dialog.is_none()
-            || self.backup.repo_draft_suggestion.is_some()
-            || self.repo().is_some()
-            || !self.backup.repo_draft.trim().is_empty()
-            || self.backup.repo_draft_suggested_for.as_ref() == Some(&self.path)
-        {
-            return;
-        }
-        let Some(client) = self.github_client() else {
-            return;
-        };
-        let title = self.board.title.clone();
-        self.backup.repo_draft_suggestion = Some(github::Pending::start(
-            client,
-            github::Job::SuggestRepo { title },
-        ));
-        self.backup.repo_draft_suggested_for = Some(self.path.clone());
-    }
-
-    /// A failed lookup leaves the field empty, as it was before.
-    fn receive_repo_draft_suggestion(&mut self, ctx: &egui::Context) {
-        let Some(pending) = &self.backup.repo_draft_suggestion else {
-            return;
-        };
-        let Some(reply) = pending.poll() else {
-            ctx.request_repaint_after(BACKUP_POLL);
-            return;
-        };
-        self.backup.repo_draft_suggestion = None;
-        if let github::Reply::SuggestedRepo(repo) = reply {
-            self.fill_repo_draft(repo);
-        }
-    }
-
-    fn fill_repo_draft(&mut self, repo: String) {
-        if self.backup.repo_draft_suggested_for.as_ref() == Some(&self.path)
-            && self.repo().is_none()
-            && self.backup.repo_draft.trim().is_empty()
-        {
-            self.backup.repo_draft = repo;
-        }
-    }
-
     /// Suggests a name from the board title, which a background check then
     /// moves past names the account already uses unless it was edited.
     fn offer_repo_creation(&mut self, missing: Option<String>) {
@@ -1244,7 +1192,6 @@ impl PlannerApp {
                 }
             }
             github::Reply::RepoMissing { repo } => self.handle_missing_repo(repo),
-            github::Reply::SuggestedRepo(repo) => self.fill_repo_draft(repo),
             github::Reply::SuggestedRepoName(name) => {
                 if let Some(creation) = &mut self.backup.repo_creation
                     && !creation.name_edited
@@ -1871,7 +1818,6 @@ impl PlannerApp {
             );
             if ui.button("Settings").clicked() {
                 self.settings_dialog = Some(SettingsDialog::default());
-                self.backup.repo_draft_suggested_for = None;
             }
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -3243,8 +3189,6 @@ impl eframe::App for PlannerApp {
         self.receive_github_reply(ctx);
         self.start_queued_push();
         self.start_queued_dialog_job();
-        self.suggest_repo_draft();
-        self.receive_repo_draft_suggestion(ctx);
         self.back_up_to_github_if_due(ctx);
     }
 

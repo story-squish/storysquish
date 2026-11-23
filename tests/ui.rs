@@ -16,12 +16,9 @@ fn launch(board: Board) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("board.json");
     let settings_path = dir.path().join("config/storysquish/settings.json");
-    let api_base = fake_github(&[]);
     let mut harness = Harness::builder()
         .with_size(WINDOW)
-        .build_eframe(move |cc| {
-            PlannerApp::new(cc, board, path, settings_path, None).with_github_api_base(&api_base)
-        });
+        .build_eframe(move |cc| PlannerApp::new(cc, board, path, settings_path, None));
     harness.run();
     Fixture { harness, dir }
 }
@@ -695,29 +692,11 @@ fn launch_connected(board: Board) -> (Harness<'static, PlannerApp>, TempDir) {
     let settings_path = dir.path().join("settings.json");
     storysquish::github::save_token(&storysquish::github::token_path(&settings_path), "t").unwrap();
     let board_path = dir.path().join("board.json");
-    let api_base = fake_github(&[]);
     let mut harness = Harness::builder()
         .with_size(WINDOW)
-        .build_eframe(move |cc| {
-            PlannerApp::new(cc, board, board_path, settings_path, None)
-                .with_github_api_base(&api_base)
-        });
+        .build_eframe(move |cc| PlannerApp::new(cc, board, board_path, settings_path, None));
     harness.run();
     (harness, dir)
-}
-
-fn github_field_value(harness: &Harness<'_, PlannerApp>) -> String {
-    github_field(harness).value().unwrap_or_default()
-}
-
-/// Waits out the name Settings suggests for an unlinked board so typing
-/// replaces it instead of racing it.
-fn replace_suggested_repo(harness: &mut Harness<'_, PlannerApp>, text: &str) {
-    step_until(harness, |h| !github_field_value(h).is_empty());
-    github_field(harness).focus();
-    harness.run();
-    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
-    github_field(harness).type_text(text);
 }
 
 #[test]
@@ -725,7 +704,9 @@ fn pasting_a_repo_url_stores_the_repo() {
     let (mut harness, dir) = launch_connected(Board::default());
     open_settings(&mut harness);
 
-    replace_suggested_repo(&mut harness, "https://github.com/someone/storysquish-dune");
+    github_field(&harness).focus();
+    harness.run();
+    github_field(&harness).type_text("https://github.com/someone/storysquish-dune");
     harness.run();
     assert_eq!(
         harness
@@ -750,7 +731,9 @@ fn pasting_a_repo_url_stores_the_repo() {
 fn new_starts_an_empty_board_in_its_own_file() {
     let (mut harness, dir) = launch_connected(board_with_scenes(&["Opening"]));
     open_settings(&mut harness);
-    replace_suggested_repo(&mut harness, "someone/storysquish-dune");
+    github_field(&harness).focus();
+    harness.run();
+    github_field(&harness).type_text("someone/storysquish-dune");
     harness.run();
     harness.key_press(egui::Key::Escape);
     harness.run();
@@ -781,7 +764,9 @@ fn text_that_is_not_a_repo_is_flagged_and_not_saved() {
     let (mut harness, _dir) = launch_connected(Board::default());
     open_settings(&mut harness);
 
-    replace_suggested_repo(&mut harness, "my novel");
+    github_field(&harness).focus();
+    harness.run();
+    github_field(&harness).type_text("my novel");
     harness.run();
 
     assert!(
@@ -1265,31 +1250,6 @@ fn the_suggested_repo_name_can_be_changed_before_creating() {
     step_until(&mut harness, |h| linked_repo(h).is_some());
 
     assert_eq!(linked_repo(&harness).as_deref(), Some("someone/arrakis"));
-}
-
-#[test]
-fn settings_suggests_a_free_repo_on_the_account_without_linking_it() {
-    let taken = Board::default();
-    let (mut harness, _dir) = launch_with_fake_github(
-        titled_board("Dune"),
-        None,
-        &[("someone/storysquish-dune", &taken)],
-    );
-    open_settings(&mut harness);
-    step_until(&mut harness, |h| !github_field_value(h).is_empty());
-
-    assert_eq!(github_field_value(&harness), "someone/storysquish-dune-2");
-    assert_eq!(linked_repo(&harness), None);
-}
-
-#[test]
-fn settings_keeps_the_linked_repo_in_the_repo_field() {
-    let (mut harness, _dir) =
-        launch_with_fake_github(titled_board("Dune"), Some("someone/my-novel"), &[]);
-    open_settings(&mut harness);
-    harness.run_steps(20);
-
-    assert_eq!(github_field_value(&harness), "someone/my-novel");
 }
 
 #[test]
