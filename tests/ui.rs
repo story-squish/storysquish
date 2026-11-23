@@ -1839,3 +1839,101 @@ fn closing_on_a_network_that_never_answers_gives_up_and_flags_the_board() {
     assert!(saved_unpushed(&dir, "Dune.json"));
     drop(silent);
 }
+
+fn wait_for_spellcheck(harness: &mut Harness<'_, PlannerApp>) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !harness.state().spellcheck_ready() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "dictionary never loaded"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        harness.step();
+    }
+    harness.run();
+}
+
+fn open_prose(harness: &mut Harness<'_, PlannerApp>, text: &str) {
+    harness.get_by_label("Rain").click();
+    harness.run();
+    harness.get_by_label("Write prose").click();
+    harness.run();
+    labelled_text_input(harness, "SCENE 01  Rain").focus();
+    harness.run();
+    labelled_text_input(harness, "SCENE 01  Rain").type_text(text);
+    harness.run();
+}
+
+#[test]
+fn right_click_on_misspelling_replaces_it_with_a_suggestion() {
+    let Fixture { mut harness, .. } = launch(board_with_scenes(&["Rain"]));
+    wait_for_spellcheck(&mut harness);
+    open_prose(&mut harness, "The wrold");
+
+    labelled_text_input(&harness, "SCENE 01  Rain").click_secondary();
+    harness.run();
+    harness.get_by_label("world").click();
+    harness.run();
+
+    assert_eq!(harness.state().board().scenes[0].text, "The world");
+}
+
+#[test]
+fn added_words_and_character_names_are_not_misspellings() {
+    let mut board = board_with_scenes(&["Rain"]);
+    board.add_character("Zyx");
+    let Fixture { mut harness, dir } = launch(board);
+    wait_for_spellcheck(&mut harness);
+    open_prose(&mut harness, "Zyx saw grimdark");
+
+    labelled_text_input(&harness, "SCENE 01  Rain").click_secondary();
+    harness.run();
+    harness.get_by_label("Add “grimdark” to dictionary").click();
+    harness.run();
+
+    let saved =
+        storysquish::settings::load(&dir.path().join("config/storysquish/settings.json")).unwrap();
+    assert!(saved.spelling_words.contains("grimdark"));
+
+    labelled_text_input(&harness, "SCENE 01  Rain").click_secondary();
+    harness.run();
+    assert!(
+        harness
+            .query_by_label("Add “grimdark” to dictionary")
+            .is_none()
+    );
+}
+
+#[test]
+fn choosing_a_dictionary_in_settings_saves_and_loads_it() {
+    let Fixture { mut harness, dir } = launch(board_with_scenes(&["Rain"]));
+    let settings_path = dir.path().join("config/storysquish/settings.json");
+    let spellcheck_picker = |harness: &Harness<'_, PlannerApp>| {
+        harness
+            .get_by(|node| {
+                node.role() == egui::accesskit::Role::ComboBox
+                    && node.label().as_deref() == Some("SPELLCHECK")
+            })
+            .click();
+    };
+
+    harness.get_by_label("Settings").click();
+    harness.run();
+    spellcheck_picker(&harness);
+    harness.run();
+    harness.get_by_label("English (UK)").click();
+    harness.run();
+
+    let saved = storysquish::settings::load(&settings_path).unwrap();
+    assert_eq!(saved.spellcheck_dictionary.0.as_deref(), Some("en_GB"));
+    wait_for_spellcheck(&mut harness);
+
+    spellcheck_picker(&harness);
+    harness.run();
+    harness.get_by_label("Off").click();
+    harness.run();
+
+    let saved = storysquish::settings::load(&settings_path).unwrap();
+    assert_eq!(saved.spellcheck_dictionary.0, None);
+    assert!(!harness.state().spellcheck_ready());
+}

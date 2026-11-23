@@ -1,3 +1,5 @@
+mod spellcheck;
+
 use std::collections::HashSet;
 use std::f32::consts::{FRAC_PI_2, TAU};
 use std::path::{Path, PathBuf};
@@ -11,7 +13,8 @@ use eframe::egui::{
 use crate::github::{self, CloudBoard, Revision};
 use crate::history::History;
 use crate::model::{Act, Board, Character, Id, Location, Scene, Status};
-use crate::settings::{self, Settings};
+use crate::settings::{self, Settings, SpellcheckDictionary};
+use crate::spelling::{self, DictionaryInfo, KnownWords};
 use crate::theme::{ColorScheme, Palette};
 use crate::{outline, storage};
 
@@ -306,12 +309,14 @@ pub struct PlannerApp {
     local_recovery: Option<LocalRecovery>,
     backup: BackupState,
     colors: Palette,
+    spellcheck: spellcheck::Spellcheck,
 }
 
 #[derive(Debug, Default)]
 struct SettingsDialog {
     save_error: Option<String>,
     focus_github_token: bool,
+    dictionaries: Option<Vec<DictionaryInfo>>,
 }
 
 impl PlannerApp {
@@ -376,7 +381,9 @@ impl PlannerApp {
             local_recovery: None,
             backup,
             colors,
+            spellcheck: spellcheck::Spellcheck::default(),
         };
+        app.load_spellcheck_dictionary(&cc.egui_ctx);
         app.follow_title_in_file_name();
         app.resume_unpushed_backups();
         app
@@ -394,6 +401,37 @@ impl PlannerApp {
     pub fn offering_repo_on_first_change(mut self) -> Self {
         self.backup.new_board = Some(self.path.clone());
         self
+    }
+
+    pub fn spellcheck_ready(&self) -> bool {
+        self.spellcheck.is_ready()
+    }
+
+    fn load_spellcheck_dictionary(&mut self, ctx: &egui::Context) {
+        let dirs = dictionary_dirs(&self.settings_path);
+        let dictionary = self.settings.spellcheck_dictionary.0.clone();
+        self.spellcheck.load(ctx, dictionary.as_deref(), &dirs);
+    }
+
+    fn set_spellcheck_dictionary(&mut self, ctx: &egui::Context, dictionary: Option<String>) {
+        self.settings.spellcheck_dictionary = SpellcheckDictionary(dictionary);
+        self.save_settings_reporting_errors();
+        self.load_spellcheck_dictionary(ctx);
+    }
+
+    fn refresh_known_words(&mut self) {
+        let names = self.board.characters.iter().map(|c| c.name.as_str());
+        let places = self.board.locations.iter().map(|l| l.name.as_str());
+        let known = KnownWords::new(&self.settings.spelling_words, names.chain(places));
+        self.spellcheck.set_known_words(known);
+    }
+
+    fn add_spelling_word_if_asked(&mut self, ctx: &egui::Context) {
+        if let Some(word) = self.spellcheck.take_word_to_add() {
+            self.settings.spelling_words.insert(word);
+            self.save_settings_reporting_errors();
+            ctx.request_repaint();
+        }
     }
 
     pub fn board(&self) -> &Board {
@@ -2644,7 +2682,7 @@ impl PlannerApp {
 
         close |= inspector_header(ui, colors, "CHARACTER", display_name(&character.name));
 
-        changed |= character_profile_fields(ui, colors, character);
+        changed |= character_profile_fields(ui, colors, &mut self.spellcheck, character);
 
         let plural = if pov_count == 1 { "" } else { "s" };
         ui.label(
@@ -2872,13 +2910,14 @@ impl PlannerApp {
             .changed();
 
         let notes_label = field_label(ui, colors, "Notes");
-        changed |= ui
-            .add(
-                TextEdit::multiline(&mut location.notes)
-                    .hint_text("Look, sound, smell, history, who goes there.")
-                    .desired_rows(8)
-                    .desired_width(f32::INFINITY),
-            )
+        let notes = TextEdit::multiline(&mut location.notes)
+            .hint_text("Look, sound, smell, history, who goes there.")
+            .desired_rows(8)
+            .desired_width(f32::INFINITY)
+            .show(ui);
+        changed |= self
+            .spellcheck
+            .check_field(ui, notes, &mut location.notes, colors.danger)
             .labelled_by(notes_label)
             .changed();
 
@@ -2963,13 +3002,14 @@ impl PlannerApp {
         changed |= title.changed();
 
         let summary_label = field_label(ui, colors, "Summary / beat");
-        changed |= ui
-            .add(
-                TextEdit::multiline(&mut scene.summary)
-                    .hint_text("What happens in this scene. What changes.")
-                    .desired_rows(5)
-                    .desired_width(f32::INFINITY),
-            )
+        let summary = TextEdit::multiline(&mut scene.summary)
+            .hint_text("What happens in this scene. What changes.")
+            .desired_rows(5)
+            .desired_width(f32::INFINITY)
+            .show(ui);
+        changed |= self
+            .spellcheck
+            .check_field(ui, summary, &mut scene.summary, colors.danger)
             .labelled_by(summary_label)
             .changed();
 
@@ -3109,28 +3149,7 @@ impl PlannerApp {
         }
         ui.add_space(6.0);
 
-        let mut changed = false;
-        egui::ScrollArea::vertical()
-            .auto_shrink(false)
-            .show(ui, |ui| {
-                let prose = ui.add_sized(
-                    ui.available_size(),
-                    TextEdit::multiline(&mut scene.text)
-                        .id_salt(("prose", &scene.id))
-                        .hint_text("Start writing…")
-                        .font(egui::FontId::proportional(16.0))
-                        .margin(Margin::same(14))
-                        .frame(
-                            Frame::new()
-                                .fill(colors.card)
-                                .stroke(Stroke::new(1.0, colors.line)),
-                        ),
-                );
-                changed = prose.changed();
-                if let Some(label) = prose_label {
-                    prose.labelled_by(label);
-                }
-            });
+        let changed = prose_editor(ui, colors, &mut self.spellcheck, scene, prose_label);
         if changed {
             self.mark_dirty();
         }
@@ -3475,14 +3494,62 @@ impl PlannerApp {
         ui.button("Recover from local…").clicked()
     }
 
+    fn spellcheck_section(
+        &self,
+        ui: &mut Ui,
+        dictionaries: &[DictionaryInfo],
+        chosen: &mut Option<String>,
+    ) {
+        let colors = self.colors;
+        let label = field_label(ui, colors, "Spellcheck");
+        let selected_text = match chosen.as_deref() {
+            None => "Off".to_owned(),
+            Some(id) => dictionaries
+                .iter()
+                .find(|info| info.id == id)
+                .map_or_else(|| id.to_owned(), |info| info.name.clone()),
+        };
+        ComboBox::from_id_salt("spellcheck_dictionary")
+            .selected_text(selected_text)
+            .width(ui.available_width())
+            .show_ui(ui, |ui| {
+                ui.selectable_value(chosen, None, "Off");
+                for info in dictionaries {
+                    ui.selectable_value(chosen, Some(info.id.clone()), &info.name);
+                }
+            })
+            .response
+            .labelled_by(label);
+        let (note, color) = match &self.spellcheck.status {
+            spellcheck::Status::Loading(_) => ("Loading dictionary…".to_owned(), colors.muted),
+            spellcheck::Status::Failed(error) => (error.clone(), colors.danger),
+            spellcheck::Status::Off | spellcheck::Status::Ready(_) => (
+                format!(
+                    "Right-click an underlined word for suggestions. For other languages, \
+                     add Hunspell .aff and .dic files to {}.",
+                    dictionary_dirs(&self.settings_path)[0].display()
+                ),
+                colors.muted,
+            ),
+        };
+        ui.label(RichText::new(note).small().color(color));
+    }
+
     fn settings_dialog(&mut self, ctx: &egui::Context) {
         let Some(dialog) = &mut self.settings_dialog else {
             return;
         };
         let save_error = dialog.save_error.clone();
         let focus_github_token = std::mem::take(&mut dialog.focus_github_token);
+        let dictionaries = dialog
+            .dictionaries
+            .get_or_insert_with(|| {
+                spelling::available_dictionaries(&dictionary_dirs(&self.settings_path))
+            })
+            .clone();
         let colors = self.colors;
         let mut chosen = self.settings.color_scheme;
+        let mut chosen_dictionary = self.settings.spellcheck_dictionary.0.clone();
         let mut close = false;
         let mut board_file_action = None;
         let mut backup_action = None;
@@ -3490,24 +3557,9 @@ impl PlannerApp {
             ui.set_width(360.0);
             ui.heading("Settings");
 
-            let scheme_label = field_label(ui, colors, "Color scheme");
-            ui.horizontal(|ui| {
-                scheme_swatch(ui, chosen.palette());
-                ComboBox::from_id_salt("color_scheme")
-                    .selected_text(chosen.name())
-                    .width(ui.available_width())
-                    .height(f32::INFINITY)
-                    .show_ui(ui, |ui| {
-                        for scheme in ColorScheme::ALL {
-                            ui.horizontal(|ui| {
-                                scheme_swatch(ui, scheme.palette());
-                                ui.selectable_value(&mut chosen, scheme, scheme.name());
-                            });
-                        }
-                    })
-                    .response
-                    .labelled_by(scheme_label);
-            });
+            color_scheme_picker(ui, colors, &mut chosen);
+
+            self.spellcheck_section(ui, &dictionaries, &mut chosen_dictionary);
 
             let board_file_label = field_label(ui, colors, "Board file");
             ui.label(RichText::new(self.path.display().to_string()).small())
@@ -3564,6 +3616,9 @@ impl PlannerApp {
 
         if chosen != self.settings.color_scheme {
             self.set_color_scheme(ctx, chosen);
+        }
+        if chosen_dictionary != self.settings.spellcheck_dictionary.0 {
+            self.set_spellcheck_dictionary(ctx, chosen_dictionary);
         }
         match board_file_action {
             Some(BoardFileAction::Open) => self.open_board_file(),
@@ -3648,6 +3703,7 @@ impl eframe::App for PlannerApp {
         self.offer_repo_for_new_board(ctx);
         self.back_up_to_github_if_due(ctx);
         self.add_prefix_to_open_repo(ctx);
+        self.spellcheck.receive_loaded();
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
@@ -3655,6 +3711,7 @@ impl eframe::App for PlannerApp {
         let ctx = ui.ctx().clone();
         self.handle_shortcuts(&ctx);
         self.drop_stale_pov_filter();
+        self.refresh_known_words();
 
         egui::Panel::top("header")
             .frame(
@@ -3709,6 +3766,7 @@ impl eframe::App for PlannerApp {
             });
 
         self.settings_dialog(&ctx);
+        self.add_spelling_word_if_asked(&ctx);
         self.local_recovery_dialog(&ctx);
         self.restore_dialog(&ctx);
         self.cloud_open_dialog(&ctx);
@@ -3793,7 +3851,76 @@ fn classification_fields(
     changed
 }
 
-fn character_profile_fields(ui: &mut Ui, colors: Palette, character: &mut Character) -> bool {
+fn prose_editor(
+    ui: &mut Ui,
+    colors: Palette,
+    spellcheck: &mut spellcheck::Spellcheck,
+    scene: &mut Scene,
+    label: Option<egui::Id>,
+) -> bool {
+    let mut changed = false;
+    egui::ScrollArea::vertical()
+        .auto_shrink(false)
+        .show(ui, |ui| {
+            let prose = ui
+                .allocate_ui_with_layout(
+                    ui.available_size(),
+                    Layout::centered_and_justified(ui.layout().main_dir()),
+                    |ui| {
+                        TextEdit::multiline(&mut scene.text)
+                            .id_salt(("prose", &scene.id))
+                            .hint_text("Start writing…")
+                            .font(egui::FontId::proportional(16.0))
+                            .margin(Margin::same(14))
+                            .frame(
+                                Frame::new()
+                                    .fill(colors.card)
+                                    .stroke(Stroke::new(1.0, colors.line)),
+                            )
+                            .show(ui)
+                    },
+                )
+                .inner;
+            let prose = spellcheck.check_field(ui, prose, &mut scene.text, colors.danger);
+            changed = prose.changed();
+            if let Some(label) = label {
+                prose.labelled_by(label);
+            }
+        });
+    changed
+}
+
+fn color_scheme_picker(ui: &mut Ui, colors: Palette, chosen: &mut ColorScheme) {
+    let scheme_label = field_label(ui, colors, "Color scheme");
+    ui.horizontal(|ui| {
+        scheme_swatch(ui, chosen.palette());
+        ComboBox::from_id_salt("color_scheme")
+            .selected_text(chosen.name())
+            .width(ui.available_width())
+            .height(f32::INFINITY)
+            .show_ui(ui, |ui| {
+                for scheme in ColorScheme::ALL {
+                    ui.horizontal(|ui| {
+                        scheme_swatch(ui, scheme.palette());
+                        ui.selectable_value(chosen, scheme, scheme.name());
+                    });
+                }
+            })
+            .response
+            .labelled_by(scheme_label);
+    });
+}
+
+fn dictionary_dirs(settings_path: &Path) -> Vec<PathBuf> {
+    spelling::dictionary_dirs(settings_path.parent().unwrap_or(Path::new(".")))
+}
+
+fn character_profile_fields(
+    ui: &mut Ui,
+    colors: Palette,
+    spellcheck: &mut spellcheck::Spellcheck,
+    character: &mut Character,
+) -> bool {
     let mut changed = false;
     let name_label = field_label(ui, colors, "Name");
     changed |= ui
@@ -3822,24 +3949,24 @@ fn character_profile_fields(ui: &mut Ui, colors: Palette, character: &mut Charac
         .changed();
 
     let goal_label = field_label(ui, colors, "Goal");
-    changed |= ui
-        .add(
-            TextEdit::multiline(&mut character.goal)
-                .hint_text("What they want, and what stands in the way.")
-                .desired_rows(2)
-                .desired_width(f32::INFINITY),
-        )
+    let goal = TextEdit::multiline(&mut character.goal)
+        .hint_text("What they want, and what stands in the way.")
+        .desired_rows(2)
+        .desired_width(f32::INFINITY)
+        .show(ui);
+    changed |= spellcheck
+        .check_field(ui, goal, &mut character.goal, colors.danger)
         .labelled_by(goal_label)
         .changed();
 
     let notes_label = field_label(ui, colors, "Notes");
-    changed |= ui
-        .add(
-            TextEdit::multiline(&mut character.notes)
-                .hint_text("Appearance, voice, backstory, arc.")
-                .desired_rows(6)
-                .desired_width(f32::INFINITY),
-        )
+    let notes = TextEdit::multiline(&mut character.notes)
+        .hint_text("Appearance, voice, backstory, arc.")
+        .desired_rows(6)
+        .desired_width(f32::INFINITY)
+        .show(ui);
+    changed |= spellcheck
+        .check_field(ui, notes, &mut character.notes, colors.danger)
         .labelled_by(notes_label)
         .changed();
     changed

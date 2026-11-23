@@ -55,6 +55,10 @@ Import rather than by code sharing.
 - [`src/outline.rs`](src/outline.rs) — Markdown outline and manuscript export.
 - [`src/theme.rs`](src/theme.rs), [`src/migration.rs`](src/migration.rs) — color
   schemes and pre-rename data migration.
+- [`src/spelling.rs`](src/spelling.rs) — dictionaries (bundled under
+  `assets/dictionaries`, SCOWL-licensed) and the checker;
+  [`src/app/spellcheck.rs`](src/app/spellcheck.rs) draws underlines and the
+  suggestion menu over any `TextEdit`.
 
 ## Tests
 

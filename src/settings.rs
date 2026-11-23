@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::spelling::DEFAULT_DICTIONARY;
 use crate::theme::ColorScheme;
 use crate::{APP_NAME, storage};
 
@@ -35,6 +36,21 @@ pub struct Settings {
     unpushed: BTreeSet<PathBuf>,
     #[serde(alias = "gist-auto-backup")]
     pub github_auto_backup: bool,
+    pub spellcheck_dictionary: SpellcheckDictionary,
+    /// Added through "Add to dictionary", checked with every dictionary.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub spelling_words: BTreeSet<String>,
+}
+
+/// `None`, saved as `null`, turns spellchecking off.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SpellcheckDictionary(pub Option<String>);
+
+impl Default for SpellcheckDictionary {
+    fn default() -> Self {
+        Self(Some(DEFAULT_DICTIONARY.to_owned()))
+    }
 }
 
 impl Settings {
@@ -303,6 +319,28 @@ mod tests {
         let saved = fs::read_to_string(&path).unwrap();
         assert!(!saved.contains("gist"), "{saved}");
         assert!(saved.contains(r#""github-auto-backup": true"#), "{saved}");
+    }
+
+    #[test]
+    fn spellcheck_defaults_on_and_off_is_remembered() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        assert_eq!(
+            Settings::default().spellcheck_dictionary.0.as_deref(),
+            Some(DEFAULT_DICTIONARY)
+        );
+        let settings = Settings {
+            spellcheck_dictionary: SpellcheckDictionary(None),
+            spelling_words: BTreeSet::from(["grimdark".to_owned()]),
+            ..Settings::default()
+        };
+        save(&path, &settings).unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+        assert!(
+            saved.contains(r#""spellcheck-dictionary": null"#),
+            "{saved}"
+        );
+        assert_eq!(load(&path).unwrap(), settings);
     }
 
     #[test]
