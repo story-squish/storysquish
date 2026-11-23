@@ -164,7 +164,25 @@ impl Spellcheck {
             let start = output.galley.pos_from_cursor(CCursor::new(chars.start));
             let end = output.galley.pos_from_cursor(CCursor::new(chars.end));
             let wraps_onto_next_row = (start.min.y - end.min.y).abs() > 1.0;
-            if !wraps_onto_next_row {
+            if wraps_onto_next_row {
+                for row in &output.galley.rows {
+                    let r = row.rect();
+                    let y_matches = r.min.y <= start.min.y && start.min.y <= r.max.y
+                        || r.min.y <= end.min.y && end.min.y <= r.max.y;
+                    if !y_matches {
+                        continue;
+                    }
+                    let is_start_row = (r.min.y - start.min.y).abs() <= 1.0;
+                    let is_end_row = (r.min.y - end.min.y).abs() <= 1.0;
+                    let x_start = if is_start_row { start.min.x } else { r.min.x };
+                    let x_end = if is_end_row { end.min.x } else { r.max.x };
+                    let width = x_end - x_start;
+                    if width > 0.0 {
+                        let baseline = output.galley_pos + egui::vec2(x_start, r.max.y);
+                        paint_squiggle(&painter, baseline, width, color);
+                    }
+                }
+            } else {
                 let baseline = output.galley_pos + start.left_bottom().to_vec2();
                 paint_squiggle(&painter, baseline, end.min.x - start.min.x, color);
             }

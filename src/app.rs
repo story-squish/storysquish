@@ -62,6 +62,8 @@ const CLOSE_INSPECTOR: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE,
 const DELETE_SCENE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Delete);
 const DELETE_SCENE_BACKSPACE: KeyboardShortcut =
     KeyboardShortcut::new(Modifiers::NONE, Key::Backspace);
+const TOGGLE_ZEN: KeyboardShortcut =
+    KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::F);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SaveState {
@@ -104,6 +106,12 @@ impl View {
             Self::Relationships => "Relationships",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FocusTarget {
+    SceneTitle,
+    Search,
 }
 
 enum BoardFileAction {
@@ -294,14 +302,16 @@ pub struct PlannerApp {
     save_state: SaveState,
     focus_seen: FocusSnapshot,
     scene_to_delete: Option<Id>,
+    character_to_delete: Option<Id>,
+    location_to_delete: Option<Id>,
     alert: Option<String>,
-    focus_scene_title: bool,
-    focus_search: bool,
+    focus_target: Option<FocusTarget>,
     query: String,
     filter_status: Option<Status>,
     filter_act: Option<Act>,
     filter_pov: Option<Id>,
     show_stats: bool,
+    zen_mode: bool,
     window_title: String,
     settings: Settings,
     settings_path: PathBuf,
@@ -366,14 +376,16 @@ impl PlannerApp {
             save_state: SaveState::Saved,
             focus_seen: FocusSnapshot::default(),
             scene_to_delete: None,
+            character_to_delete: None,
+            location_to_delete: None,
             alert: startup_alert.or(settings_alert).or(token_alert),
-            focus_scene_title: false,
-            focus_search: false,
+            focus_target: None,
             query: String::new(),
             filter_status: None,
             filter_act: None,
             filter_pov: None,
             show_stats: false,
+            zen_mode: false,
             window_title: String::new(),
             settings,
             settings_path,
@@ -694,6 +706,8 @@ impl PlannerApp {
     fn dialog_open(&self) -> bool {
         self.alert.is_some()
             || self.scene_to_delete.is_some()
+            || self.character_to_delete.is_some()
+            || self.location_to_delete.is_some()
             || self.settings_dialog.is_some()
             || self.local_recovery.is_some()
             || self.backup.restore.is_some()
@@ -711,8 +725,13 @@ impl PlannerApp {
         if pressed(&NEW_SCENE) {
             self.add_scene();
         }
+        // egui matches Cmd+F against Cmd+Shift+F too, so Zen must be consumed before Find.
+        if pressed(&TOGGLE_ZEN) && self.view == View::Write {
+            self.zen_mode = !self.zen_mode;
+        }
         if pressed(&FIND) {
-            self.focus_search = true;
+            self.zen_mode = false;
+            self.focus_target = Some(FocusTarget::Search);
         }
         if pressed(&DUPLICATE_SCENE) {
             self.duplicate_selected_scene();
@@ -733,7 +752,11 @@ impl PlannerApp {
             self.shift_selection(1);
         }
         if pressed(&CLOSE_INSPECTOR) {
-            self.selected = None;
+            if self.zen_mode {
+                self.zen_mode = false;
+            } else {
+                self.selected = None;
+            }
         }
         if (pressed(&DELETE_SCENE) || pressed(&DELETE_SCENE_BACKSPACE))
             && let Some(Selection::Scene(id)) = self.selected.clone()
@@ -744,8 +767,14 @@ impl PlannerApp {
 
     fn add_scene(&mut self) {
         self.selected = Some(Selection::Scene(self.board.add_scene()));
-        self.focus_scene_title = true;
+        if !self.in_zen() {
+            self.focus_target = Some(FocusTarget::SceneTitle);
+        }
         self.save_now();
+    }
+
+    fn in_zen(&self) -> bool {
+        self.zen_mode && self.view == View::Write
     }
 
     fn duplicate_selected_scene(&mut self) {
@@ -2394,7 +2423,11 @@ impl PlannerApp {
                     .hint_text("Search scenes, prose, POV, location")
                     .desired_width(f32::INFINITY),
             );
-            if std::mem::take(&mut self.focus_search) {
+            if self
+                .focus_target
+                .take_if(|target| *target == FocusTarget::Search)
+                .is_some()
+            {
                 search.request_focus();
             }
         });
@@ -2556,7 +2589,7 @@ impl PlannerApp {
             self.selected = Some(Selection::Character(id));
         }
         if let Some(id) = to_delete {
-            self.delete_character(&id);
+            self.character_to_delete = Some(id);
         }
 
         let input = ui.add(
@@ -2639,7 +2672,22 @@ impl PlannerApp {
                 ui.label(RichText::new(self.board.scenes.len().to_string()).strong());
                 ui.end_row();
                 ui.label("Words");
-                ui.label(format_count(self.board.manuscript_word_count()));
+                let word_count = self.board.manuscript_word_count();
+                if let Some(goal) = self.settings.word_goal {
+                    #[expect(clippy::cast_precision_loss, reason = "word count fits in f32")]
+                    let pct = if goal > 0 {
+                        (word_count as f32 / goal as f32 * 100.0).min(999.0)
+                    } else {
+                        0.0
+                    };
+                    ui.label(format!(
+                        "{} / {} ({pct:.0}%)",
+                        format_count(word_count),
+                        format_count(goal)
+                    ));
+                } else {
+                    ui.label(format_count(word_count));
+                }
                 ui.end_row();
             });
     }
@@ -2737,7 +2785,7 @@ impl PlannerApp {
             self.shift_selection(offset);
         }
         if delete {
-            self.delete_character(id);
+            self.character_to_delete = Some(id.clone());
         } else if close {
             self.selected = None;
         }
@@ -2970,9 +3018,7 @@ impl PlannerApp {
             self.shift_selection(offset);
         }
         if delete {
-            self.board.delete_location(id);
-            self.selected = None;
-            self.save_now();
+            self.location_to_delete = Some(id.clone());
         } else if close {
             self.selected = None;
         }
@@ -3002,7 +3048,11 @@ impl PlannerApp {
                     .desired_width(f32::INFINITY),
             )
             .labelled_by(title_label);
-        if std::mem::take(&mut self.focus_scene_title) {
+        if self
+            .focus_target
+            .take_if(|target| *target == FocusTarget::SceneTitle)
+            .is_some()
+        {
             title.request_focus();
         }
         changed |= title.changed();
@@ -3132,13 +3182,39 @@ impl PlannerApp {
                 go_to = Some(index + 1);
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui
+                    .button(if self.zen_mode { "Exit Zen" } else { "Zen" })
+                    .on_hover_text(if self.zen_mode {
+                        format!(
+                            "Exit distraction-free mode (Esc or {})",
+                            ui.ctx().format_shortcut(&TOGGLE_ZEN)
+                        )
+                    } else {
+                        format!(
+                            "Distraction-free writing mode ({})",
+                            ui.ctx().format_shortcut(&TOGGLE_ZEN)
+                        )
+                    })
+                    .clicked()
+                {
+                    self.zen_mode = !self.zen_mode;
+                }
                 let words = scene.word_count();
+                let manuscript_text = if let Some(goal) = self.settings.word_goal {
+                    format!(
+                        "{} / {} goal in manuscript",
+                        format_count(total_words),
+                        format_count(goal)
+                    )
+                } else {
+                    format!("{} in manuscript", format_count(total_words))
+                };
                 ui.label(
                     RichText::new(format!(
-                        "{} word{} · {} in manuscript",
+                        "{} word{} · {}",
                         format_count(words),
                         plural(words),
-                        format_count(total_words)
+                        manuscript_text
                     ))
                     .small()
                     .color(colors.muted),
@@ -3390,7 +3466,6 @@ impl PlannerApp {
     }
 
     fn board_view(&mut self, ui: &mut Ui) {
-        let colors = self.colors;
         if self.board.scenes.is_empty() {
             ui.vertical_centered(|ui| {
                 ui.add_space(60.0);
@@ -3407,7 +3482,12 @@ impl PlannerApp {
             self.filter_pov.as_ref(),
         );
 
-        let dragging = egui::DragAndDrop::payload::<DraggedScene>(ui.ctx()).map(|p| p.0);
+        let allow_reorder = !self.filters_active();
+        let dragging = if allow_reorder {
+            egui::DragAndDrop::payload::<DraggedScene>(ui.ctx()).map(|p| p.0)
+        } else {
+            None
+        };
         let mut clicked = None;
         let mut moved = None;
 
@@ -3427,50 +3507,13 @@ impl PlannerApp {
                 for row in indices.chunks(columns) {
                     ui.horizontal_top(|ui| {
                         for &index in row {
-                            let scene = &self.board.scenes[index];
-                            let is_selected =
-                                self.selected == Some(Selection::Scene(scene.id.clone()));
-                            let is_dragged = dragging == Some(index);
-                            let pov = scene.pov.as_ref().and_then(|id| self.board.character(id));
-                            let footnote = card_footnote(&self.board, scene);
-
-                            let card = card_frame(colors, colors.card)
-                                .stroke(selection_stroke(colors, is_selected))
-                                .multiply_with_opacity(if is_dragged { 0.4 } else { 1.0 })
-                                .show(ui, |ui| {
-                                    scene_card_contents(ui, colors, index, scene, pov, &footnote);
-                                });
-
-                            let response = ui.interact(
-                                card.response.rect,
-                                egui::Id::unique(("scene-card", &scene.id)),
-                                Sense::click_and_drag(),
-                            );
-                            if response.drag_started() {
-                                egui::DragAndDrop::set_payload(ui.ctx(), DraggedScene(index));
+                            let (card_clicked, card_moved) =
+                                self.render_scene_card(ui, index, dragging, allow_reorder);
+                            if card_clicked {
+                                clicked = Some(self.board.scenes[index].id.clone());
                             }
-                            if response.clicked() {
-                                clicked = Some(scene.id.clone());
-                            }
-                            if let Some(from) = response.dnd_hover_payload::<DraggedScene>()
-                                && from.0 != index
-                            {
-                                ui.painter().rect_stroke(
-                                    card.response.rect.expand(4.0),
-                                    CornerRadius::same(6),
-                                    Stroke::new(2.0, colors.accent),
-                                    egui::StrokeKind::Outside,
-                                );
-                            }
-                            if let Some(from) = response.dnd_release_payload::<DraggedScene>() {
-                                moved = Some((from.0, index));
-                            }
-                            if response.hovered() {
-                                ui.ctx().set_cursor_icon(if dragging.is_some() {
-                                    egui::CursorIcon::Grabbing
-                                } else {
-                                    egui::CursorIcon::PointingHand
-                                });
+                            if let Some(pair) = card_moved {
+                                moved = Some(pair);
                             }
                         }
                     });
@@ -3484,6 +3527,83 @@ impl PlannerApp {
             self.board.move_scene(from, to);
             self.save_now();
         }
+    }
+
+    fn render_scene_card(
+        &self,
+        ui: &mut Ui,
+        index: usize,
+        dragging: Option<usize>,
+        allow_reorder: bool,
+    ) -> (bool, Option<(usize, usize)>) {
+        let colors = self.colors;
+        let scene = &self.board.scenes[index];
+        let is_selected = self.selected == Some(Selection::Scene(scene.id.clone()));
+        let is_dragged = dragging == Some(index);
+        let pov = scene.pov.as_ref().and_then(|id| self.board.character(id));
+        let footnote = card_footnote(&self.board, scene);
+
+        let card = card_frame(colors, colors.card)
+            .stroke(selection_stroke(colors, is_selected))
+            .multiply_with_opacity(if is_dragged { 0.4 } else { 1.0 })
+            .show(ui, |ui| {
+                scene_card_contents(ui, colors, index, scene, pov, &footnote);
+            });
+
+        let sense = if allow_reorder {
+            Sense::click_and_drag()
+        } else {
+            Sense::click()
+        };
+        let mut response = ui.interact(
+            card.response.rect,
+            egui::Id::unique(("scene-card", &scene.id)),
+            sense,
+        );
+        if !allow_reorder {
+            response = response.on_hover_text("Clear search and filters to reorder cards");
+        }
+        if allow_reorder && response.drag_started() {
+            egui::DragAndDrop::set_payload(ui.ctx(), DraggedScene(index));
+        }
+        let clicked = response.clicked();
+        let mut moved = None;
+        if allow_reorder
+            && let Some(from) = response.dnd_hover_payload::<DraggedScene>()
+            && from.0 != index
+        {
+            let rect = card.response.rect;
+            let insert_after = from.0 < index;
+            let edge_x = if insert_after {
+                rect.right() + 2.0
+            } else {
+                rect.left() - 2.0
+            };
+            ui.painter().line_segment(
+                [
+                    egui::pos2(edge_x, rect.top()),
+                    egui::pos2(edge_x, rect.bottom()),
+                ],
+                Stroke::new(3.0, colors.accent),
+            );
+            ui.painter().rect_stroke(
+                rect.expand(2.0),
+                CornerRadius::same(6),
+                Stroke::new(1.0, colors.accent),
+                egui::StrokeKind::Outside,
+            );
+        }
+        if allow_reorder && let Some(from) = response.dnd_release_payload::<DraggedScene>() {
+            moved = Some((from.0, index));
+        }
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(if dragging.is_some() {
+                egui::CursorIcon::Grabbing
+            } else {
+                egui::CursorIcon::PointingHand
+            });
+        }
+        (clicked, moved)
     }
 
     /// True when "Recover from local…" was clicked.
@@ -3548,6 +3668,43 @@ impl PlannerApp {
         ui.label(RichText::new(note).small().color(color));
     }
 
+    fn board_file_section(&self, ui: &mut Ui) -> Option<BoardFileAction> {
+        let colors = self.colors;
+        let mut action = None;
+        let board_file_label = field_label(ui, colors, "Board file");
+        ui.label(RichText::new(self.path.display().to_string()).small())
+            .labelled_by(board_file_label);
+        ui.horizontal(|ui| {
+            if ui
+                .button("Open…")
+                .on_hover_text("Switch to another board file")
+                .clicked()
+            {
+                action = Some(BoardFileAction::Open);
+            }
+            if ui
+                .button("Move…")
+                .on_hover_text("Save this board somewhere else and keep using it there")
+                .clicked()
+            {
+                action = Some(BoardFileAction::Move);
+            }
+        });
+        ui.label(
+            RichText::new(
+                "To use the board on several computers, move it into a synced folder \
+                 (iCloud Drive, Dropbox, OneDrive, Syncthing) and open it from there on \
+                 each one. Changes synced in are picked up automatically.",
+            )
+            .small()
+            .color(colors.muted),
+        );
+        if self.backups_section(ui) {
+            action = Some(BoardFileAction::RecoverFromLocal);
+        }
+        action
+    }
+
     fn settings_dialog(&mut self, ctx: &egui::Context) {
         let Some(dialog) = &mut self.settings_dialog else {
             return;
@@ -3563,6 +3720,10 @@ impl PlannerApp {
         let colors = self.colors;
         let mut chosen = self.settings.color_scheme;
         let mut chosen_dictionary = self.settings.spellcheck_dictionary.0.clone();
+        let mut chosen_goal = self
+            .settings
+            .word_goal
+            .map_or_else(String::new, |g| g.to_string());
         let mut close = false;
         let mut board_file_action = None;
         let mut backup_action = None;
@@ -3574,38 +3735,15 @@ impl PlannerApp {
 
             self.spellcheck_section(ui, &dictionaries, &mut chosen_dictionary);
 
-            let board_file_label = field_label(ui, colors, "Board file");
-            ui.label(RichText::new(self.path.display().to_string()).small())
-                .labelled_by(board_file_label);
-            ui.horizontal(|ui| {
-                if ui
-                    .button("Open…")
-                    .on_hover_text("Switch to another board file")
-                    .clicked()
-                {
-                    board_file_action = Some(BoardFileAction::Open);
-                }
-                if ui
-                    .button("Move…")
-                    .on_hover_text("Save this board somewhere else and keep using it there")
-                    .clicked()
-                {
-                    board_file_action = Some(BoardFileAction::Move);
-                }
-            });
-            ui.label(
-                RichText::new(
-                    "To use the board on several computers, move it into a synced folder \
-                     (iCloud Drive, Dropbox, OneDrive, Syncthing) and open it from there on \
-                     each one. Changes synced in are picked up automatically.",
-                )
-                .small()
-                .color(colors.muted),
-            );
+            let goal_label = field_label(ui, colors, "Manuscript word target");
+            ui.add(
+                TextEdit::singleline(&mut chosen_goal)
+                    .hint_text("e.g. 80000 (optional)")
+                    .desired_width(ui.available_width()),
+            )
+            .labelled_by(goal_label);
 
-            if self.backups_section(ui) {
-                board_file_action = Some(BoardFileAction::RecoverFromLocal);
-            }
+            board_file_action = self.board_file_section(ui);
 
             backup_action = self.github_section(ui, focus_github_token);
 
@@ -3633,6 +3771,12 @@ impl PlannerApp {
         if chosen_dictionary != self.settings.spellcheck_dictionary.0 {
             self.set_spellcheck_dictionary(ctx, chosen_dictionary);
         }
+        if let Ok(goal) = parse_word_goal(&chosen_goal)
+            && goal != self.settings.word_goal
+        {
+            self.settings.word_goal = goal;
+            self.save_settings_reporting_errors();
+        }
         match board_file_action {
             Some(BoardFileAction::Open) => self.open_board_file(),
             Some(BoardFileAction::Move) => self.move_board_file(),
@@ -3651,7 +3795,13 @@ impl PlannerApp {
     }
 
     fn dialogs(&mut self, ctx: &egui::Context) {
-        let colors = self.colors;
+        self.alert_dialog(ctx);
+        self.confirm_delete_scene_dialog(ctx);
+        self.confirm_delete_character_dialog(ctx);
+        self.confirm_delete_location_dialog(ctx);
+    }
+
+    fn alert_dialog(&mut self, ctx: &egui::Context) {
         if let Some(message) = &self.alert {
             let mut dismissed = false;
             let modal = egui::Modal::new(egui::Id::unique("alert")).show(ctx, |ui| {
@@ -3664,12 +3814,15 @@ impl PlannerApp {
                 self.alert = None;
             }
         }
+    }
 
+    fn confirm_delete_scene_dialog(&mut self, ctx: &egui::Context) {
+        let colors = self.colors;
         let Some(id) = self.scene_to_delete.clone() else {
             return;
         };
         let mut decision = None;
-        let modal = egui::Modal::new(egui::Id::unique("confirm")).show(ctx, |ui| {
+        let modal = egui::Modal::new(egui::Id::unique("confirm-delete-scene")).show(ctx, |ui| {
             ui.set_max_width(380.0);
             ui.label("Delete this scene?");
             ui.add_space(8.0);
@@ -3691,18 +3844,136 @@ impl PlannerApp {
         if modal.should_close() && decision.is_none() {
             decision = Some(false);
         }
-        let Some(accepted) = decision else {
+        if let Some(accepted) = decision {
+            self.scene_to_delete = None;
+            if accepted {
+                self.board.delete_scene(&id);
+                if self.selected == Some(Selection::Scene(id)) {
+                    self.selected = None;
+                }
+                self.save_now();
+            }
+        }
+    }
+
+    fn confirm_delete_character_dialog(&mut self, ctx: &egui::Context) {
+        let colors = self.colors;
+        let Some(id) = self.character_to_delete.clone() else {
             return;
         };
-        self.scene_to_delete = None;
-        if !accepted {
+        let char_name = self
+            .board
+            .character(&id)
+            .map_or("character", |c| display_name(&c.name));
+        let pov_count = self.board.pov_scene_count(&id);
+        let rel_count = self.board.relationships_of(&id).count();
+        let mut decision = None;
+        let modal =
+            egui::Modal::new(egui::Id::unique("confirm-delete-character")).show(ctx, |ui| {
+                ui.set_max_width(380.0);
+                ui.label(RichText::new(format!("Delete “{char_name}”?")).strong());
+                let mut effects = Vec::new();
+                if pov_count > 0 {
+                    effects.push(format!(
+                        "clears POV in {pov_count} scene{}",
+                        plural(pov_count)
+                    ));
+                }
+                if rel_count > 0 {
+                    effects.push(format!(
+                        "removes {rel_count} relationship{}",
+                        plural(rel_count)
+                    ));
+                }
+                if !effects.is_empty() {
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(format!("This {}.", effects.join(" and ")))
+                            .small()
+                            .color(colors.muted),
+                    );
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(RichText::new("Delete").color(Color32::WHITE))
+                                .fill(colors.danger),
+                        )
+                        .clicked()
+                    {
+                        decision = Some(true);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        decision = Some(false);
+                    }
+                });
+            });
+        if modal.should_close() && decision.is_none() {
+            decision = Some(false);
+        }
+        if let Some(accepted) = decision {
+            self.character_to_delete = None;
+            if accepted {
+                self.delete_character(&id);
+            }
+        }
+    }
+
+    fn confirm_delete_location_dialog(&mut self, ctx: &egui::Context) {
+        let colors = self.colors;
+        let Some(id) = self.location_to_delete.clone() else {
             return;
+        };
+        let loc_name = self
+            .board
+            .location(&id)
+            .map_or("location", |l| display_name(&l.name));
+        let scene_count = self.board.location_scene_count(&id);
+        let mut decision = None;
+        let modal = egui::Modal::new(egui::Id::unique("confirm-delete-location")).show(ctx, |ui| {
+            ui.set_max_width(380.0);
+            ui.label(RichText::new(format!("Delete “{loc_name}”?")).strong());
+            if scene_count > 0 {
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(format!(
+                        "This clears the location in {scene_count} scene{}.",
+                        plural(scene_count)
+                    ))
+                    .small()
+                    .color(colors.muted),
+                );
+            }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .add(
+                        egui::Button::new(RichText::new("Delete").color(Color32::WHITE))
+                            .fill(colors.danger),
+                    )
+                    .clicked()
+                {
+                    decision = Some(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    decision = Some(false);
+                }
+            });
+        });
+        if modal.should_close() && decision.is_none() {
+            decision = Some(false);
         }
-        self.board.delete_scene(&id);
-        if self.selected == Some(Selection::Scene(id)) {
-            self.selected = None;
+        if let Some(accepted) = decision {
+            self.location_to_delete = None;
+            if accepted {
+                self.board.delete_location(&id);
+                if self.selected == Some(Selection::Location(id)) {
+                    self.selected = None;
+                }
+                self.save_now();
+            }
         }
-        self.save_now();
     }
 }
 
@@ -3730,50 +4001,60 @@ impl eframe::App for PlannerApp {
         self.drop_stale_pov_filter();
         self.refresh_known_words();
 
-        egui::Panel::top("header")
-            .frame(
-                Frame::new()
-                    .fill(colors.header)
-                    .inner_margin(Margin::symmetric(16, 10)),
-            )
-            .show(ui, |ui| self.header(ui));
+        let in_zen = self.in_zen();
 
-        egui::Panel::left("characters")
-            .default_size(250.0)
-            .frame(Frame::new().fill(colors.sidebar).inner_margin(16))
-            .show(ui, |ui| {
-                if self.backup.token.is_none() {
-                    self.set_up_github_button(ui);
-                    ui.add_space(10.0);
-                }
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    self.filter_panel(ui);
-                    ui.add_space(10.0);
-                    self.characters_panel(ui);
-                    ui.add_space(10.0);
-                    self.locations_panel(ui);
-                });
-            });
+        if !in_zen {
+            egui::Panel::top("header")
+                .frame(
+                    Frame::new()
+                        .fill(colors.header)
+                        .inner_margin(Margin::symmetric(16, 10)),
+                )
+                .show(ui, |ui| self.header(ui));
 
-        if self.selected.is_some() {
-            egui::Panel::right("inspector")
-                .default_size(340.0)
-                .frame(Frame::new().fill(colors.inspector).inner_margin(16))
+            egui::Panel::left("characters")
+                .default_size(250.0)
+                .frame(Frame::new().fill(colors.sidebar).inner_margin(16))
                 .show(ui, |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| self.inspector_panel(ui));
+                    if self.backup.token.is_none() {
+                        self.set_up_github_button(ui);
+                        ui.add_space(10.0);
+                    }
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        self.filter_panel(ui);
+                        ui.add_space(10.0);
+                        self.characters_panel(ui);
+                        ui.add_space(10.0);
+                        self.locations_panel(ui);
+                    });
                 });
-        }
 
-        if self.show_stats {
-            egui::Panel::bottom("statistics")
-                .frame(Frame::new().fill(colors.inspector).inner_margin(12))
-                .show(ui, |ui| self.stats_panel(ui));
+            if self.selected.is_some() {
+                egui::Panel::right("inspector")
+                    .default_size(340.0)
+                    .frame(Frame::new().fill(colors.inspector).inner_margin(16))
+                    .show(ui, |ui| {
+                        egui::ScrollArea::vertical().show(ui, |ui| self.inspector_panel(ui));
+                    });
+            }
+
+            if self.show_stats {
+                egui::Panel::bottom("statistics")
+                    .frame(Frame::new().fill(colors.inspector).inner_margin(12))
+                    .show(ui, |ui| self.stats_panel(ui));
+            }
         }
 
         egui::CentralPanel::default()
-            .frame(Frame::new().fill(colors.board).inner_margin(22))
+            .frame(
+                Frame::new()
+                    .fill(colors.board)
+                    .inner_margin(if in_zen { 28 } else { 22 }),
+            )
             .show(ui, |ui| {
-                self.view_tabs(ui);
+                if !in_zen {
+                    self.view_tabs(ui);
+                }
                 match self.view {
                     View::Board => self.board_view(ui),
                     View::Write => self.write_view(ui),
@@ -4205,6 +4486,19 @@ fn plural(count: usize) -> &'static str {
     if count == 1 { "" } else { "s" }
 }
 
+fn parse_word_goal(text: &str) -> Result<Option<usize>, std::num::ParseIntError> {
+    let digits: String = text
+        .chars()
+        .filter(|c| !matches!(c, ',' | '.' | '_' | ' ' | '\u{a0}'))
+        .collect();
+    if digits.is_empty() {
+        return Ok(None);
+    }
+    digits
+        .parse::<usize>()
+        .map(|goal| (goal > 0).then_some(goal))
+}
+
 fn format_count(count: usize) -> String {
     let digits = count.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
@@ -4628,6 +4922,17 @@ mod tests {
         assert_eq!(card_columns(CARD_OUTER_WIDTH, 16.0), 1);
         assert_eq!(card_columns(3.0 * step - 16.0, 16.0), 3);
         assert_eq!(card_columns(3.0 * step - 17.0, 16.0), 2);
+    }
+
+    #[test]
+    fn word_goal_accepts_separators_and_ignores_text_that_is_not_a_number() {
+        assert_eq!(parse_word_goal("80000"), Ok(Some(80_000)));
+        assert_eq!(parse_word_goal(" 80,000 "), Ok(Some(80_000)));
+        assert_eq!(parse_word_goal("80.000"), Ok(Some(80_000)));
+        assert_eq!(parse_word_goal(""), Ok(None));
+        assert_eq!(parse_word_goal("0"), Ok(None));
+        assert!(parse_word_goal("80k").is_err());
+        assert!(parse_word_goal("-5").is_err());
     }
 
     #[test]

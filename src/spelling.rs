@@ -357,12 +357,22 @@ pub fn misspellings(
 /// Returns `false`, leaving `text` alone, when `chars` no longer holds
 /// `expected`, e.g. because the text changed while a menu was open.
 pub fn replace_word(text: &mut String, chars: Range<usize>, expected: &str, with: &str) -> bool {
-    let byte_at = |char_index: usize| {
-        text.char_indices()
-            .nth(char_index)
-            .map_or(text.len(), |(byte, _)| byte)
+    let mut indices = text
+        .char_indices()
+        .map(|(b, _)| b)
+        .chain(std::iter::once(text.len()));
+    let Some(start_byte) = indices.nth(chars.start) else {
+        return false;
     };
-    let bytes = byte_at(chars.start)..byte_at(chars.end);
+    let count = chars.end.saturating_sub(chars.start);
+    let Some(end_byte) = (if count == 0 {
+        Some(start_byte)
+    } else {
+        indices.nth(count - 1)
+    }) else {
+        return false;
+    };
+    let bytes = start_byte..end_byte;
     if text.get(bytes.clone()) != Some(expected) {
         return false;
     }
@@ -442,6 +452,21 @@ mod tests {
         assert!(!replace_word(&mut text, 5..10, "other", "world"));
         assert!(replace_word(&mut text, 5..10, "wrold", "world"));
         assert_eq!(text, "café world");
+    }
+
+    #[test]
+    fn replace_word_handles_text_edges_and_out_of_range_spans() {
+        let mut text = "teh".to_owned();
+        assert!(replace_word(&mut text, 0..3, "teh", "the"));
+        assert_eq!(text, "the");
+
+        let mut text = "naïve wrd".to_owned();
+        assert!(replace_word(&mut text, 6..9, "wrd", "word"));
+        assert_eq!(text, "naïve word");
+
+        assert!(!replace_word(&mut text, 8..20, "rd", "x"));
+        assert!(!replace_word(&mut text, 30..31, "", "x"));
+        assert_eq!(text, "naïve word");
     }
 
     #[test]

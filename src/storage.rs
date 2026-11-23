@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -42,7 +43,12 @@ pub fn write_atomically(path: &Path, contents: &str) -> Result<()> {
         fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
     let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, contents).with_context(|| format!("writing {}", tmp.display()))?;
+    let mut file = fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
+    file.write_all(contents.as_bytes())
+        .with_context(|| format!("writing {}", tmp.display()))?;
+    file.sync_all()
+        .with_context(|| format!("syncing {}", tmp.display()))?;
+    drop(file);
     fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))
 }
 

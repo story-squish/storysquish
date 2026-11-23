@@ -36,6 +36,9 @@ pub struct Settings {
     unpushed: BTreeSet<PathBuf>,
     #[serde(alias = "gist-auto-backup")]
     pub github_auto_backup: bool,
+    /// Target manuscript word count, shown in stats and write views.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub word_goal: Option<usize>,
     pub spellcheck_dictionary: SpellcheckDictionary,
     /// Added through "Add to dictionary", checked with every dictionary.
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
@@ -363,5 +366,31 @@ mod tests {
     fn default_path_lives_under_dot_config() {
         let path = default_settings_path().unwrap();
         assert!(path.ends_with("storysquish/settings.json"));
+    }
+
+    #[test]
+    fn word_goal_persists_and_is_optional() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+
+        let mut settings = Settings {
+            word_goal: Some(80_000),
+            ..Settings::default()
+        };
+        save(&path, &settings).unwrap();
+        let json = fs::read_to_string(&path).unwrap();
+        assert!(json.contains("\"word-goal\""), "field must appear when set");
+        let loaded = load(&path).unwrap();
+        assert_eq!(loaded.word_goal, Some(80_000));
+
+        settings.word_goal = None;
+        save(&path, &settings).unwrap();
+        let json = fs::read_to_string(&path).unwrap();
+        assert!(
+            !json.contains("word-goal"),
+            "field must be absent when None"
+        );
+        let loaded = load(&path).unwrap();
+        assert_eq!(loaded.word_goal, None);
     }
 }
