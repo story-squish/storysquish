@@ -8,7 +8,7 @@ use eframe::egui::{
     Layout, Margin, Modifiers, RichText, Sense, Stroke, TextEdit, Ui, Vec2,
 };
 
-use crate::gist::{self, CloudBoard, Revision};
+use crate::github::{self, CloudBoard, Revision};
 use crate::history::History;
 use crate::model::{Act, Board, Character, Id, Location, Scene, Status};
 use crate::settings::{self, Settings};
@@ -19,8 +19,8 @@ const SAVE_DEBOUNCE: Duration = Duration::from_secs(2);
 const DISK_POLL: Duration = Duration::from_secs(2);
 const BACKUP_INTERVAL: Duration = Duration::from_mins(30);
 const BACKUPS_KEPT: usize = 30;
-const GIST_PUSH_DELAY: Duration = Duration::from_secs(5);
-const GIST_POLL: Duration = Duration::from_millis(100);
+const BACKUP_PUSH_DELAY: Duration = Duration::from_secs(5);
+const BACKUP_POLL: Duration = Duration::from_millis(100);
 const NODE_RADIUS: f32 = 26.0;
 /// Short of the midpoint, so the labels of A→B and B→A land apart.
 const EDGE_LABEL_POSITION: f32 = 0.4;
@@ -95,16 +95,16 @@ enum BoardFileAction {
 }
 
 #[derive(Clone, Copy)]
-enum GistAction {
+enum BackupAction {
     Connect,
     Disconnect,
-    SetGistId,
+    SetRepo,
     BackUpNow,
     Restore,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GistTask {
+enum BackupTask {
     ManualPush,
     AutoPush,
     ListRevisions,
@@ -114,15 +114,15 @@ enum GistTask {
 }
 
 #[derive(Default)]
-struct GistState {
+struct BackupState {
     token: Option<String>,
     token_draft: String,
-    gist_id_draft: String,
-    gist_id_invalid: bool,
-    in_flight: Option<(GistTask, gist::Pending)>,
+    repo_draft: String,
+    repo_invalid: bool,
+    in_flight: Option<(BackupTask, github::Pending)>,
     board_changed: bool,
     /// Set by a title edit or a focus change, which push without waiting
-    /// out `GIST_PUSH_DELAY`.
+    /// out `BACKUP_PUSH_DELAY`.
     push_now: bool,
     last_edit: Option<Instant>,
     last_success: Option<Instant>,
@@ -131,19 +131,19 @@ struct GistState {
     /// open one if another board was opened meanwhile.
     pushed_board: Option<PathBuf>,
     /// Pushes for boards switched away from before their edits reached
-    /// the gist; they go ahead of cloud requests so a reopen fetches them.
-    queued_pushes: Vec<(PathBuf, gist::Job)>,
-    /// Boards edited here whose latest version is not yet in their gist,
+    /// GitHub; they go ahead of cloud requests so a reopen fetches them.
+    queued_pushes: Vec<(PathBuf, github::Job)>,
+    /// Boards edited here whose latest version is not yet in their repo,
     /// so the cloud copy must not overwrite them.
     unpushed_boards: HashSet<PathBuf>,
     api_base: Option<String>,
     error: Option<String>,
-    restore: Option<GistRestore>,
+    restore: Option<BackupRestore>,
     cloud: Option<CloudPicker>,
 }
 
 #[derive(Default)]
-struct GistRestore {
+struct BackupRestore {
     title: Option<String>,
     revisions: Option<Vec<Revision>>,
     error: Option<String>,
@@ -154,7 +154,7 @@ struct GistRestore {
 #[derive(Default)]
 struct CloudPicker {
     boards: Option<Vec<CloudBoard>>,
-    queued: Option<(GistTask, gist::Job)>,
+    queued: Option<(BackupTask, github::Job)>,
     error: Option<String>,
 }
 
@@ -220,7 +220,7 @@ pub struct PlannerApp {
     settings_path: PathBuf,
     settings_dialog: Option<SettingsDialog>,
     local_recovery: Option<LocalRecovery>,
-    gist: GistState,
+    backup: BackupState,
     colors: Palette,
 }
 
@@ -237,29 +237,28 @@ impl PlannerApp {
         settings_path: PathBuf,
         startup_alert: Option<String>,
     ) -> Self {
-        let (mut settings, settings_alert) = match settings::load(&settings_path) {
+        let (settings, settings_alert) = match settings::load(&settings_path) {
             Ok(settings) => (settings, None),
             Err(e) => (
                 Settings::default(),
                 Some(format!("Could not read settings, using defaults: {e:#}")),
             ),
         };
-        let (token, token_alert) = match gist::load_token(&gist::token_path(&settings_path)) {
+        let (token, token_alert) = match github::load_token(&github::token_path(&settings_path)) {
             Ok(token) => (token, None),
             Err(e) => (
                 None,
                 Some(format!("Could not read the GitHub token: {e:#}")),
             ),
         };
-        let claimed_gist_id = settings.claim_unclaimed_gist_id(&path);
-        let gist = GistState {
+        let backup = BackupState {
             token,
-            gist_id_draft: settings.gist_id(&path).unwrap_or_default().to_owned(),
-            ..GistState::default()
+            repo_draft: settings.repo(&path).unwrap_or_default().to_owned(),
+            ..BackupState::default()
         };
         let colors = settings.color_scheme.palette();
         apply_theme(&cc.egui_ctx, colors);
-        let mut app = Self {
+        Self {
             history: History::new(board.clone(), UNDO_LIMIT),
             board,
             disk_modified: storage::modified_time(&path),
@@ -288,18 +287,14 @@ impl PlannerApp {
             settings_path,
             settings_dialog: None,
             local_recovery: None,
-            gist,
+            backup,
             colors,
-        };
-        if claimed_gist_id {
-            app.save_settings_reporting_errors();
         }
-        app
     }
 
     #[must_use]
-    pub fn with_gist_api_base(mut self, api_base: &str) -> Self {
-        self.gist.api_base = Some(api_base.to_owned());
+    pub fn with_github_api_base(mut self, api_base: &str) -> Self {
+        self.backup.api_base = Some(api_base.to_owned());
         self
     }
 
@@ -353,8 +348,8 @@ impl PlannerApp {
     }
 
     fn save_now(&mut self) {
-        self.gist.board_changed = true;
-        self.gist.last_edit = Some(match self.save_state {
+        self.backup.board_changed = true;
+        self.backup.last_edit = Some(match self.save_state {
             SaveState::Pending(edited_at) => edited_at,
             _ => Instant::now(),
         });
@@ -446,8 +441,8 @@ impl PlannerApp {
             self.board = board;
             self.history.commit(&self.board);
             self.save_state = SaveState::Reloaded;
-            self.gist.board_changed = true;
-            self.gist.last_edit = Some(Instant::now());
+            self.backup.board_changed = true;
+            self.backup.last_edit = Some(Instant::now());
         }
     }
 
@@ -467,8 +462,8 @@ impl PlannerApp {
         if focus != self.focus_seen {
             self.focus_seen = focus;
             self.flush_pending_edits();
-            if self.gist.board_changed {
-                self.gist.push_now = true;
+            if self.backup.board_changed {
+                self.backup.push_now = true;
                 ctx.request_repaint();
             }
         }
@@ -493,8 +488,8 @@ impl PlannerApp {
             || self.scene_to_delete.is_some()
             || self.settings_dialog.is_some()
             || self.local_recovery.is_some()
-            || self.gist.restore.is_some()
-            || self.gist.cloud.is_some()
+            || self.backup.restore.is_some()
+            || self.backup.cloud.is_some()
     }
 
     /// Undo, Escape and Delete mean something different inside a text field,
@@ -761,7 +756,7 @@ impl PlannerApp {
         match storage::load(&path) {
             Ok(board) => {
                 self.flush_pending_edits();
-                self.queue_gist_push_of_open_board();
+                self.queue_push_of_open_board();
                 self.history = History::new(board.clone(), UNDO_LIMIT);
                 self.board = board;
                 self.selected = None;
@@ -778,7 +773,7 @@ impl PlannerApp {
         }
     }
 
-    /// The current board stays in its own file, with its gist link, and
+    /// The current board stays in its own file, with its repo link, and
     /// becomes the previous board.
     fn new_board_file(&mut self) {
         let board = Board::default();
@@ -792,42 +787,42 @@ impl PlannerApp {
     }
 
     fn open_cloud_picker(&mut self) {
-        self.gist.cloud = Some(CloudPicker {
-            queued: Some((GistTask::ListCloudBoards, gist::Job::ListBoards)),
+        self.backup.cloud = Some(CloudPicker {
+            queued: Some((BackupTask::ListCloudBoards, github::Job::ListBoards)),
             ..CloudPicker::default()
         });
     }
 
     fn start_queued_cloud_job(&mut self) {
-        if self.gist.in_flight.is_some() || !self.gist.queued_pushes.is_empty() {
+        if self.backup.in_flight.is_some() || !self.backup.queued_pushes.is_empty() {
             return;
         }
-        let Some((task, job)) = self.gist.cloud.as_mut().and_then(|c| c.queued.take()) else {
+        let Some((task, job)) = self.backup.cloud.as_mut().and_then(|c| c.queued.take()) else {
             return;
         };
-        self.start_gist_job(task, job);
+        self.start_github_job(task, job);
     }
 
-    /// A gist already linked to a local file reopens that file, with the
+    /// A repo already linked to a local file reopens that file, with the
     /// cloud version applied as an undoable change; otherwise the board
     /// gets a new file beside the current one.
-    fn open_cloud_board(&mut self, gist_id: String, board: Board) {
-        let linked = if self.gist_id().as_deref() == Some(gist_id.as_str()) {
+    fn open_cloud_board(&mut self, repo: String, board: Board) {
+        let linked = if self.repo().as_deref() == Some(repo.as_str()) {
             Some(self.path.clone())
         } else {
             self.settings
-                .boards_linked_to(&gist_id)
+                .boards_linked_to(&repo)
                 .find(|path| path.exists())
                 .map(Path::to_owned)
         };
         if let Some(path) = linked {
-            let local_is_newer = self.gist.unpushed_boards.contains(&path);
+            let local_is_newer = self.backup.unpushed_boards.contains(&path);
             if path != self.path && !self.switch_to_board_file(path) {
                 return;
             }
             if local_is_newer {
-                self.gist.board_changed = true;
-                self.gist.push_now = true;
+                self.backup.board_changed = true;
+                self.backup.push_now = true;
                 return;
             }
             self.replace_board(board);
@@ -838,15 +833,15 @@ impl PlannerApp {
                 self.alert = Some(format!("Could not save the cloud board: {e:#}"));
                 return;
             }
-            self.settings.set_gist_id(&path, Some(gist_id));
+            self.settings.set_repo(&path, Some(repo));
             if !self.switch_to_board_file(path) {
                 return;
             }
         }
-        if let gist::Job::Push { board_json, .. } = self.push_job() {
-            self.gist.last_pushed_json = Some(board_json);
+        if let github::Job::Push { board_json, .. } = self.push_job() {
+            self.backup.last_pushed_json = Some(board_json);
         }
-        self.gist.board_changed = false;
+        self.backup.board_changed = false;
     }
 
     fn move_board_file(&mut self) {
@@ -869,7 +864,7 @@ impl PlannerApp {
             return;
         }
         self.history.commit(&self.board);
-        self.settings.move_gist_id(&self.path, &path);
+        self.settings.move_repo(&self.path, &path);
         self.use_board_path(path);
     }
 
@@ -887,20 +882,20 @@ impl PlannerApp {
         self.last_backup = None;
         self.settings.board_path = Some(self.path.clone());
         self.save_settings_reporting_errors();
-        self.gist.gist_id_draft = self.gist_id().unwrap_or_default();
-        self.gist.gist_id_invalid = false;
-        self.gist.last_pushed_json = None;
-        self.gist.last_success = None;
-        self.gist.board_changed = false;
-        self.gist.push_now = false;
+        self.backup.repo_draft = self.repo().unwrap_or_default();
+        self.backup.repo_invalid = false;
+        self.backup.last_pushed_json = None;
+        self.backup.last_success = None;
+        self.backup.board_changed = false;
+        self.backup.push_now = false;
     }
 
-    fn gist_id(&self) -> Option<String> {
-        self.settings.gist_id(&self.path).map(str::to_owned)
+    fn repo(&self) -> Option<String> {
+        self.settings.repo(&self.path).map(str::to_owned)
     }
 
     fn token_path(&self) -> PathBuf {
-        gist::token_path(&self.settings_path)
+        github::token_path(&self.settings_path)
     }
 
     fn save_settings_reporting_errors(&mut self) {
@@ -915,83 +910,83 @@ impl PlannerApp {
     }
 
     fn connect_github(&mut self) {
-        let token = self.gist.token_draft.trim().to_owned();
+        let token = self.backup.token_draft.trim().to_owned();
         if token.is_empty() {
             return;
         }
-        match gist::save_token(&self.token_path(), &token) {
+        match github::save_token(&self.token_path(), &token) {
             Ok(()) => {
-                self.gist.token = Some(token);
-                self.gist.token_draft.clear();
-                self.gist.error = None;
+                self.backup.token = Some(token);
+                self.backup.token_draft.clear();
+                self.backup.error = None;
             }
-            Err(e) => self.gist.error = Some(format!("Could not save the token: {e:#}")),
+            Err(e) => self.backup.error = Some(format!("Could not save the token: {e:#}")),
         }
     }
 
-    /// Forgets the token but keeps the gist id, so reconnecting resumes
-    /// backing up to the same gist.
+    /// Forgets the token but keeps the repo link, so reconnecting resumes
+    /// backing up to the same repo.
     fn disconnect_github(&mut self) {
-        match gist::delete_token(&self.token_path()) {
+        match github::delete_token(&self.token_path()) {
             Ok(()) => {
-                self.gist.token = None;
-                self.gist.in_flight = None;
-                self.gist.pushed_board = None;
-                self.gist.error = None;
-                self.gist.last_success = None;
+                self.backup.token = None;
+                self.backup.in_flight = None;
+                self.backup.pushed_board = None;
+                self.backup.error = None;
+                self.backup.last_success = None;
             }
-            Err(e) => self.gist.error = Some(format!("Could not remove the token: {e:#}")),
+            Err(e) => self.backup.error = Some(format!("Could not remove the token: {e:#}")),
         }
     }
 
-    fn apply_gist_id_draft(&mut self) {
-        let draft = self.gist.gist_id_draft.trim();
-        let gist_id = if draft.is_empty() {
+    fn apply_repo_draft(&mut self) {
+        let draft = self.backup.repo_draft.trim();
+        let repo = if draft.is_empty() {
             None
-        } else if let Some(id) = gist::parse_gist_id(draft) {
+        } else if let Some(id) = github::parse_repo(draft) {
             Some(id)
         } else {
-            self.gist.gist_id_invalid = true;
+            self.backup.repo_invalid = true;
             return;
         };
-        self.gist.gist_id_invalid = false;
-        if gist_id != self.gist_id() {
-            self.settings.set_gist_id(&self.path, gist_id);
-            self.gist.last_pushed_json = None;
+        self.backup.repo_invalid = false;
+        if repo != self.repo() {
+            self.settings.set_repo(&self.path, repo);
+            self.backup.last_pushed_json = None;
             self.save_settings_reporting_errors();
         }
     }
 
-    fn set_gist_auto_backup(&mut self, enabled: bool) {
-        self.settings.gist_auto_backup = enabled;
+    fn set_github_auto_backup(&mut self, enabled: bool) {
+        self.settings.github_auto_backup = enabled;
         self.save_settings_reporting_errors();
     }
 
-    fn gist_client(&self) -> Option<gist::Client> {
-        let token = self.gist.token.as_deref()?;
-        Some(match &self.gist.api_base {
-            Some(api_base) => gist::Client::with_api_base(token, api_base),
-            None => gist::Client::new(token),
+    fn github_client(&self) -> Option<github::Client> {
+        let token = self.backup.token.as_deref()?;
+        Some(match &self.backup.api_base {
+            Some(api_base) => github::Client::with_api_base(token, api_base),
+            None => github::Client::new(token),
         })
     }
 
-    fn start_gist_job(&mut self, task: GistTask, job: gist::Job) {
-        if self.gist.in_flight.is_some() {
+    fn start_github_job(&mut self, task: BackupTask, job: github::Job) {
+        if self.backup.in_flight.is_some() {
             return;
         }
-        let Some(client) = self.gist_client() else {
+        let Some(client) = self.github_client() else {
             return;
         };
-        let pending = gist::Pending::start(client, job);
-        self.gist.in_flight = Some((task, pending));
+        let pending = github::Pending::start(client, job);
+        self.backup.in_flight = Some((task, pending));
     }
 
-    /// `None` when the gist already holds the board as it is now.
-    fn unpushed_job(&self) -> Option<gist::Job> {
+    /// `None` when the repo already holds the board as it is now.
+    fn unpushed_job(&self) -> Option<github::Job> {
         let job = self.push_job();
         match &job {
-            gist::Job::Push { board_json, .. }
-                if self.gist.last_pushed_json.as_ref() == Some(board_json) =>
+            github::Job::Push { board_json, .. }
+                if self.backup.last_pushed_json.as_ref() == Some(board_json) =>
             {
                 None
             }
@@ -999,10 +994,10 @@ impl PlannerApp {
         }
     }
 
-    fn queue_gist_push_of_open_board(&mut self) {
-        if !self.settings.gist_auto_backup
-            || self.gist.token.is_none()
-            || !self.gist.board_changed
+    fn queue_push_of_open_board(&mut self) {
+        if !self.settings.github_auto_backup
+            || self.backup.token.is_none()
+            || !self.backup.board_changed
             || self.board.is_empty()
         {
             return;
@@ -1010,242 +1005,243 @@ impl PlannerApp {
         let Some(job) = self.unpushed_job() else {
             return;
         };
-        self.gist
+        self.backup
             .queued_pushes
             .retain(|(board, _)| *board != self.path);
-        self.gist.queued_pushes.push((self.path.clone(), job));
-        self.gist.unpushed_boards.insert(self.path.clone());
+        self.backup.queued_pushes.push((self.path.clone(), job));
+        self.backup.unpushed_boards.insert(self.path.clone());
     }
 
     fn start_queued_push(&mut self) {
-        if self.gist.in_flight.is_some() || self.gist.queued_pushes.is_empty() {
+        if self.backup.in_flight.is_some() || self.backup.queued_pushes.is_empty() {
             return;
         }
-        let (board, job) = self.gist.queued_pushes.remove(0);
-        self.start_gist_job(GistTask::AutoPush, job);
-        if self.gist.in_flight.is_some() {
-            self.gist.pushed_board = Some(board);
+        let (board, job) = self.backup.queued_pushes.remove(0);
+        self.start_github_job(BackupTask::AutoPush, job);
+        if self.backup.in_flight.is_some() {
+            self.backup.pushed_board = Some(board);
         }
     }
 
-    fn push_job(&self) -> gist::Job {
-        gist::Job::Push {
-            gist_id: self.gist_id(),
+    fn push_job(&self) -> github::Job {
+        github::Job::Push {
+            repo: self.repo(),
             title: self.board.title.clone(),
             board_json: serde_json::to_string_pretty(&self.board).unwrap_or_default(),
         }
     }
 
     /// An empty board is almost always a fresh start, and pushing
-    /// it would make the gist's latest revision a blank board.
-    fn back_up_to_gist(&mut self, task: GistTask) {
+    /// it would make the repo's latest version a blank board.
+    fn back_up_to_github(&mut self, task: BackupTask) {
         if self.board.is_empty() {
             return;
         }
-        self.gist.board_changed = false;
-        self.gist.push_now = false;
+        self.backup.board_changed = false;
+        self.backup.push_now = false;
         let job = self.push_job();
-        self.start_gist_job(task, job);
-        if self.gist.in_flight.is_some() {
-            self.gist.pushed_board = Some(self.path.clone());
+        self.start_github_job(task, job);
+        if self.backup.in_flight.is_some() {
+            self.backup.pushed_board = Some(self.path.clone());
         }
     }
 
-    /// Pushes once the board has gone unedited for `GIST_PUSH_DELAY`, so a
+    /// Pushes once the board has gone unedited for `BACKUP_PUSH_DELAY`, so a
     /// burst of typing leaves one revision rather than one per keystroke.
-    fn back_up_to_gist_if_due(&mut self, ctx: &egui::Context) {
-        if !self.settings.gist_auto_backup
-            || self.gist.token.is_none()
-            || self.gist.in_flight.is_some()
-            || !self.gist.board_changed
+    fn back_up_to_github_if_due(&mut self, ctx: &egui::Context) {
+        if !self.settings.github_auto_backup
+            || self.backup.token.is_none()
+            || self.backup.in_flight.is_some()
+            || !self.backup.board_changed
             || self.board.is_empty()
             || matches!(self.save_state, SaveState::Pending(_))
         {
             return;
         }
-        if let Some(wait) = gist_push_wait(
-            self.gist.last_edit.map(|at| at.elapsed()),
-            self.gist.push_now,
+        if let Some(wait) = backup_push_wait(
+            self.backup.last_edit.map(|at| at.elapsed()),
+            self.backup.push_now,
         ) {
             ctx.request_repaint_after(wait);
             return;
         }
         if self.unpushed_job().is_none() {
-            self.gist.board_changed = false;
+            self.backup.board_changed = false;
             return;
         }
-        self.back_up_to_gist(GistTask::AutoPush);
+        self.back_up_to_github(BackupTask::AutoPush);
     }
 
-    fn open_gist_restore(&mut self) {
-        let Some(gist_id) = self.gist_id() else {
+    fn open_restore(&mut self) {
+        let Some(repo) = self.repo() else {
             return;
         };
-        self.gist.restore = Some(GistRestore::default());
-        self.start_gist_job(
-            GistTask::ListRevisions,
-            gist::Job::ListRevisions { gist_id },
+        self.backup.restore = Some(BackupRestore::default());
+        self.start_github_job(
+            BackupTask::ListRevisions,
+            github::Job::ListRevisions { repo },
         );
     }
 
-    fn restore_gist_revision(&mut self, version: String) {
-        let Some(gist_id) = self.gist_id() else {
+    fn restore_revision(&mut self, version: String) {
+        let Some(repo) = self.repo() else {
             return;
         };
-        self.start_gist_job(GistTask::Fetch, gist::Job::Fetch { gist_id, version });
+        self.start_github_job(BackupTask::Fetch, github::Job::Fetch { repo, version });
     }
 
-    fn receive_gist_reply(&mut self, ctx: &egui::Context) {
-        let Some((task, pending)) = &self.gist.in_flight else {
+    fn receive_github_reply(&mut self, ctx: &egui::Context) {
+        let Some((task, pending)) = &self.backup.in_flight else {
             return;
         };
         let task = *task;
         let Some(reply) = pending.poll() else {
-            ctx.request_repaint_after(GIST_POLL);
+            ctx.request_repaint_after(BACKUP_POLL);
             return;
         };
-        self.gist.in_flight = None;
-        self.handle_gist_reply(task, reply);
+        self.backup.in_flight = None;
+        self.handle_github_reply(task, reply);
     }
 
-    fn handle_gist_reply(&mut self, task: GistTask, reply: gist::Reply) {
+    fn handle_github_reply(&mut self, task: BackupTask, reply: github::Reply) {
         match reply {
-            gist::Reply::Pushed { pushed, board_json } => {
+            github::Reply::Pushed { pushed, board_json } => {
                 let board = self
-                    .gist
+                    .backup
                     .pushed_board
                     .take()
                     .unwrap_or_else(|| self.path.clone());
-                self.gist.error = None;
+                self.backup.error = None;
                 if !self
-                    .gist
+                    .backup
                     .queued_pushes
                     .iter()
                     .any(|(queued, _)| *queued == board)
                 {
-                    self.gist.unpushed_boards.remove(&board);
+                    self.backup.unpushed_boards.remove(&board);
                 }
                 if board == self.path {
-                    self.gist.last_pushed_json = Some(board_json);
-                    self.gist.last_success = Some(Instant::now());
-                    self.gist.gist_id_draft.clone_from(&pushed.gist_id);
+                    self.backup.last_pushed_json = Some(board_json);
+                    self.backup.last_success = Some(Instant::now());
+                    self.backup.repo_draft.clone_from(&pushed.repo);
                 }
-                if self.settings.gist_id(&board) != Some(pushed.gist_id.as_str()) {
-                    self.settings.set_gist_id(&board, Some(pushed.gist_id));
+                if self.settings.repo(&board) != Some(pushed.repo.as_str()) {
+                    self.settings.set_repo(&board, Some(pushed.repo));
                     self.save_settings_reporting_errors();
                 }
             }
-            gist::Reply::Revisions { title, revisions } => {
-                if let Some(restore) = &mut self.gist.restore {
+            github::Reply::Revisions { title, revisions } => {
+                if let Some(restore) = &mut self.backup.restore {
                     restore.title = Some(title);
                     restore.revisions = Some(revisions);
                 }
             }
-            gist::Reply::Fetched(json) => match serde_json::from_str::<Board>(&json) {
+            github::Reply::Fetched(json) => match serde_json::from_str::<Board>(&json) {
                 Ok(board) => {
-                    self.gist.restore = None;
+                    self.backup.restore = None;
                     self.settings_dialog = None;
                     self.replace_board(board);
                 }
                 Err(e) => {
-                    if let Some(restore) = &mut self.gist.restore {
+                    if let Some(restore) = &mut self.backup.restore {
                         restore.error = Some(format!("That version is not a valid board: {e}"));
                     }
                 }
             },
-            gist::Reply::Boards(boards) => {
-                if let Some(cloud) = &mut self.gist.cloud {
+            github::Reply::Boards(boards) => {
+                if let Some(cloud) = &mut self.backup.cloud {
                     cloud.boards = Some(boards);
                 }
             }
-            gist::Reply::FetchedLatest {
-                gist_id,
-                board_json,
-            } => {
-                if self.gist.cloud.is_none() {
+            github::Reply::FetchedLatest { repo, board_json } => {
+                if self.backup.cloud.is_none() {
                     return;
                 }
                 match serde_json::from_str::<Board>(&board_json) {
                     Ok(board) => {
-                        self.gist.cloud = None;
-                        self.open_cloud_board(gist_id, board);
+                        self.backup.cloud = None;
+                        self.open_cloud_board(repo, board);
                     }
                     Err(e) => {
-                        if let Some(cloud) = &mut self.gist.cloud {
-                            cloud.error = Some(format!("That gist is not a valid board: {e}"));
+                        if let Some(cloud) = &mut self.backup.cloud {
+                            cloud.error =
+                                Some(format!("That repository does not hold a valid board: {e}"));
                         }
                     }
                 }
             }
-            gist::Reply::Failed(reason) if is_cloud_task(task) => {
-                if let Some(cloud) = &mut self.gist.cloud {
+            github::Reply::Failed(reason) if is_cloud_task(task) => {
+                if let Some(cloud) = &mut self.backup.cloud {
                     cloud.error = Some(format!("Could not reach GitHub: {reason}"));
                 }
             }
-            gist::Reply::Failed(reason) => {
+            github::Reply::Failed(reason) => {
                 let message = format!("GitHub backup failed: {reason}");
                 match task {
-                    GistTask::ListRevisions | GistTask::Fetch => {
-                        if let Some(restore) = &mut self.gist.restore {
+                    BackupTask::ListRevisions | BackupTask::Fetch => {
+                        if let Some(restore) = &mut self.backup.restore {
                             restore.error = Some(message);
                         }
                     }
-                    GistTask::AutoPush if self.gist.error.is_none() => {
+                    BackupTask::AutoPush if self.backup.error.is_none() => {
                         self.alert = Some(format!(
                             "{message}\n\nEdits are still saved locally. Check Settings → \
-                             GitHub Gist."
+                             GitHub backup."
                         ));
-                        self.gist.error = Some(message);
+                        self.backup.error = Some(message);
                     }
-                    GistTask::AutoPush | GistTask::ManualPush => self.gist.error = Some(message),
-                    GistTask::ListCloudBoards | GistTask::OpenCloudBoard => {}
+                    BackupTask::AutoPush | BackupTask::ManualPush => {
+                        self.backup.error = Some(message);
+                    }
+                    BackupTask::ListCloudBoards | BackupTask::OpenCloudBoard => {}
                 }
-                if matches!(task, GistTask::AutoPush | GistTask::ManualPush) {
-                    self.gist.pushed_board = None;
+                if matches!(task, BackupTask::AutoPush | BackupTask::ManualPush) {
+                    self.backup.pushed_board = None;
                 }
             }
         }
     }
 
-    /// Blocks shutdown on one last push so the gist ends the session with
+    /// Blocks shutdown on one last push so the repo ends the session with
     /// the final state rather than one from before the last few edits.
-    fn back_up_to_gist_before_exit(&mut self) {
-        if let Some((task, pending)) = self.gist.in_flight.take() {
+    fn back_up_to_github_before_exit(&mut self) {
+        if let Some((task, pending)) = self.backup.in_flight.take() {
             let reply = pending.wait();
-            self.handle_gist_reply(task, reply);
+            self.handle_github_reply(task, reply);
         }
-        self.queue_gist_push_of_open_board();
-        let Some(client) = self.gist_client() else {
+        self.queue_push_of_open_board();
+        let Some(client) = self.github_client() else {
             return;
         };
-        for (board, job) in std::mem::take(&mut self.gist.queued_pushes) {
-            let reply = gist::run(&client, job);
-            self.gist.pushed_board = Some(board);
-            self.handle_gist_reply(GistTask::ManualPush, reply);
+        for (board, job) in std::mem::take(&mut self.backup.queued_pushes) {
+            let reply = github::run(&client, job);
+            self.backup.pushed_board = Some(board);
+            self.handle_github_reply(BackupTask::ManualPush, reply);
         }
     }
 
-    fn gist_section(&mut self, ui: &mut Ui) -> Option<GistAction> {
-        let section_label = field_label(ui, self.colors, "GitHub Gist");
-        let action = if self.gist.token.is_some() {
-            self.gist_controls(ui, section_label)
+    fn github_section(&mut self, ui: &mut Ui) -> Option<BackupAction> {
+        let section_label = field_label(ui, self.colors, "GitHub backup");
+        let action = if self.backup.token.is_some() {
+            self.github_controls(ui, section_label)
         } else {
-            self.gist_connect_form(ui, section_label)
+            self.github_connect_form(ui, section_label)
         };
-        let (status, color) = self.gist_status();
+        let (status, color) = self.github_status();
         if !status.is_empty() {
             ui.label(RichText::new(status).small().color(color));
         }
         action
     }
 
-    fn gist_connect_form(&mut self, ui: &mut Ui, label: egui::Id) -> Option<GistAction> {
+    fn github_connect_form(&mut self, ui: &mut Ui, label: egui::Id) -> Option<BackupAction> {
         ui.label(
             RichText::new(
-                "Optionally back up the board to a secret gist on your GitHub account, with \
-                 every version kept in its history. Create a fine-grained token with the \
-                 account permission Gists: read and write (or a classic token with the gist \
-                 scope) and paste it here.",
+                "Optionally back up each board to its own private repository on your GitHub \
+                 account, with every version kept in its history. Create a fine-grained \
+                 token for all repositories with the permissions Administration and \
+                 Contents: read and write (or a classic token with the repo scope) and paste \
+                 it here.",
             )
             .small()
             .color(self.colors.muted),
@@ -1254,7 +1250,7 @@ impl PlannerApp {
         ui.horizontal(|ui| {
             let field = ui
                 .add(
-                    TextEdit::singleline(&mut self.gist.token_draft)
+                    TextEdit::singleline(&mut self.backup.token_draft)
                         .password(true)
                         .hint_text("GitHub token")
                         .desired_width(240.0),
@@ -1262,38 +1258,38 @@ impl PlannerApp {
                 .labelled_by(label);
             let submitted = field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
             if ui.button("Connect").clicked() || submitted {
-                action = Some(GistAction::Connect);
+                action = Some(BackupAction::Connect);
             }
         });
         action
     }
 
-    fn gist_controls(&mut self, ui: &mut Ui, label: egui::Id) -> Option<GistAction> {
+    fn github_controls(&mut self, ui: &mut Ui, label: egui::Id) -> Option<BackupAction> {
         let mut action = None;
-        let busy = self.gist.in_flight.is_some();
+        let busy = self.backup.in_flight.is_some();
         ui.horizontal(|ui| {
             let id_field = ui
                 .add(
-                    TextEdit::singleline(&mut self.gist.gist_id_draft)
-                        .hint_text("Gist id or URL; empty creates one")
+                    TextEdit::singleline(&mut self.backup.repo_draft)
+                        .hint_text("owner/repo or URL; empty creates one")
                         .desired_width(240.0),
                 )
                 .labelled_by(label);
             if id_field.changed() {
-                action = Some(GistAction::SetGistId);
+                action = Some(BackupAction::SetRepo);
             }
-            if let Some(id) = self.gist_id() {
-                ui.hyperlink_to("Open", format!("https://gist.github.com/{id}"));
+            if let Some(id) = self.repo() {
+                ui.hyperlink_to("Open", github::repo_url(&id));
             }
         });
-        if self.gist.gist_id_invalid {
+        if self.backup.repo_invalid {
             ui.label(
-                RichText::new("Not a gist id or URL")
+                RichText::new("Not a GitHub repository name or URL")
                     .small()
                     .color(self.colors.danger),
             );
         }
-        let mut auto = self.settings.gist_auto_backup;
+        let mut auto = self.settings.github_auto_backup;
         if ui
             .checkbox(&mut auto, "Back up automatically")
             .on_hover_text(
@@ -1302,7 +1298,7 @@ impl PlannerApp {
             )
             .changed()
         {
-            self.set_gist_auto_backup(auto);
+            self.set_github_auto_backup(auto);
         }
         ui.horizontal(|ui| {
             if ui
@@ -1312,71 +1308,71 @@ impl PlannerApp {
                 )
                 .clicked()
             {
-                action = Some(GistAction::BackUpNow);
+                action = Some(BackupAction::BackUpNow);
             }
             if ui
                 .add_enabled(
-                    !busy && self.gist_id().is_some(),
-                    egui::Button::new("Restore from gist…"),
+                    !busy && self.repo().is_some(),
+                    egui::Button::new("Restore from GitHub…"),
                 )
                 .clicked()
             {
-                action = Some(GistAction::Restore);
+                action = Some(BackupAction::Restore);
             }
             if ui
                 .button("Disconnect")
-                .on_hover_text("Forget the token; the gist itself stays on GitHub")
+                .on_hover_text("Forget the token; the repository itself stays on GitHub")
                 .clicked()
             {
-                action = Some(GistAction::Disconnect);
+                action = Some(BackupAction::Disconnect);
             }
         });
         action
     }
 
-    fn gist_status(&self) -> (String, Color32) {
+    fn github_status(&self) -> (String, Color32) {
         let muted = self.colors.muted;
-        if let Some(error) = &self.gist.error {
+        if let Some(error) = &self.backup.error {
             return (error.clone(), self.colors.danger);
         }
-        if self.gist.token.is_none() {
+        if self.backup.token.is_none() {
             return (String::new(), muted);
         }
-        let status = if self.gist.in_flight.is_some() {
+        let status = if self.backup.in_flight.is_some() {
             "Talking to GitHub…".to_owned()
         } else if self.board.is_empty() {
             "Empty boards are not backed up.".to_owned()
-        } else if let Some(at) = self.gist.last_success {
+        } else if let Some(at) = self.backup.last_success {
             format!("Backed up {}", elapsed_description(at.elapsed()))
-        } else if self.gist_id().is_none() {
-            "The first backup creates a secret gist.".to_owned()
+        } else if self.repo().is_none() {
+            "The first backup creates a private repository.".to_owned()
         } else {
             "Not backed up in this session yet.".to_owned()
         };
         (status, muted)
     }
 
-    fn handle_gist_action(&mut self, action: GistAction) {
+    fn handle_backup_action(&mut self, action: BackupAction) {
         match action {
-            GistAction::Connect => self.connect_github(),
-            GistAction::Disconnect => self.disconnect_github(),
-            GistAction::SetGistId => self.apply_gist_id_draft(),
-            GistAction::BackUpNow => self.back_up_to_gist(GistTask::ManualPush),
-            GistAction::Restore => self.open_gist_restore(),
+            BackupAction::Connect => self.connect_github(),
+            BackupAction::Disconnect => self.disconnect_github(),
+            BackupAction::SetRepo => self.apply_repo_draft(),
+            BackupAction::BackUpNow => self.back_up_to_github(BackupTask::ManualPush),
+            BackupAction::Restore => self.open_restore(),
         }
     }
 
-    fn gist_restore_dialog(&mut self, ctx: &egui::Context) {
-        let Some(restore) = &self.gist.restore else {
+    fn restore_dialog(&mut self, ctx: &egui::Context) {
+        let Some(restore) = &self.backup.restore else {
             return;
         };
         let colors = self.colors;
-        let busy = self.gist.in_flight.is_some();
+        let busy = self.backup.in_flight.is_some();
         let mut chosen = None;
         let mut close = false;
-        let modal = egui::Modal::new(egui::Id::unique("gist_restore")).show(ctx, |ui| {
+        let modal = egui::Modal::new(egui::Id::unique("github_restore")).show(ctx, |ui| {
             ui.set_width(380.0);
-            ui.heading("Restore from gist");
+            ui.heading("Restore from GitHub");
             if let Some(title) = &restore.title {
                 let title = if title.is_empty() { "Untitled" } else { title };
                 ui.label(RichText::new(title).strong());
@@ -1393,7 +1389,7 @@ impl PlannerApp {
                 }
                 None => {}
                 Some(revisions) if revisions.is_empty() => {
-                    ui.label("This gist has no versions yet.");
+                    ui.label("This repository has no versions yet.");
                 }
                 Some(revisions) => {
                     ui.label(
@@ -1427,24 +1423,24 @@ impl PlannerApp {
             close = ui.button("Cancel").clicked();
         });
         if let Some(version) = chosen {
-            if let Some(restore) = &mut self.gist.restore {
+            if let Some(restore) = &mut self.backup.restore {
                 restore.error = None;
             }
-            self.restore_gist_revision(version);
+            self.restore_revision(version);
         }
         if close || modal.should_close() {
-            self.gist.restore = None;
+            self.backup.restore = None;
         }
     }
 
     fn cloud_open_dialog(&mut self, ctx: &egui::Context) {
-        let Some(cloud) = &self.gist.cloud else {
+        let Some(cloud) = &self.backup.cloud else {
             return;
         };
         let colors = self.colors;
         let busy = cloud.queued.is_some()
-            || matches!(&self.gist.in_flight, Some((task, _)) if is_cloud_task(*task));
-        let open_gist_id = self.gist_id();
+            || matches!(&self.backup.in_flight, Some((task, _)) if is_cloud_task(*task));
+        let open_repo = self.repo();
         let mut chosen = None;
         let mut close = false;
         let modal = egui::Modal::new(egui::Id::unique("cloud_open")).show(ctx, |ui| {
@@ -1456,7 +1452,7 @@ impl PlannerApp {
             let other_boards = cloud
                 .boards
                 .as_deref()
-                .map(|boards| boards_other_than(boards, open_gist_id.as_deref()));
+                .map(|boards| boards_other_than(boards, open_repo.as_deref()));
             match other_boards {
                 None if busy => {
                     ui.horizontal(|ui| {
@@ -1466,10 +1462,10 @@ impl PlannerApp {
                 }
                 None => {}
                 Some(boards) if boards.is_empty() => {
-                    let message = if open_gist_id.is_some() {
-                        "No other boards backed up to your gists."
+                    let message = if open_repo.is_some() {
+                        "No other boards backed up to your GitHub."
                     } else {
-                        "No boards backed up to your gists yet."
+                        "No boards backed up to your GitHub yet."
                     };
                     ui.label(message);
                 }
@@ -1492,7 +1488,7 @@ impl PlannerApp {
                                     ))
                                     .clicked()
                                 {
-                                    chosen = Some(board.gist_id.clone());
+                                    chosen = Some(board.repo.clone());
                                 }
                             }
                         });
@@ -1507,15 +1503,18 @@ impl PlannerApp {
             ui.add_space(8.0);
             close = ui.button("Cancel").clicked();
         });
-        if let Some(gist_id) = chosen
-            && let Some(cloud) = &mut self.gist.cloud
+        if let Some(repo) = chosen
+            && let Some(cloud) = &mut self.backup.cloud
         {
             cloud.error = None;
-            cloud.queued = Some((GistTask::OpenCloudBoard, gist::Job::FetchLatest { gist_id }));
+            cloud.queued = Some((
+                BackupTask::OpenCloudBoard,
+                github::Job::FetchLatest { repo },
+            ));
             self.start_queued_cloud_job();
         }
         if close || modal.should_close() {
-            self.gist.cloud = None;
+            self.backup.cloud = None;
         }
     }
 
@@ -1571,11 +1570,11 @@ impl PlannerApp {
     }
 
     fn open_button(&mut self, ui: &mut Ui) {
-        if self.gist.token.is_none() {
+        if self.backup.token.is_none() {
             ui.menu_button("Open", |ui| self.local_open_menu(ui));
         } else if ui
             .button("Open")
-            .on_hover_text("Boards backed up to your GitHub gists")
+            .on_hover_text("Boards backed up to private GitHub repositories")
             .clicked()
         {
             self.open_cloud_picker();
@@ -1597,7 +1596,7 @@ impl PlannerApp {
                     .desired_width(360.0),
             );
             if title.changed() {
-                self.gist.push_now = true;
+                self.backup.push_now = true;
                 self.save_now();
             }
 
@@ -2818,7 +2817,7 @@ impl PlannerApp {
         let mut chosen = self.settings.color_scheme;
         let mut close = false;
         let mut board_file_action = None;
-        let mut gist_action = None;
+        let mut backup_action = None;
         let modal = egui::Modal::new(egui::Id::unique("settings")).show(ctx, |ui| {
             ui.set_width(360.0);
             ui.heading("Settings");
@@ -2875,7 +2874,7 @@ impl PlannerApp {
                 board_file_action = Some(BoardFileAction::RecoverFromLocal);
             }
 
-            gist_action = self.gist_section(ui);
+            backup_action = self.github_section(ui);
 
             ui.add_space(6.0);
             match &save_error {
@@ -2904,11 +2903,11 @@ impl PlannerApp {
             Some(BoardFileAction::RecoverFromLocal) => self.open_local_recovery(),
             None => {}
         }
-        if let Some(action) = gist_action {
-            self.handle_gist_action(action);
+        if let Some(action) = backup_action {
+            self.handle_backup_action(action);
         }
         if (close || modal.should_close())
-            && self.gist.restore.is_none()
+            && self.backup.restore.is_none()
             && self.local_recovery.is_none()
         {
             self.settings_dialog = None;
@@ -2975,10 +2974,10 @@ impl eframe::App for PlannerApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.flush_if_due(ctx);
         self.reload_if_changed_elsewhere(ctx);
-        self.receive_gist_reply(ctx);
+        self.receive_github_reply(ctx);
         self.start_queued_push();
         self.start_queued_cloud_job();
-        self.back_up_to_gist_if_due(ctx);
+        self.back_up_to_github_if_due(ctx);
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
@@ -3037,7 +3036,7 @@ impl eframe::App for PlannerApp {
 
         self.settings_dialog(&ctx);
         self.local_recovery_dialog(&ctx);
-        self.gist_restore_dialog(&ctx);
+        self.restore_dialog(&ctx);
         self.cloud_open_dialog(&ctx);
         self.dialogs(&ctx);
         self.flush_on_focus_change(&ctx);
@@ -3048,7 +3047,7 @@ impl eframe::App for PlannerApp {
         if matches!(self.save_state, SaveState::Pending(_)) {
             self.save_now();
         }
-        self.back_up_to_gist_before_exit();
+        self.back_up_to_github_before_exit();
     }
 }
 
@@ -3578,8 +3577,11 @@ fn display_timestamp(iso: &str) -> String {
     }
 }
 
-fn is_cloud_task(task: GistTask) -> bool {
-    matches!(task, GistTask::ListCloudBoards | GistTask::OpenCloudBoard)
+fn is_cloud_task(task: BackupTask) -> bool {
+    matches!(
+        task,
+        BackupTask::ListCloudBoards | BackupTask::OpenCloudBoard
+    )
 }
 
 fn display_cloud_title(title: &str) -> &str {
@@ -3604,22 +3606,19 @@ fn preview(summary: &str) -> String {
     }
 }
 
-fn gist_push_wait(since_last_edit: Option<Duration>, push_now: bool) -> Option<Duration> {
+fn backup_push_wait(since_last_edit: Option<Duration>, push_now: bool) -> Option<Duration> {
     if push_now {
         return None;
     }
     since_last_edit
-        .filter(|&elapsed| elapsed < GIST_PUSH_DELAY)
-        .map(|elapsed| GIST_PUSH_DELAY.saturating_sub(elapsed))
+        .filter(|&elapsed| elapsed < BACKUP_PUSH_DELAY)
+        .map(|elapsed| BACKUP_PUSH_DELAY.saturating_sub(elapsed))
 }
 
-fn boards_other_than<'a>(
-    boards: &'a [CloudBoard],
-    open_gist_id: Option<&str>,
-) -> Vec<&'a CloudBoard> {
+fn boards_other_than<'a>(boards: &'a [CloudBoard], open_repo: Option<&str>) -> Vec<&'a CloudBoard> {
     boards
         .iter()
-        .filter(|board| open_gist_id != Some(board.gist_id.as_str()))
+        .filter(|board| open_repo != Some(board.repo.as_str()))
         .collect()
 }
 
@@ -3629,16 +3628,16 @@ mod tests {
 
     #[test]
     fn cloud_picker_leaves_out_the_open_board() {
-        let board = |gist_id: &str| CloudBoard {
-            gist_id: gist_id.to_owned(),
-            title: gist_id.to_owned(),
+        let board = |repo: &str| CloudBoard {
+            repo: repo.to_owned(),
+            title: repo.to_owned(),
             updated_at: String::new(),
         };
         let boards = [board("dune"), board("emma")];
         let ids = |open| -> Vec<&str> {
             boards_other_than(&boards, open)
                 .into_iter()
-                .map(|b| b.gist_id.as_str())
+                .map(|b| b.repo.as_str())
                 .collect()
         };
         assert_eq!(ids(Some("dune")), ["emma"]);
@@ -3646,12 +3645,15 @@ mod tests {
     }
 
     #[test]
-    fn gist_push_waits_for_a_pause_unless_pushed_now() {
+    fn backup_push_waits_for_a_pause_unless_pushed_now() {
         let recent = Some(Duration::from_secs(1));
-        assert_eq!(gist_push_wait(recent, false), Some(Duration::from_secs(4)));
-        assert_eq!(gist_push_wait(recent, true), None);
-        assert_eq!(gist_push_wait(None, false), None);
-        assert_eq!(gist_push_wait(Some(GIST_PUSH_DELAY), false), None);
+        assert_eq!(
+            backup_push_wait(recent, false),
+            Some(Duration::from_secs(4))
+        );
+        assert_eq!(backup_push_wait(recent, true), None);
+        assert_eq!(backup_push_wait(None, false), None);
+        assert_eq!(backup_push_wait(Some(BACKUP_PUSH_DELAY), false), None);
     }
 
     #[test]
@@ -3691,7 +3693,7 @@ mod tests {
     }
 
     #[test]
-    fn gist_timestamps_and_versions_are_shortened() {
+    fn github_timestamps_and_versions_are_shortened() {
         assert_eq!(
             display_timestamp("2026-11-22T09:41:07Z"),
             "2026-11-22 09:41 UTC"

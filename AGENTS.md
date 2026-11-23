@@ -50,8 +50,8 @@ Import rather than by code sharing.
 - [`src/storage.rs`](src/storage.rs) — load/save, atomic writes (temp file +
   rename), backups, export/outline names. Writes must stay crash-safe; never
   write the board in place.
-- [`src/settings.rs`](src/settings.rs), [`src/gist.rs`](src/gist.rs) — settings
-  and the optional GitHub Gist backup (token in a separate `0600` file).
+- [`src/settings.rs`](src/settings.rs), [`src/github.rs`](src/github.rs) — settings
+  and the optional private-repository GitHub backup (token in a separate `0600` file).
 - [`src/outline.rs`](src/outline.rs) — Markdown outline and manuscript export.
 - [`src/theme.rs`](src/theme.rs), [`src/migration.rs`](src/migration.rs) — color
   schemes and pre-rename data migration.
@@ -59,6 +59,6 @@ Import rather than by code sharing.
 ## Tests
 
 - [`tests/ui.rs`](tests/ui.rs) drives the app headlessly with `egui_kittest`.
-  Add UI tests for interaction changes; they run in CI. [`tests/gist.rs`](tests/gist.rs)
+  Add UI tests for interaction changes; they run in CI. [`tests/github.rs`](tests/github.rs)
   covers the backup client. Prefer a `check` run (which includes these) over a
   manual build before proposing changes.

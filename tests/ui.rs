@@ -648,8 +648,8 @@ fn open_settings(harness: &mut Harness<'_, PlannerApp>) {
     harness.run();
 }
 
-fn gist_field<'h>(harness: &'h Harness<'_, PlannerApp>) -> egui_kittest::Node<'h> {
-    labelled_text_input(harness, "GITHUB GIST")
+fn github_field<'h>(harness: &'h Harness<'_, PlannerApp>) -> egui_kittest::Node<'h> {
+    labelled_text_input(harness, "GITHUB BACKUP")
 }
 
 #[test]
@@ -658,15 +658,15 @@ fn connecting_github_stores_the_token_privately_and_disconnecting_forgets_it() {
     let token_path = dir.path().join("config/storysquish/github-token");
     open_settings(&mut harness);
 
-    gist_field(&harness).focus();
+    github_field(&harness).focus();
     harness.run();
-    gist_field(&harness).type_text("ghp_example");
+    github_field(&harness).type_text("ghp_example");
     harness.run();
     harness.get_by_label("Connect").click();
     harness.run();
 
     assert_eq!(
-        storysquish::gist::load_token(&token_path)
+        storysquish::github::load_token(&token_path)
             .unwrap()
             .as_deref(),
         Some("ghp_example")
@@ -677,20 +677,20 @@ fn connecting_github_stores_the_token_privately_and_disconnecting_forgets_it() {
     assert!(harness.query_by_label("Back up now").is_some());
     assert!(
         harness
-            .query_by_label("The first backup creates a secret gist.")
+            .query_by_label("The first backup creates a private repository.")
             .is_some()
     );
 
     harness.get_by_label("Disconnect").click();
     harness.run();
-    assert_eq!(storysquish::gist::load_token(&token_path).unwrap(), None);
+    assert_eq!(storysquish::github::load_token(&token_path).unwrap(), None);
     assert!(harness.query_by_label("Connect").is_some());
 }
 
 fn launch_connected(board: Board) -> (Harness<'static, PlannerApp>, TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let settings_path = dir.path().join("settings.json");
-    storysquish::gist::save_token(&storysquish::gist::token_path(&settings_path), "t").unwrap();
+    storysquish::github::save_token(&storysquish::github::token_path(&settings_path), "t").unwrap();
     let board_path = dir.path().join("board.json");
     let mut harness = Harness::builder()
         .with_size(WINDOW)
@@ -700,40 +700,40 @@ fn launch_connected(board: Board) -> (Harness<'static, PlannerApp>, TempDir) {
 }
 
 #[test]
-fn pasting_a_gist_url_stores_its_id() {
+fn pasting_a_repo_url_stores_the_repo() {
     let (mut harness, dir) = launch_connected(Board::default());
     open_settings(&mut harness);
 
-    gist_field(&harness).focus();
+    github_field(&harness).focus();
     harness.run();
-    gist_field(&harness).type_text("https://gist.github.com/someone/aa5a315d61ae9438b18d");
+    github_field(&harness).type_text("https://github.com/someone/storysquish-dune");
     harness.run();
     assert_eq!(
         harness
             .state()
             .settings()
-            .gist_id(harness.state().board_path()),
-        Some("aa5a315d61ae9438b18d")
+            .repo(harness.state().board_path()),
+        Some("someone/storysquish-dune")
     );
-    assert!(harness.query_by_label("Restore from gist…").is_some());
+    assert!(harness.query_by_label("Restore from GitHub…").is_some());
 
     harness.get_by_label("Back up automatically").click();
     harness.run();
     let saved = storysquish::settings::load(&dir.path().join("settings.json")).unwrap();
     assert_eq!(
-        saved.gist_id(&dir.path().join("board.json")),
-        Some("aa5a315d61ae9438b18d")
+        saved.repo(&dir.path().join("board.json")),
+        Some("someone/storysquish-dune")
     );
-    assert!(saved.gist_auto_backup);
+    assert!(saved.github_auto_backup);
 }
 
 #[test]
 fn new_starts_an_empty_board_in_its_own_file() {
     let (mut harness, dir) = launch_connected(board_with_scenes(&["Opening"]));
     open_settings(&mut harness);
-    gist_field(&harness).focus();
+    github_field(&harness).focus();
     harness.run();
-    gist_field(&harness).type_text("aa5a315d61ae9438b18d");
+    github_field(&harness).type_text("someone/storysquish-dune");
     harness.run();
     harness.key_press(egui::Key::Escape);
     harness.run();
@@ -745,10 +745,10 @@ fn new_starts_an_empty_board_in_its_own_file() {
     let new_path = dir.path().join("Untitled_Novel.json");
     assert!(harness.state().board().is_empty());
     assert_eq!(harness.state().board_path(), new_path);
-    assert_eq!(harness.state().settings().gist_id(&new_path), None);
+    assert_eq!(harness.state().settings().repo(&new_path), None);
     assert_eq!(
-        harness.state().settings().gist_id(&old_path),
-        Some("aa5a315d61ae9438b18d")
+        harness.state().settings().repo(&old_path),
+        Some("someone/storysquish-dune")
     );
     assert!(storysquish::storage::load(&new_path).unwrap().is_empty());
     let saved = storysquish::settings::load(&dir.path().join("settings.json")).unwrap();
@@ -760,27 +760,31 @@ fn new_starts_an_empty_board_in_its_own_file() {
 }
 
 #[test]
-fn text_that_is_not_a_gist_is_flagged_and_not_saved() {
+fn text_that_is_not_a_repo_is_flagged_and_not_saved() {
     let (mut harness, _dir) = launch_connected(Board::default());
     open_settings(&mut harness);
 
-    gist_field(&harness).focus();
+    github_field(&harness).focus();
     harness.run();
-    gist_field(&harness).type_text("my novel");
+    github_field(&harness).type_text("my novel");
     harness.run();
 
-    assert!(harness.query_by_label("Not a gist id or URL").is_some());
+    assert!(
+        harness
+            .query_by_label("Not a GitHub repository name or URL")
+            .is_some()
+    );
     assert_eq!(
         harness
             .state()
             .settings()
-            .gist_id(harness.state().board_path()),
+            .repo(harness.state().board_path()),
         None
     );
 }
 
 #[test]
-fn empty_board_is_not_backed_up_to_gist() {
+fn empty_board_is_not_backed_up_to_github() {
     let (mut harness, _dir) = launch_connected(Board::default());
     open_settings(&mut harness);
 
@@ -873,15 +877,17 @@ fn export_menu_offers_outline_manuscript_and_combined_markdown() {
     }
 }
 
-/// Keeps each gist's latest board in memory, like GitHub does, so a test can
+/// Keeps each repo's latest board in memory, like GitHub does, so a test can
 /// see whether edits reached the cloud before a board was reopened from it.
-fn fake_github(gists: &[(&str, &Board)]) -> String {
+fn fake_github(repos: &[(&str, &Board)]) -> String {
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD as BASE64;
     use std::io::{BufRead, BufReader, Read, Write};
-    use storysquish::gist::BOARD_FILE_NAME;
+    use storysquish::github::BOARD_FILE_NAME;
 
-    let mut boards: std::collections::HashMap<String, String> = gists
+    let mut boards: std::collections::HashMap<String, String> = repos
         .iter()
-        .map(|(id, board)| ((*id).to_owned(), serde_json::to_string(board).unwrap()))
+        .map(|(repo, board)| ((*repo).to_owned(), serde_json::to_string(board).unwrap()))
         .collect();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -895,6 +901,7 @@ fn fake_github(gists: &[(&str, &Board)]) -> String {
             let method = parts.next().unwrap_or_default().to_owned();
             let path = parts.next().unwrap_or_default().to_owned();
             let mut content_length = 0;
+            let mut wants_raw = false;
             loop {
                 let mut line = String::new();
                 reader.read_line(&mut line).unwrap();
@@ -906,42 +913,49 @@ fn fake_github(gists: &[(&str, &Board)]) -> String {
                 if name.eq_ignore_ascii_case("content-length") {
                     content_length = value.trim().parse().unwrap();
                 }
+                if name.eq_ignore_ascii_case("accept") {
+                    wants_raw = value.contains("raw");
+                }
             }
             let mut body = vec![0; content_length];
             reader.read_exact(&mut body).unwrap();
 
-            let gist = |id: &str, content: &str| {
+            let repo_json = |repo: &str, content: &str| {
                 let board: Board = serde_json::from_str(content).unwrap();
                 serde_json::json!({
-                    "id": id,
-                    "html_url": format!("https://gist.github.com/{id}"),
+                    "full_name": repo,
+                    "private": true,
                     "description": format!("StorySquish board: {}", board.title),
-                    "updated_at": "2026-01-01T00:00:00Z",
-                    "files": { BOARD_FILE_NAME: {
-                        "content": content, "truncated": false, "raw_url": "",
-                    }},
+                    "pushed_at": "2026-01-01T00:00:00Z",
                 })
             };
-            let reply = if path.starts_with("/gists?") {
+            let file_suffix = format!("/contents/{BOARD_FILE_NAME}");
+            let reply = if path.starts_with("/user/repos?") {
                 serde_json::Value::Array(
                     boards
                         .iter()
-                        .map(|(id, content)| gist(id, content))
+                        .map(|(repo, content)| repo_json(repo, content))
                         .collect(),
                 )
-            } else {
-                let id = path.trim_start_matches("/gists/").to_owned();
-                if method == "PATCH" {
-                    let sent: serde_json::Value = serde_json::from_slice(&body).unwrap();
-                    let content = sent["files"][BOARD_FILE_NAME]["content"]
-                        .as_str()
-                        .unwrap()
-                        .to_owned();
-                    boards.insert(id.clone(), content);
+                .to_string()
+            } else if let Some(repo) = path
+                .strip_prefix("/repos/")
+                .and_then(|rest| rest.strip_suffix(&file_suffix))
+            {
+                match method.as_str() {
+                    "PUT" => {
+                        let sent: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                        let content = BASE64.decode(sent["content"].as_str().unwrap()).unwrap();
+                        boards.insert(repo.to_owned(), String::from_utf8(content).unwrap());
+                        "{}".to_owned()
+                    }
+                    _ if wants_raw => boards[repo].clone(),
+                    _ => r#"{"sha":"f00d"}"#.to_owned(),
                 }
-                gist(&id, &boards[&id])
-            }
-            .to_string();
+            } else {
+                let repo = path.trim_start_matches("/repos/");
+                repo_json(repo, &boards[repo]).to_string()
+            };
             write!(
                 stream,
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
@@ -978,7 +992,7 @@ fn open_from_cloud(harness: &mut Harness<'_, PlannerApp>, title: &str, path: &st
 fn reopening_from_cloud_keeps_edits_made_just_before_switching_away() {
     let dir = tempfile::tempdir().unwrap();
     let settings_path = dir.path().join("settings.json");
-    storysquish::gist::save_token(&storysquish::gist::token_path(&settings_path), "t").unwrap();
+    storysquish::github::save_token(&storysquish::github::token_path(&settings_path), "t").unwrap();
     let mut novel = Board {
         title: "Novel".to_owned(),
         ..Board::default()
@@ -995,16 +1009,17 @@ fn reopening_from_cloud_keeps_edits_made_just_before_switching_away() {
     storysquish::storage::save(&novel_path, &novel).unwrap();
     storysquish::storage::save(&other_path, &other).unwrap();
     let mut settings = storysquish::settings::Settings::default();
-    settings.gist_auto_backup = true;
-    settings.set_gist_id(&novel_path, Some("novel".to_owned()));
-    settings.set_gist_id(&other_path, Some("other".to_owned()));
+    settings.github_auto_backup = true;
+    settings.set_repo(&novel_path, Some("someone/novel".to_owned()));
+    settings.set_repo(&other_path, Some("someone/other".to_owned()));
     storysquish::settings::save(&settings_path, &settings).unwrap();
-    let api_base = fake_github(&[("novel", &novel), ("other", &other)]);
+    let api_base = fake_github(&[("someone/novel", &novel), ("someone/other", &other)]);
     let open_path = novel_path.clone();
     let mut harness = Harness::builder()
         .with_size(WINDOW)
         .build_eframe(move |cc| {
-            PlannerApp::new(cc, novel, open_path, settings_path, None).with_gist_api_base(&api_base)
+            PlannerApp::new(cc, novel, open_path, settings_path, None)
+                .with_github_api_base(&api_base)
         });
     harness.run();
 
