@@ -12,7 +12,7 @@ use eframe::egui::{
 
 use crate::github::{self, CloudBoard, Revision};
 use crate::history::History;
-use crate::model::{Act, Board, Character, Id, Location, Scene, Status};
+use crate::model::{Act, Board, ChapterPlace, Character, Id, Location, Scene, Status};
 use crate::settings::{self, Settings, SpellcheckDictionary};
 use crate::spelling::{self, DictionaryInfo, DictionarySource, KnownWords};
 use crate::theme::{ColorScheme, Palette};
@@ -2860,6 +2860,12 @@ impl PlannerApp {
                 ui.label(RichText::new("Total").strong());
                 ui.label(RichText::new(self.board.scenes.len().to_string()).strong());
                 ui.end_row();
+                let chapter_count = self.board.chapter_count();
+                if chapter_count > 0 {
+                    ui.label("Chapters");
+                    ui.label(chapter_count.to_string());
+                    ui.end_row();
+                }
                 ui.label("Words");
                 let word_count = self.board.manuscript_word_count();
                 if let Some(goal) = self.board.word_goal {
@@ -3233,6 +3239,7 @@ impl PlannerApp {
         let locations = self.board.locations.clone();
         let in_write_view = self.view == View::Write;
         let is_last = index + 1 == self.board.scenes.len();
+        let chapter = self.board.chapters()[index];
         let scene = &mut self.board.scenes[index];
         let mut changed = false;
         let mut close = false;
@@ -3270,6 +3277,7 @@ impl PlannerApp {
 
         changed |= classification_fields(ui, colors, scene, &characters);
         changed |= setting_fields(ui, colors, scene, &locations);
+        changed |= chapter_break_field(ui, scene, chapter);
 
         ui.add_space(8.0);
         let write = word_count_row(ui, colors, scene, !in_write_view);
@@ -3357,6 +3365,7 @@ impl PlannerApp {
 
         let scene_count = self.board.scenes.len();
         let total_words = self.board.manuscript_word_count();
+        let chapter = self.board.chapters()[index];
         let mut go_to = None;
         let mut prose_label = None;
         let scene = &mut self.board.scenes[index];
@@ -3368,11 +3377,8 @@ impl PlannerApp {
                 go_to = Some(index - 1);
             }
             prose_label = Some(
-                ui.label(
-                    RichText::new(format!("{}  {}", scene_number(index), scene_title(scene)))
-                        .strong(),
-                )
-                .id,
+                ui.label(RichText::new(write_heading(index, chapter, scene)).strong())
+                    .id,
             );
             if ui
                 .add_enabled(index + 1 < scene_count, egui::Button::new("Next"))
@@ -3703,11 +3709,17 @@ impl PlannerApp {
                     return;
                 }
                 let columns = card_columns(ui.available_width(), ui.spacing().item_spacing.x);
+                let chapters = self.board.chapters();
                 for row in indices.chunks(columns) {
                     ui.horizontal_top(|ui| {
                         for &index in row {
-                            let (card_clicked, card_moved) =
-                                self.render_scene_card(ui, index, dragging, allow_reorder);
+                            let (card_clicked, card_moved) = self.render_scene_card(
+                                ui,
+                                index,
+                                chapters[index],
+                                dragging,
+                                allow_reorder,
+                            );
                             if card_clicked {
                                 clicked = Some(self.board.scenes[index].id.clone());
                             }
@@ -3732,6 +3744,7 @@ impl PlannerApp {
         &self,
         ui: &mut Ui,
         index: usize,
+        chapter: Option<ChapterPlace>,
         dragging: Option<usize>,
         allow_reorder: bool,
     ) -> (bool, Option<(usize, usize)>) {
@@ -3746,7 +3759,7 @@ impl PlannerApp {
             .stroke(selection_stroke(colors, is_selected))
             .multiply_with_opacity(if is_dragged { 0.4 } else { 1.0 })
             .show(ui, |ui| {
-                scene_card_contents(ui, colors, index, scene, pov, &footnote);
+                scene_card_contents(ui, colors, index, chapter, scene, pov, &footnote);
             });
 
         let sense = if allow_reorder {
@@ -4628,10 +4641,36 @@ fn setting_fields(ui: &mut Ui, colors: Palette, scene: &mut Scene, locations: &[
     changed
 }
 
+fn write_heading(index: usize, chapter: Option<ChapterPlace>, scene: &Scene) -> String {
+    let scene_heading = format!("{}  {}", scene_number(index), scene_title(scene));
+    match chapter {
+        Some(chapter) => format!("Chapter {} · {scene_heading}", chapter.number),
+        None => scene_heading,
+    }
+}
+
+fn chapter_break_field(ui: &mut Ui, scene: &mut Scene, chapter: Option<ChapterPlace>) -> bool {
+    ui.add_space(4.0);
+    let label = match chapter {
+        Some(ChapterPlace {
+            number,
+            starts: true,
+        }) => format!("Starts a chapter (chapter {number})"),
+        _ => "Starts a chapter".to_owned(),
+    };
+    ui.checkbox(&mut scene.chapter_break, label)
+        .on_hover_text(
+            "A chapter runs until the next scene that starts one. Once any scene \
+             does, the first scene opens chapter 1.",
+        )
+        .changed()
+}
+
 fn scene_card_contents(
     ui: &mut Ui,
     colors: Palette,
     index: usize,
+    chapter: Option<ChapterPlace>,
     scene: &Scene,
     pov: Option<&Character>,
     footnote: &str,
@@ -4642,12 +4681,14 @@ fn scene_card_contents(
         ui.set_width(CARD_WIDTH);
         ui.set_min_height(90.0);
         ui.spacing_mut().item_spacing = Vec2::new(6.0, 4.0);
-        ui.label(
-            RichText::new(scene_number(index))
-                .small()
-                .strong()
-                .color(colors.muted),
-        );
+        let number = match chapter {
+            Some(ChapterPlace {
+                number,
+                starts: true,
+            }) => format!("{} · CHAPTER {number}", scene_number(index)),
+            _ => scene_number(index),
+        };
+        ui.label(RichText::new(number).small().strong().color(colors.muted));
         if scene.title.is_empty() {
             ui.label(RichText::new("Untitled scene").italics());
         } else {

@@ -74,6 +74,9 @@ sudo apt-get install libxcb-render0-dev libxcb-shape0-dev \
 
 - Scene cards with title, summary, status (Outline, Draft, Revision, Final,
   Archived), act (I–III), POV character, location and story day
+- Chapters: tick **Starts a chapter** on a scene and the chapter runs until
+  the next one; cards show the chapter number and the outline and manuscript
+  exports gain chapter headings
 - **Write** view: a prose editor per scene with previous/next navigation and
   scene and manuscript word counts, plus a distraction-free **Zen** mode that
   hides the header, side panels and statistics
