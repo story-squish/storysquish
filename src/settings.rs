@@ -36,9 +36,10 @@ pub struct Settings {
     unpushed: BTreeSet<PathBuf>,
     #[serde(alias = "gist-auto-backup")]
     pub github_auto_backup: bool,
-    /// Target manuscript word count, shown in stats and write views.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub word_goal: Option<usize>,
+    /// Read from settings written before the goal moved into the board,
+    /// then handed to the first board opened.
+    #[serde(rename = "word-goal", skip_serializing)]
+    legacy_word_goal: Option<usize>,
     pub spellcheck_dictionary: SpellcheckDictionary,
     /// Added through "Add to dictionary", checked with every dictionary.
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
@@ -91,6 +92,10 @@ impl Settings {
         self.recent_boards.retain(|recent| *recent != key);
         self.recent_boards.insert(0, key);
         self.recent_boards.truncate(RECENT_BOARDS_LIMIT);
+    }
+
+    pub fn take_legacy_word_goal(&mut self) -> Option<usize> {
+        self.legacy_word_goal.take()
     }
 
     fn adopt_legacy_previous_board(&mut self) {
@@ -371,28 +376,19 @@ mod tests {
     }
 
     #[test]
-    fn word_goal_persists_and_is_optional() {
+    fn legacy_word_goal_is_read_once_and_never_written() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
+        fs::write(&path, r#"{"word-goal": 80000}"#).unwrap();
 
-        let mut settings = Settings {
-            word_goal: Some(80_000),
-            ..Settings::default()
-        };
-        save(&path, &settings).unwrap();
-        let json = fs::read_to_string(&path).unwrap();
-        assert!(json.contains("\"word-goal\""), "field must appear when set");
-        let loaded = load(&path).unwrap();
-        assert_eq!(loaded.word_goal, Some(80_000));
+        let mut settings = load(&path).unwrap();
+        assert_eq!(settings.take_legacy_word_goal(), Some(80_000));
+        assert_eq!(settings.take_legacy_word_goal(), None);
 
-        settings.word_goal = None;
-        save(&path, &settings).unwrap();
-        let json = fs::read_to_string(&path).unwrap();
-        assert!(
-            !json.contains("word-goal"),
-            "field must be absent when None"
-        );
-        let loaded = load(&path).unwrap();
-        assert_eq!(loaded.word_goal, None);
+        let mut unclaimed = load(&path).unwrap();
+        save(&path, &unclaimed).unwrap();
+        assert!(!fs::read_to_string(&path).unwrap().contains("word-goal"));
+        unclaimed = load(&path).unwrap();
+        assert_eq!(unclaimed.take_legacy_word_goal(), None);
     }
 }

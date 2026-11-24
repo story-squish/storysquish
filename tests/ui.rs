@@ -13,9 +13,17 @@ struct Fixture {
 }
 
 fn launch(board: Board) -> Fixture {
+    launch_with_settings(board, None)
+}
+
+fn launch_with_settings(board: Board, settings_json: Option<&str>) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("board.json");
     let settings_path = dir.path().join("config/storysquish/settings.json");
+    if let Some(json) = settings_json {
+        std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+        std::fs::write(&settings_path, json).unwrap();
+    }
     let mut harness = Harness::builder()
         .with_size(WINDOW)
         .build_eframe(move |cc| PlannerApp::new(cc, board, path, settings_path, None));
@@ -2342,7 +2350,7 @@ fn new_scene_in_zen_does_not_steal_focus_after_leaving_zen() {
 }
 
 #[test]
-fn word_goal_from_settings_shows_progress_and_survives_a_typo() {
+fn word_goal_is_saved_in_the_board_and_survives_a_typo() {
     let Fixture { mut harness, dir } = launch(board_with_scenes(&["Rain"]));
     let settings_path = dir.path().join("config/storysquish/settings.json");
 
@@ -2353,12 +2361,13 @@ fn word_goal_from_settings_shows_progress_and_survives_a_typo() {
     harness.run();
     labelled_text_input(&harness, "MANUSCRIPT WORD TARGET").type_text("x");
     harness.run();
-    assert_eq!(harness.state().settings().word_goal, Some(1_000));
-    assert_eq!(
-        storysquish::settings::load(&settings_path)
-            .unwrap()
-            .word_goal,
-        Some(1_000)
+    assert_eq!(harness.state().board().word_goal, Some(1_000));
+    flush_save(&mut harness);
+    assert_eq!(saved_board(&dir).word_goal, Some(1_000));
+    assert!(
+        !std::fs::read_to_string(&settings_path)
+            .unwrap_or_default()
+            .contains("word-goal")
     );
     harness.key_press(egui::Key::Escape);
     harness.run();
@@ -2395,4 +2404,46 @@ fn cards_cannot_be_reordered_while_filtered() {
     harness.run();
 
     assert_eq!(scene_titles(&harness), ["Rain A", "Rain B", "Sun"]);
+}
+
+fn flush_save(harness: &mut Harness<'_, PlannerApp>) {
+    harness.input_mut().focused = false;
+    harness.event(egui::Event::WindowFocused(false));
+    harness.run();
+}
+
+fn saved_board(dir: &TempDir) -> Board {
+    storysquish::storage::load(&dir.path().join("board.json")).unwrap()
+}
+
+#[test]
+fn legacy_settings_word_goal_moves_into_the_board() {
+    let Fixture { harness, dir } = launch_with_settings(
+        board_with_scenes(&["Rain"]),
+        Some(r#"{"word-goal": 80000}"#),
+    );
+    let settings_path = dir.path().join("config/storysquish/settings.json");
+
+    assert_eq!(harness.state().board().word_goal, Some(80_000));
+    assert_eq!(saved_board(&dir).word_goal, Some(80_000));
+    assert!(
+        !std::fs::read_to_string(&settings_path)
+            .unwrap()
+            .contains("word-goal")
+    );
+}
+
+#[test]
+fn legacy_settings_word_goal_does_not_replace_the_boards_own() {
+    let mut board = board_with_scenes(&["Rain"]);
+    board.word_goal = Some(50_000);
+    let Fixture { harness, dir } = launch_with_settings(board, Some(r#"{"word-goal": 80000}"#));
+    let settings_path = dir.path().join("config/storysquish/settings.json");
+
+    assert_eq!(harness.state().board().word_goal, Some(50_000));
+    assert!(
+        !std::fs::read_to_string(&settings_path)
+            .unwrap()
+            .contains("word-goal")
+    );
 }

@@ -442,7 +442,7 @@ function generateId() {
 }
 
 function defaultBoard() {
-  return {title: DEFAULT_TITLE, characters: [], scenes: [], locations: [], relationships: []};
+  return {title: DEFAULT_TITLE, characters: [], scenes: [], locations: [], relationships: [], wordGoal: null};
 }
 
 function isPlainObject(value) {
@@ -458,6 +458,13 @@ function textField(value, what, fallback = "") {
 function requiredTextField(value, what) {
   if (value === undefined) throw new Error(`${what} is missing`);
   return textField(value, what);
+}
+
+// Mirrors the desktop app's usize.
+function wordGoalField(value, what) {
+  if (value === undefined || value === null) return null;
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${what} must be a whole number`);
+  return value;
 }
 
 // Mirrors the desktop app's i32.
@@ -542,12 +549,13 @@ function parseBoard(text) {
     scenes: data.scenes.map(parseScene),
     locations: listField(data.locations ?? undefined, "locations").map(parseLocation),
     relationships: listField(data.relationships ?? undefined, "relationships").map(parseRelationship),
+    wordGoal: wordGoalField(data.wordGoal, "word goal"),
   };
 }
 
 // The desktop app leaves "day" out when unset, so do the same.
 function serializeBoard(b) {
-  return JSON.stringify(b, (key, value) => (key === "day" && value === null ? undefined : value), 2);
+  return JSON.stringify(b, (key, value) => ((key === "day" || key === "wordGoal") && value === null ? undefined : value), 2);
 }
 
 function sceneIndex(id) { return board.scenes.findIndex(s => s.id === id); }
@@ -1625,7 +1633,10 @@ function renderWrite() {
   $("wHeading").textContent = `${sceneNumber(index)}  ${sceneTitle(scene)}`;
   $("wPrev").disabled = index === 0;
   $("wNext").disabled = index === board.scenes.length - 1;
-  $("wWords").textContent = `${words(wordCount(scene.text))} · ${formatCount(manuscriptWordCount())} in manuscript`;
+  const manuscript = board.wordGoal === null
+    ? `${formatCount(manuscriptWordCount())} in manuscript`
+    : `${formatCount(manuscriptWordCount())} / ${formatCount(board.wordGoal)} goal in manuscript`;
+  $("wWords").textContent = `${words(wordCount(scene.text))} · ${manuscript}`;
   $("wSummary").textContent = scene.summary.trim();
   syncValue($("prose"), scene.text);
 }
@@ -1851,7 +1862,7 @@ function renderStats() {
   $("statsBody").innerHTML =
     rows.map(([label, count]) => `<tr><td>${esc(label)}</td><td>${count}</td></tr>`).join("") +
     `<tr class="total"><td>Total</td><td>${board.scenes.length}</td></tr>` +
-    `<tr><td>Words</td><td>${formatCount(manuscriptWordCount())}</td></tr>`;
+    `<tr><td>Words</td><td>${wordsAgainstGoal()}</td></tr>`;
 
   const total = manuscriptWordCount();
   const shareRow = (label, count) =>
@@ -1887,6 +1898,13 @@ function renderStats() {
       ? `<tr><td>${label}</td><td class="num none">0</td></tr>`
       : `<tr><td>${label}</td><td class="num gap" title="${esc(sceneList(indices))}">${indices.length}</td></tr>`)
     .join("");
+}
+
+function wordsAgainstGoal() {
+  const count = manuscriptWordCount();
+  if (board.wordGoal === null) return formatCount(count);
+  const pct = Math.min(percent(count, board.wordGoal), 999);
+  return `${formatCount(count)} / ${formatCount(board.wordGoal)} (${pct.toFixed(0)}%)`;
 }
 
 function percent(part, whole) {
@@ -2002,7 +2020,7 @@ function settingsDialog() {
       }
       const status = hint(settingsSaveError ?? "Saved in this browser's storage.");
       if (settingsSaveError) status.style.color = "var(--danger)";
-      box.append(heading, label, list, status, ...boardFileSection(), ...backupSection(), ...githubSection(),
+      box.append(heading, label, list, status, ...boardFileSection(), ...wordGoalSection(), ...backupSection(), ...githubSection(),
         button("Close", "", closeModal));
       box.style.maxWidth = "420px";
     },
@@ -2053,6 +2071,34 @@ function boardFileSection() {
     button("Open other…", "", afterAction(openLinkedFile)),
     button("Unlink", "", afterAction(unlinkFile)),
   )];
+}
+
+// "80,000" and "80.000" are both eighty thousand; blank or 0 clears the goal,
+// and anything else is ignored so a typo mid-edit keeps the last goal.
+function parseWordGoal(text) {
+  const digits = text.replace(/[,._ \u00a0]/g, "");
+  if (digits === "") return null;
+  if (!/^\d+$/.test(digits)) return undefined;
+  const goal = Number(digits);
+  if (!Number.isSafeInteger(goal)) return undefined;
+  return goal > 0 ? goal : null;
+}
+
+function wordGoalSection() {
+  const label = fieldLabel("Manuscript word target");
+  const input = document.createElement("input");
+  input.type = "text";
+  input.inputMode = "numeric";
+  input.placeholder = "e.g. 80000, for this novel (optional)";
+  input.setAttribute("aria-label", "Manuscript word target");
+  input.value = board.wordGoal === null ? "" : String(board.wordGoal);
+  input.addEventListener("input", () => {
+    const goal = parseWordGoal(input.value);
+    if (goal === undefined || goal === board.wordGoal) return;
+    board.wordGoal = goal;
+    markDirty();
+  });
+  return [label, input];
 }
 
 function backupSection() {

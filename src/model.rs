@@ -160,6 +160,9 @@ pub struct Board {
     pub locations: Vec<Location>,
     #[serde(default)]
     pub relationships: Vec<Relationship>,
+    /// Target manuscript word count. Older apps drop it on save.
+    #[serde(rename = "wordGoal", default, skip_serializing_if = "Option::is_none")]
+    pub word_goal: Option<usize>,
 }
 
 impl Default for Board {
@@ -170,12 +173,14 @@ impl Default for Board {
             scenes: Vec::new(),
             locations: Vec::new(),
             relationships: Vec::new(),
+            word_goal: None,
         }
     }
 }
 
 impl Board {
-    /// The title alone does not count: a new board keeps a default one.
+    /// The title and word goal alone do not count: a new board keeps a
+    /// default title, and a goal is no work to lose.
     pub fn is_empty(&self) -> bool {
         self.scenes.is_empty()
             && self.characters.is_empty()
@@ -1198,6 +1203,22 @@ mod tests {
                 ("Bennet", vec![])
             ]
         );
+    }
+
+    #[test]
+    fn word_goal_is_saved_only_when_set() {
+        let mut board = Board::default();
+        let json = serde_json::to_string(&board).unwrap();
+        assert!(!json.contains("wordGoal"));
+        assert_eq!(
+            serde_json::from_str::<Board>(&json).unwrap().word_goal,
+            None
+        );
+
+        board.word_goal = Some(80_000);
+        let json = serde_json::to_string(&board).unwrap();
+        assert!(json.contains(r#""wordGoal":80000"#));
+        assert_eq!(serde_json::from_str::<Board>(&json).unwrap(), board);
     }
 
     #[test]

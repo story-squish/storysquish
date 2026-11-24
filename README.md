@@ -77,8 +77,9 @@ sudo apt-get install libxcb-render0-dev libxcb-shape0-dev \
 - **Write** view: a prose editor per scene with previous/next navigation and
   scene and manuscript word counts, plus a distraction-free **Zen** mode that
   hides the header, side panels and statistics
-- Optional manuscript word target (**Settings → Manuscript word target**),
-  shown as progress in the statistics panel and the Write view
+- Optional manuscript word target per novel (**Settings → Manuscript word
+  target**), saved in the board file and shown as progress in the statistics
+  panel and the Write view
 - **Timeline** view: scenes in story-day order, so flashbacks and parallel
   threads show up next to their place in the story's chronology
 - **Relationships** view: a graph of directed, labelled relationships between
@@ -332,7 +333,7 @@ drive the app headlessly with `egui_kittest`.
 | [`app`](src/app.rs)                      | egui UI, shortcuts, dialogs                      |
 | [`history`](src/history.rs)              | Snapshot-based undo/redo                         |
 | [`storage`](src/storage.rs)              | Board load/save, atomic writes, backups, export names |
-| [`settings`](src/settings.rs)            | Color scheme, board location, recent boards, repo links, word goal, dictionary |
+| [`settings`](src/settings.rs)            | Color scheme, board location, recent boards, repo links, dictionary          |
 | [`github`](src/github.rs)                | GitHub backup client, token file, background requests |
 | [`outline`](src/outline.rs)              | Markdown outline and manuscript export           |
 | [`spelling`](src/spelling.rs)            | Dictionaries, word splitting, spellchecker       |
