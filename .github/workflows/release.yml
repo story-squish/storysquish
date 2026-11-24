@@ -1,0 +1,96 @@
+name: Release packages
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build and attach the packages to
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build universal binary
+        run: |
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+          mkdir -p target/universal
+          lipo -create -output target/universal/storysquish \
+            target/aarch64-apple-darwin/release/storysquish \
+            target/x86_64-apple-darwin/release/storysquish
+          strip target/universal/storysquish
+
+      - name: Assemble app bundle
+        run: make app APP_DIR=dist RELEASE_BIN=target/universal/storysquish
+
+      - name: Build installer package
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          pkgbuild --analyze --root dist component.plist
+          # A relocatable bundle makes Installer "upgrade" any StorySquish.app it
+          # finds elsewhere on disk instead of installing into /Applications.
+          plutil -replace 0.BundleIsRelocatable -bool NO component.plist
+          pkgbuild \
+            --root dist \
+            --component-plist component.plist \
+            --install-location /Applications \
+            --identifier io.github.storysquish \
+            --version "$version" \
+            "StorySquish-${TAG}-macos-universal.pkg"
+
+      - name: Attach package to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" "StorySquish-${TAG}-macos-universal.pkg" --clobber
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Static CRT so the exe runs without the Visual C++ Redistributable.
+      RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --target x86_64-pc-windows-msvc
+
+      - name: Package zip
+        shell: pwsh
+        run: |
+          $dir = "StorySquish-$env:TAG-windows-x86_64"
+          New-Item -ItemType Directory $dir | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/storysquish.exe "$dir/StorySquish.exe"
+          Copy-Item README.md $dir
+          Compress-Archive -Path $dir -DestinationPath "$dir.zip"
+
+      - name: Attach zip to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" "StorySquish-${TAG}-windows-x86_64.zip" --clobber

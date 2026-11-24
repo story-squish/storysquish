@@ -1,0 +1,3388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Untitled Novel — StorySquish</title>
+<style>
+  :root{
+    --board:#c9b79c;--header:#3a2c1e;--header-text:#f4ead6;--ink:#2b2118;--muted:#7a6a52;--card:#fdfaf2;
+    --line:#d8cdb6;--sidebar:#f2ecdd;--inspector:#faf6ec;--accent:#8a5a2b;--on-accent:#fff;--danger:#b04030;
+    --act:#cfe0e8;--field:#fff;
+    --status-Outline:#cfe0e8;--status-Draft:#e8dcc0;--status-Revision:#f3e0c0;--status-Final:#d5ecd0;--status-Archived:#e2e2e2;
+  }
+  *{box-sizing:border-box}
+  [hidden]{display:none!important}
+  html,body{height:100%}
+  body{margin:0;font:14px/1.45 "Segoe UI",system-ui,sans-serif;background:var(--board);color:var(--ink);display:flex;flex-direction:column}
+  header{display:flex;align-items:center;gap:8px;padding:10px 16px;background:var(--header);color:var(--header-text);flex-wrap:wrap}
+  header h1{font-size:17px;margin:0 4px 0 0;font-weight:700;white-space:nowrap}
+  header .grow{flex:1}
+  #bookTitle{width:min(360px,40vw)}
+  .toggle{display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer}
+  .toggle input{width:auto;margin:0}
+  button{cursor:pointer;border:1px solid var(--line);border-radius:6px;padding:6px 12px;font:inherit;font-size:13px;background:var(--card);color:var(--ink)}
+  button:hover:not(:disabled){filter:brightness(.95)}
+  button:disabled{opacity:.45;cursor:default}
+  button.primary{background:var(--accent);color:var(--on-accent);border-color:transparent}
+  button.danger{background:var(--danger);color:#fff;border-color:transparent}
+  button.small{padding:2px 8px;font-size:12px}
+  button.icon{padding:0 8px;font-size:16px;line-height:24px}
+  .save-state{font-size:11px;opacity:.8;margin-right:4px}
+  .save-state.failed{color:#ff9a8a;opacity:1;cursor:help}
+  main{flex:1;display:flex;min-height:0}
+  #sidebar{width:250px;flex:none;background:var(--sidebar);border-right:1px solid var(--line);padding:16px;overflow:auto}
+  #center{flex:1;display:flex;flex-direction:column;min-width:0}
+  #tabs{display:flex;gap:4px;padding:12px 22px 0;flex-wrap:wrap}
+  .tab{background:transparent;border-color:transparent}
+  .tab.active{background:var(--card);border-color:var(--line);font-weight:700}
+  .view{flex:1;overflow:auto;padding:16px 22px 22px;min-height:0}
+  #write:not([hidden]){display:flex;flex-direction:column}
+  #writeEditor:not([hidden]){flex:1;display:flex;flex-direction:column;gap:6px;min-height:0}
+  #writeEditor .row{margin:0}
+  #wHeading{font-weight:700}
+  #wSummary{font-style:italic}
+  #prose{flex:1;min-height:320px;font:16px/1.6 Georgia,"Times New Roman",serif;padding:14px;background:var(--card);resize:none}
+  .link{background:none;border:0;padding:2px 0;color:var(--accent);text-decoration:underline;display:block;text-align:left}
+  .day-heading{font-size:12px;font-weight:700;letter-spacing:.5px;color:var(--muted);margin:12px 0 4px}
+  .trow{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;background:var(--card);border:1px solid var(--line);border-radius:4px;padding:6px 10px;margin-bottom:4px;cursor:pointer;max-width:720px}
+  .trow.selected{border:2px solid var(--accent);padding:5px 9px}
+  #graph{padding:0;overflow:hidden}
+  #graph .graph-hint{padding:16px 22px 0}
+  #graph svg{display:block;width:100%;height:100%}
+  #graph .node{cursor:pointer}
+  #graph .node circle{fill:var(--card);stroke:var(--line)}
+  #graph .node text{fill:var(--ink)}
+  #graph .node:is(:hover,:focus,.selected) circle{fill:var(--accent)}
+  #graph .node:is(:hover,:focus,.selected) .initials{fill:var(--on-accent)}
+  #graph .node:focus{outline:none}
+  #graph .edge{stroke:var(--muted);stroke-width:1.5;fill:none}
+  #graph .edge-label{fill:var(--ink);font-size:12px;paint-order:stroke;stroke:var(--board);stroke-width:5px;stroke-linejoin:round}
+  .footnote{font-size:11px;color:var(--muted);margin-top:6px}
+  .day-field{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+  .day-field input[type=date]{width:auto}
+  .day-field input[type=checkbox]{width:auto;margin:0}
+  .check-field{display:flex;gap:6px;align-items:center;margin-top:8px;cursor:pointer}
+  .check-field input{width:auto;margin:0}
+  .rel-row{display:flex;gap:6px;align-items:center;margin-top:4px}
+  .rel-row > span{white-space:nowrap}
+  .rel-row input{flex:1;min-width:0}
+  .rel-row select{width:110px;flex:none}
+  .rel-row .rel-reverse{white-space:nowrap;flex:none}
+  details.menu{position:relative}
+  details.menu > summary{list-style:none;cursor:pointer;border:1px solid var(--line);border-radius:6px;padding:6px 12px;font-size:13px;background:var(--card);color:var(--ink)}
+  details.menu > summary::-webkit-details-marker{display:none}
+  .menu-items{position:absolute;right:0;top:calc(100% + 4px);z-index:5;display:flex;flex-direction:column;gap:2px;background:var(--inspector);border:1px solid var(--line);border-radius:6px;padding:4px;box-shadow:0 6px 16px #0003;min-width:190px}
+  .menu-items button{text-align:left;border-color:transparent;background:transparent}
+  button.warn{background:#e8b04a;color:#2b2118;border-color:transparent}
+  .backup-list{display:flex;flex-direction:column;gap:2px;max-height:50vh;overflow:auto;margin-bottom:12px}
+  .backup-list button{text-align:left}
+  .modal input.repo-input{flex:1;min-width:0}
+  #inspector{width:340px;flex:none;background:var(--inspector);border-left:1px solid var(--line);padding:16px;overflow:auto}
+  #stats{background:var(--inspector);border-top:1px solid var(--line);padding:12px}
+  h2{margin:0 0 6px;font-size:16px}
+  .section + .section{margin-top:18px}
+  .field-label{display:block;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);margin:10px 0 4px}
+  input,textarea,select{width:100%;font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:6px;background:var(--field);color:var(--ink)}
+  textarea{resize:vertical}
+  .hint{font-size:12px;color:var(--muted)}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(248px,1fr));gap:16px;align-items:start}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:4px;padding:12px;box-shadow:0 3px 6px #0001;cursor:pointer;min-height:90px;user-select:none}
+  .card.selected,.char.selected{border:2px solid var(--accent)}
+  .card.selected{padding:11px}
+  .card.dragging{opacity:.4}
+  .card.drop-target{outline:2px solid var(--accent);outline-offset:4px}
+  .num{font-size:11px;font-weight:700;letter-spacing:1px;color:var(--muted)}
+  .card .ttl{font-weight:700;margin:2px 0 4px;overflow-wrap:anywhere}
+  .card .ttl.untitled{font-weight:400;font-style:italic}
+  .card .sum{font-size:12px;color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere}
+  .badges{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+  .badge{font-size:10px;padding:2px 7px;border-radius:10px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;color:var(--ink)}
+  .badge.act{background:var(--act)}
+  .badge.pov{background:var(--header);color:var(--header-text)}
+  .status-Outline{background:var(--status-Outline)}
+  .status-Draft{background:var(--status-Draft)}
+  .status-Revision{background:var(--status-Revision)}
+  .status-Final{background:var(--status-Final)}
+  .status-Archived{background:var(--status-Archived)}
+  .empty{text-align:center;padding:60px 20px}
+  .empty strong{display:block;font-size:20px;margin-bottom:4px}
+  .char{background:var(--card);border:1px solid var(--line);border-radius:4px;padding:8px 10px;margin-bottom:6px;cursor:pointer;box-shadow:0 3px 6px #0001}
+  .char.selected{padding:7px 9px}
+  .char .cname{display:flex;justify-content:space-between;gap:6px;font-weight:700;overflow-wrap:anywhere}
+  .char .x{color:var(--danger);font-weight:700;cursor:pointer;padding:0 2px}
+  .char .cnotes{font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere;margin-top:2px}
+  .insp-head{display:flex;align-items:center;gap:8px}
+  .insp-head .ttl{font-weight:700;flex:1;overflow-wrap:anywhere}
+  .stats-table{border-collapse:collapse}
+  .stats-table td{padding:2px 12px 2px 0}
+  .stats-table tr.total td{font-weight:700}
+  .stats-grid{display:flex;flex-wrap:wrap;gap:12px 32px;align-items:flex-start}
+  .stats-grid h3{font-size:13px;margin:0 0 4px}
+  .stats-table td.num{text-align:right}
+  .stats-table td.gap{color:var(--danger);cursor:help}
+  .stats-table td.none{color:var(--muted)}
+  #modalHost{position:fixed;inset:0;background:#0006;display:flex;align-items:center;justify-content:center;padding:16px;z-index:10}
+  .modal{background:var(--inspector);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:16px;max-width:380px;width:100%;max-height:100%;overflow-y:auto;overscroll-behavior:contain;box-shadow:0 10px 30px #0005}
+  .modal .message{white-space:pre-wrap;overflow-wrap:anywhere;margin:0 0 12px}
+  .swatch{display:inline-flex;border:1px solid var(--line);flex:none}
+  .swatch span{width:10px;height:14px}
+  .scheme-picker{display:flex;align-items:center;gap:8px}
+  .scheme-picker select{flex:1;min-width:0}
+  @media (max-width:760px){
+    main{flex-direction:column;overflow:auto}
+    #sidebar,#inspector{width:auto;border:0;overflow:visible}
+    .view{overflow:visible;padding:16px}
+    #graph{height:70vh}
+    #bookTitle{width:100%}
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Manuscript Board</h1>
+  <input id="bookTitle" placeholder="Novel title" aria-label="Novel title">
+  <label class="toggle"><input type="checkbox" id="statsToggle"> Stats</label>
+  <button id="settingsBtn">Settings</button>
+  <span class="grow"></span>
+  <span class="save-state" id="saveState">saved</span>
+  <button class="warn" id="reconnectBtn" hidden>Reconnect file</button>
+  <button class="warn" id="backupNudge" hidden title="This board only lives in this browser. Download a copy, or link a file in Settings.">Back up</button>
+  <details class="menu" id="exportMenu">
+    <summary>Export</summary>
+    <div class="menu-items">
+      <button data-export="board">Board (JSON)</button>
+      <button data-export="outline">Outline (Markdown)</button>
+      <button data-export="manuscript" title="The prose of every scene, for a word processor">Manuscript (Markdown)</button>
+      <button data-export="combined" title="The outline followed by the manuscript, in one file">Outline + Manuscript (Markdown)</button>
+    </div>
+  </details>
+  <button id="importBtn">Import</button>
+  <button id="resetBtn">Reset</button>
+  <button id="undoBtn">Undo</button>
+  <button id="redoBtn">Redo</button>
+  <button class="primary" id="addBtn">+ Scene</button>
+  <input type="file" id="importFile" accept="application/json,.json" hidden>
+</header>
+
+<main>
+  <aside id="sidebar">
+    <div class="section">
+      <h2>Filter</h2>
+      <input id="search" placeholder="Search scenes, prose, POV, location" aria-label="Search">
+      <label class="field-label" for="filterStatus">Status</label>
+      <select id="filterStatus"></select>
+      <label class="field-label" for="filterAct">Act</label>
+      <select id="filterAct"></select>
+      <label class="field-label" for="filterPov">POV</label>
+      <select id="filterPov"></select>
+      <div class="row">
+        <span class="hint" id="matchCount"></span>
+        <button class="small" id="clearFilters">Clear filters</button>
+      </div>
+    </div>
+    <div class="section">
+      <h2>Characters</h2>
+      <div id="charList"></div>
+      <input id="newChar" placeholder="New character name" aria-label="New character name">
+      <div class="hint">Type a name + Enter to add.</div>
+    </div>
+    <div class="section">
+      <h2>Locations</h2>
+      <div id="locList"></div>
+      <input id="newLoc" placeholder="New location name" aria-label="New location name">
+    </div>
+  </aside>
+
+  <div id="center">
+    <nav id="tabs" role="tablist">
+      <button class="tab" role="tab" data-view="board">Board</button>
+      <button class="tab" role="tab" data-view="write">Write</button>
+      <button class="tab" role="tab" data-view="timeline">Timeline</button>
+      <button class="tab" role="tab" data-view="graph">Relationships</button>
+    </nav>
+    <section id="board" class="view"></section>
+    <section id="write" class="view" hidden>
+      <div id="writePicker"></div>
+      <div id="writeEditor">
+        <div class="row">
+          <button id="wPrev">Previous</button>
+          <span id="wHeading"></span>
+          <button id="wNext">Next</button>
+          <span class="grow" style="flex:1"></span>
+          <span class="hint" id="wWords"></span>
+        </div>
+        <div class="hint" id="wSummary"></div>
+        <textarea id="prose" aria-labelledby="wHeading" placeholder="Start writing…"></textarea>
+      </div>
+    </section>
+    <section id="timeline" class="view" hidden></section>
+    <section id="graph" class="view" hidden></section>
+    <section id="stats" hidden>
+      <h2>Statistics</h2>
+      <div class="stats-grid">
+        <table class="stats-table"><tbody id="statsBody"></tbody></table>
+        <div><h3>Words per act</h3><table class="stats-table"><tbody id="statsActWords"></tbody></table></div>
+        <div><h3>POV share</h3><table class="stats-table"><tbody id="statsPovWords"></tbody></table></div>
+        <div><h3 title="Scenes where a character is POV or named in the title, summary or prose">Appearances</h3><table class="stats-table"><tbody id="statsAppearances"></tbody></table></div>
+        <div><h3>Missing</h3><table class="stats-table"><tbody id="statsGaps"></tbody></table></div>
+      </div>
+    </section>
+  </div>
+
+  <aside id="inspector" hidden>
+    <div id="sceneInspector">
+      <div class="insp-head">
+        <span class="num" id="sNum"></span>
+        <span class="ttl" id="sHeading"></span>
+        <button class="icon" id="sClose" title="Close">×</button>
+      </div>
+      <label class="field-label" for="sTitle">Title</label>
+      <input id="sTitle" placeholder="e.g. The confrontation in the rain">
+      <label class="field-label" for="sSum">Summary / beat</label>
+      <textarea id="sSum" rows="5" placeholder="What happens in this scene. What changes."></textarea>
+      <div class="cols">
+        <div>
+          <label class="field-label" for="sStatus">Status</label>
+          <select id="sStatus"></select>
+        </div>
+        <div>
+          <label class="field-label" for="sPov">POV character</label>
+          <select id="sPov"></select>
+        </div>
+      </div>
+      <label class="field-label" for="sAct">Act</label>
+      <select id="sAct"></select>
+      <div class="cols">
+        <div>
+          <label class="field-label" for="sLocation">Location</label>
+          <select id="sLocation"></select>
+        </div>
+        <div>
+          <label class="field-label" for="sDated" id="sDayLabel">Story day</label>
+          <div class="day-field">
+            <input type="checkbox" id="sDated" title="Place this scene on the timeline">
+            <input type="number" id="sDay" step="1" aria-label="Story day">
+            <input type="date" id="sDate" min="0001-01-01" max="9999-12-31" aria-label="Story date" hidden>
+            <button class="small" id="sToday" title="Set the scene's date to today" hidden>Today</button>
+          </div>
+        </div>
+      </div>
+      <label class="check-field" id="sDayZeroField" title="Other scenes show how long before or after this one they happen, such as 2 days before or 3 months after.">
+        <input type="checkbox" id="sDayZero"> Day 0 scene
+      </label>
+      <label class="check-field" title="A chapter runs until the next scene that starts one. Once any scene does, the first scene opens chapter 1.">
+        <input type="checkbox" id="sChapterBreak"> <span id="sChapterLabel">Starts a chapter</span>
+      </label>
+      <div class="row">
+        <span class="hint" id="sWords"></span>
+        <button class="small" id="sWrite" title="Open this scene's prose in the editor">Write prose</button>
+      </div>
+      <div class="row" style="margin-top:16px">
+        <button id="sEarlier">Move earlier</button>
+        <button id="sLater">Move later</button>
+      </div>
+      <div class="row">
+        <button id="sDuplicate">Duplicate</button>
+        <button class="danger" id="sDelete">Delete scene</button>
+      </div>
+    </div>
+
+    <div id="characterInspector">
+      <div class="insp-head">
+        <span class="num">CHARACTER</span>
+        <span class="ttl" id="cHeading"></span>
+        <button class="icon" id="cClose" title="Close">×</button>
+      </div>
+      <label class="field-label" for="cName">Name</label>
+      <input id="cName">
+      <label class="field-label" for="cRole">Role</label>
+      <input id="cRole" placeholder="Protagonist, mentor, antagonist…">
+      <label class="field-label" for="cGender">Gender</label>
+      <input id="cGender" placeholder="Woman, man, nonbinary…">
+      <label class="field-label" for="cGoal">Goal</label>
+      <textarea id="cGoal" rows="2" placeholder="What they want, and what stands in the way."></textarea>
+      <label class="field-label" for="cNotes">Notes</label>
+      <textarea id="cNotes" rows="6" placeholder="Appearance, voice, backstory, arc."></textarea>
+      <div class="hint" id="cPovCount"></div>
+      <div class="hint" id="cAppearCount" title="As POV, or named in the title, summary or prose"></div>
+      <label class="field-label" for="relTarget">Relationships</label>
+      <div id="relList"></div>
+      <div class="rel-row" id="relAdd">
+        <select id="relTarget" aria-label="Related character"></select>
+        <input id="relLabel" placeholder="mentor, sister…" aria-label="How they relate">
+        <button class="small" id="relAddBtn">Add</button>
+      </div>
+      <div class="row" style="margin-top:16px">
+        <button id="cUp">Move up</button>
+        <button id="cDown">Move down</button>
+      </div>
+      <div class="row">
+        <button class="danger" id="cDelete">Delete character</button>
+      </div>
+    </div>
+
+    <div id="locationInspector">
+      <div class="insp-head">
+        <span class="num">LOCATION</span>
+        <span class="ttl" id="lHeading"></span>
+        <button class="icon" id="lClose" title="Close">×</button>
+      </div>
+      <label class="field-label" for="lName">Name</label>
+      <input id="lName">
+      <label class="field-label" for="lNotes">Notes</label>
+      <textarea id="lNotes" rows="8" placeholder="Look, sound, smell, history, who goes there."></textarea>
+      <div class="hint" id="lCount"></div>
+      <div class="row" style="margin-top:16px">
+        <button id="lUp">Move up</button>
+        <button id="lDown">Move down</button>
+      </div>
+      <div class="row">
+        <button class="danger" id="lDelete">Delete location</button>
+      </div>
+    </div>
+  </aside>
+</main>
+
+<div id="modalHost" hidden></div>
+
+<script>
+"use strict";
+
+const BOARD_KEY = "storysquish.board";
+const LEGACY_BOARD_KEYS = ["manuscriptBoard.v1"];
+const SETTINGS_KEY = "storysquish.settings";
+const STATUSES = ["Outline", "Draft", "Revision", "Final", "Archived"];
+const ACTS = ["Act I", "Act II", "Act III"];
+const DEFAULT_TITLE = "Untitled Novel";
+const NONE_LABEL = "— none —";
+const SAVE_DEBOUNCE_MS = 400;
+const FILE_POLL_MS = 2000;
+const BACKUP_INTERVAL_MS = 30 * 60 * 1000;
+const BACKUPS_KEPT = 30;
+const BACKUP_NUDGE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
+const FILE_KEY = "storysquish.file";
+const TOKEN_KEY = "storysquish.github-token";
+const GITHUB_API = "https://api.github.com";
+const GITHUB_BOARD_FILE = "storysquish-board.json";
+const GITHUB_BACKUP_INTERVAL_MS = 5 * 60 * 1000;
+const GITHUB_CHECK_MS = 30 * 1000;
+const GITHUB_SUGGEST_DELAY_MS = 400;
+const GITHUB_REVISIONS_LISTED = 30;
+const GITHUB_REPO_NAME_PREFIX = "storysquish-";
+const GITHUB_UNTITLED_REPO_NAME = "storysquish-board";
+const GITHUB_MAX_REPO_NAME_LEN = 80;
+const GITHUB_MAX_REPO_NAME_ATTEMPTS = 20;
+const DB_NAME = "storysquish";
+const FILE_ACCESS = "showOpenFilePicker" in window;
+const UNDO_LIMIT = 100;
+const SUMMARY_PREVIEW_CHARS = 180;
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+
+const SHORTCUT_LABELS = IS_MAC
+  ? {newScene: "⌘N", undo: "⌘Z", redo: "⇧⌘Z", duplicate: "⌘D",
+     earlier: "⌥←", later: "⌥→", up: "⌥↑", down: "⌥↓"}
+  : {newScene: "Ctrl+N", undo: "Ctrl+Z", redo: "Ctrl+Shift+Z", duplicate: "Ctrl+D",
+     earlier: "Alt+Left", later: "Alt+Right", up: "Alt+Up", down: "Alt+Down"};
+
+// surfaces: board, header, header text, ink, muted, card
+// chrome: line, sidebar, inspector, accent, danger, act badge
+// statuses: badge fills in STATUSES order
+const COLOR_SCHEMES = [
+  ["parchment", "Parchment", false,
+    ["#c9b79c","#3a2c1e","#f4ead6","#2b2118","#7a6a52","#fdfaf2"],
+    ["#d8cdb6","#f2ecdd","#faf6ec","#8a5a2b","#b04030","#cfe0e8"],
+    ["#cfe0e8","#e8dcc0","#f3e0c0","#d5ecd0","#e2e2e2"]],
+  ["linen", "Linen", false,
+    ["#d6d3cc","#33363b","#f1efe9","#24262a","#6b6e74","#ffffff"],
+    ["#d9d6cf","#efede8","#f7f6f2","#3f6e8c","#b3413a","#dbe6ee"],
+    ["#dbe6ee","#ece4d2","#f2dfc8","#d8ead6","#e4e4e4"]],
+  ["sage", "Sage", false,
+    ["#a9b8a0","#2f3d2c","#eef2e6","#1f2a1d","#5d6b58","#fbfcf7"],
+    ["#cdd6c4","#e9eee2","#f4f7ef","#4c7a3d","#a8453a","#d6e4d0"],
+    ["#d3e2ea","#e8e2c4","#f0dcc0","#cfe8c8","#e0e2dc"]],
+  ["harbor", "Harbor", false,
+    ["#9fb4c7","#1e2f40","#e8f0f7","#18232e","#586a7c","#fbfdff"],
+    ["#cbd7e2","#e6edf4","#f2f6fa","#2f6690","#b03f3f","#d3e3f0"],
+    ["#d3e3f0","#e6e0cc","#f0dcc4","#d2eadb","#e1e4e8"]],
+  ["rosewood", "Rosewood", false,
+    ["#c7a9a6","#3d2428","#f7e9ea","#2e1a1d","#7a5c60","#fffafa"],
+    ["#e2cfd0","#f4e9e9","#fbf4f4","#9c3d54","#b3402e","#e9d6e4"],
+    ["#dcdcef","#efe0cc","#f5d9cc","#d9ead3","#e6e1e2"]],
+  ["lavender", "Lavender", false,
+    ["#b3aac8","#2c2640","#eeeaf7","#221d30","#655d7a","#fdfcff"],
+    ["#d8d2e6","#ece8f4","#f6f4fa","#6a4fa3","#b0434a","#dcd6f0"],
+    ["#d6dcf2","#ece2cf","#f2dccb","#d6ebd8","#e3e1e8"]],
+  ["slate", "Slate", true,
+    ["#2b3036","#1b1e22","#e6e8eb","#e4e6e9","#9aa1a9","#3a4048"],
+    ["#4c535c","#23272c","#262a30","#6ea8d8","#c0503f","#2f4a5c"],
+    ["#2f4a5c","#524a33","#5c4630","#2f5238","#474b51"]],
+  ["midnight", "Midnight", true,
+    ["#141b2d","#0b1020","#dde4f5","#e1e7f5","#8b96b3","#1f2840"],
+    ["#323d5c","#111829","#151d31","#8ca8ff","#c4574b","#2a3a66"],
+    ["#2a3a66","#4d4530","#5a4030","#24503e","#3a3f4f"]],
+  ["ember", "Ember", true,
+    ["#2a201b","#17110e","#f2e3d3","#f0e2d2","#ab9682","#3a2d26"],
+    ["#54433a","#211915","#251c18","#e08a4a","#c44a3a","#3d4650"],
+    ["#3a4a58","#5a4a2e","#66442c","#3a5030","#4a423d"]],
+  ["forest-night", "Forest Night", true,
+    ["#1c2620","#101712","#dfeadf","#e0ebe0","#92a596","#28352c"],
+    ["#3b4b3f","#172019","#1a241d","#7cc48a","#bf5646","#2d4a4f"],
+    ["#2d4a4f","#4f4a2c","#5a442c","#2f5a35","#3c4540"]],
+].map(([key, name, dark, surfaces, chrome, statuses]) => {
+  const [board, header, headerText, ink, muted, card] = surfaces;
+  const [line, sidebar, inspector, accent, danger, act] = chrome;
+  return {
+    key, name, dark, board, header, headerText, ink, muted, card,
+    line, sidebar, inspector, accent, danger, act, statuses,
+    // Dark schemes use light accents, which need dark text on top.
+    onAccent: dark ? header : "#ffffff",
+    field: dark ? card : "#ffffff",
+  };
+});
+const DEFAULT_SCHEME = "parchment";
+
+/* ---------- model ---------- */
+
+function generateId() {
+  if (globalThis.crypto?.randomUUID) return crypto.randomUUID().replaceAll("-", "");
+  return Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join("");
+}
+
+function defaultBoard() {
+  return {title: DEFAULT_TITLE, characters: [], scenes: [], locations: [], relationships: [], wordGoal: null,
+    calendar: false, absoluteDays: false, dayZero: null};
+}
+
+function isPlainObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function textField(value, what, fallback = "") {
+  if (value === undefined) return fallback;
+  if (typeof value !== "string") throw new Error(`${what} must be text`);
+  return value;
+}
+
+function requiredTextField(value, what) {
+  if (value === undefined) throw new Error(`${what} is missing`);
+  return textField(value, what);
+}
+
+function boolField(value, what) {
+  if (value === undefined) return false;
+  if (typeof value !== "boolean") throw new Error(`${what} must be true or false`);
+  return value;
+}
+
+// Mirrors the desktop app's usize.
+function wordGoalField(value, what) {
+  if (value === undefined || value === null) return null;
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${what} must be a whole number`);
+  return value;
+}
+
+// Mirrors the desktop app's StoryDate: YYYY-MM-DD in years 1 to 9999.
+function dateField(value, what) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string" || epochDays(value) === null) throw new Error(`${what} must be a date as YYYY-MM-DD`);
+  return value;
+}
+
+// Mirrors the desktop app's i32.
+function dayField(value, what) {
+  if (value === undefined || value === null) return null;
+  if (!Number.isInteger(value) || value < -(2 ** 31) || value >= 2 ** 31) {
+    throw new Error(`${what} must be a whole number`);
+  }
+  return value;
+}
+
+function listField(value, what) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error(`${what} must be a list`);
+  return value;
+}
+
+function choiceField(value, what, choices, fallback) {
+  if (value === undefined || value === null) return fallback;
+  if (value === "" && fallback === "") return "";
+  if (!choices.includes(value)) throw new Error(`${what}: unknown value ${JSON.stringify(value)}`);
+  return value;
+}
+
+function parseCharacter(raw, index) {
+  const what = `character ${index + 1}`;
+  if (!isPlainObject(raw)) throw new Error(`${what} must be an object`);
+  return {
+    id: requiredTextField(raw.id, `${what} id`),
+    name: requiredTextField(raw.name, `${what} name`),
+    role: textField(raw.role, `${what} role`),
+    gender: textField(raw.gender, `${what} gender`),
+    goal: textField(raw.goal, `${what} goal`),
+    notes: textField(raw.notes, `${what} notes`),
+  };
+}
+
+function parseLocation(raw, index) {
+  const what = `location ${index + 1}`;
+  if (!isPlainObject(raw)) throw new Error(`${what} must be an object`);
+  return {
+    id: requiredTextField(raw.id, `${what} id`),
+    name: requiredTextField(raw.name, `${what} name`),
+    notes: textField(raw.notes, `${what} notes`),
+  };
+}
+
+function parseRelationship(raw, index) {
+  const what = `relationship ${index + 1}`;
+  if (!isPlainObject(raw)) throw new Error(`${what} must be an object`);
+  return {
+    id: requiredTextField(raw.id, `${what} id`),
+    from: requiredTextField(raw.from, `${what} from`),
+    to: requiredTextField(raw.to, `${what} to`),
+    label: textField(raw.label, `${what} label`),
+  };
+}
+
+function parseScene(raw, index) {
+  const what = `scene ${index + 1}`;
+  if (!isPlainObject(raw)) throw new Error(`${what} must be an object`);
+  return {
+    id: requiredTextField(raw.id, `${what} id`),
+    title: textField(raw.title, `${what} title`),
+    summary: textField(raw.summary, `${what} summary`),
+    status: raw.status === undefined ? "Outline" : choiceField(raw.status, `${what} status`, STATUSES, "Outline"),
+    pov: raw.pov === null ? "" : textField(raw.pov, `${what} pov`),
+    act: choiceField(raw.act, `${what} act`, ACTS, ""),
+    location: raw.location === null ? "" : textField(raw.location, `${what} location`),
+    day: dayField(raw.day, `${what} day`),
+    date: dateField(raw.date, `${what} date`),
+    dayHidden: boolField(raw.dayHidden, `${what} day hidden`),
+    text: textField(raw.text, `${what} text`),
+    chapterBreak: boolField(raw.chapterBreak, `${what} chapter break`),
+  };
+}
+
+function parseBoard(text) {
+  const data = JSON.parse(text);
+  if (!isPlainObject(data)) throw new Error("expected a JSON object");
+  if (!Array.isArray(data.scenes)) throw new Error("missing the scenes list");
+  const scenes = data.scenes.map(parseScene);
+  // The first calendar stored a start date and kept scene days as offsets
+  // from it; those become per-scene dates.
+  const storyStart = dateField(data.storyStart, "story start");
+  if (storyStart !== null) {
+    for (const scene of scenes) {
+      if (scene.date === null && scene.day !== null) scene.date = isoFromEpochDays(epochDays(storyStart) + scene.day - 1);
+    }
+  }
+  return {
+    title: textField(data.title, "title"),
+    characters: listField(data.characters ?? undefined, "characters").map(parseCharacter),
+    scenes,
+    locations: listField(data.locations ?? undefined, "locations").map(parseLocation),
+    relationships: listField(data.relationships ?? undefined, "relationships").map(parseRelationship),
+    wordGoal: wordGoalField(data.wordGoal, "word goal"),
+    calendar: boolField(data.calendar, "calendar") || storyStart !== null,
+    absoluteDays: boolField(data.absoluteDays, "absolute days"),
+    dayZero: data.dayZero === null ? null : textField(data.dayZero, "day zero", null),
+  };
+}
+
+// The desktop app leaves these out when unset, so do the same.
+const OMITTED_WHEN_NULL = new Set(["day", "date", "wordGoal", "dayZero"]);
+const OMITTED_WHEN_FALSE = new Set(["dayHidden", "chapterBreak", "calendar", "absoluteDays"]);
+function serializeBoard(b) {
+  return JSON.stringify(b, (key, value) => ((OMITTED_WHEN_NULL.has(key) && value === null) || (OMITTED_WHEN_FALSE.has(key) && value === false)
+    ? undefined : value), 2);
+}
+
+/* ---------- story calendar ---------- */
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const WEEKDAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+// Days since 1970-01-01 for a valid YYYY-MM-DD in years 1 to 9999, else null.
+function epochDays(iso) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (!match) return null;
+  const [year, month, day] = match.slice(1).map(Number);
+  const date = new Date(0);
+  // setUTCFullYear, unlike Date.UTC, does not read years 0 to 99 as 1900 to 1999.
+  date.setUTCFullYear(year, month - 1, day);
+  const valid = year >= 1 && date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+  return valid ? Math.round(date.getTime() / MS_PER_DAY) : null;
+}
+
+function isoFromEpochDays(days) {
+  const date = new Date(days * MS_PER_DAY);
+  const year = date.getUTCFullYear();
+  if (!(year >= 1 && year <= 9999)) return null;
+  const pad = n => String(n).padStart(2, "0");
+  return `${String(year).padStart(4, "0")}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`;
+}
+
+function todayIso() {
+  return isoFromEpochDays(Math.floor(Date.now() / MS_PER_DAY));
+}
+
+function longDateLabel(iso) {
+  const date = new Date(epochDays(iso) * MS_PER_DAY);
+  return `${WEEKDAY_NAMES[date.getUTCDay()]} ${date.getUTCDate()} ${MONTH_NAMES[date.getUTCMonth()]} ${date.getUTCFullYear()}`;
+}
+
+function shownDay(scene) { return scene.dayHidden ? null : scene.day; }
+function shownDate(scene) { return scene.dayHidden ? null : scene.date; }
+
+// Each scene's place in the story's chronology by board index, as {number,
+// date} or null. On a calendar the earliest manuscript date is day 1, and
+// archived scenes keep their date but get no number. Mirrors Board::story_days.
+function storyDays(b = board) {
+  const dayZeroScene = b.dayZero === null ? undefined : b.scenes.find(s => s.id === b.dayZero);
+  if (!b.calendar) {
+    const zero = dayZeroScene ? shownDay(dayZeroScene) : null;
+    return b.scenes.map(s => {
+      const number = shownDay(s);
+      if (number === null) return null;
+      const fromDayZero = zero === null ? null
+        : {before: number < zero, elapsed: {years: 0, months: 0, days: Math.abs(number - zero)}};
+      return {number, date: null, fromDayZero};
+    });
+  }
+  const dates = manuscriptDates(b);
+  const zero = dayZeroScene ? shownDate(dayZeroScene) : null;
+  return b.scenes.map(s => {
+    const date = shownDate(s);
+    if (date === null) return null;
+    const fromDayZero = zero === null ? null : {before: date < zero, elapsed: elapsedBetween(zero, date)};
+    if (s.status === "Archived") return {number: null, date, fromDayZero};
+    const ordinal = b.absoluteDays ? epochDays(date) - epochDays(dates[0]) : dates.indexOf(date);
+    return {number: ordinal + 1, date, fromDayZero};
+  });
+}
+
+function monthIndex(iso) { return Number(iso.slice(0, 4)) * 12 + Number(iso.slice(5, 7)) - 1; }
+
+// Keeps the day of the month where it can, else the month's last day.
+// Mirrors StoryDate::plus_months.
+function plusMonths(iso, months) {
+  const index = monthIndex(iso) + months;
+  const year = Math.floor(index / 12);
+  if (year < 1 || year > 9999) return null;
+  const pad = n => String(n).padStart(2, "0");
+  const yearMonth = `${String(year).padStart(4, "0")}-${pad(index - year * 12 + 1)}`;
+  for (let day = Number(iso.slice(8, 10)); day >= 28; day--) {
+    if (epochDays(`${yearMonth}-${pad(day)}`) !== null) return `${yearMonth}-${pad(day)}`;
+  }
+  return `${yearMonth}-${iso.slice(8, 10)}`;
+}
+
+// Whole years and months, then leftover days, stepping months from `from`
+// so 31 Mar back to 28 Feb is one month. Mirrors StoryDate::elapsed_until.
+function elapsedBetween(from, to) {
+  const direction = to < from ? -1 : 1;
+  const overshoots = months => {
+    const stepped = plusMonths(from, direction * months);
+    return stepped === null || (direction > 0 ? stepped > to : stepped < to);
+  };
+  let months = Math.abs(monthIndex(to) - monthIndex(from));
+  if (months > 0 && overshoots(months)) months -= 1;
+  const stepped = plusMonths(from, direction * months);
+  const days = stepped === null ? 0 : Math.abs(epochDays(to) - epochDays(stepped));
+  return {years: Math.floor(months / 12), months: months % 12, days};
+}
+
+// "day 0", "2 days before", "3 months 4 days after" or "1 year 2 months
+// before"; days are dropped once there are years. Mirrors DayZeroOffset::label.
+function dayZeroOffsetLabel({before, elapsed: {years, months, days}}) {
+  const units = years > 0 ? [[years, "year"], [months, "month"]] : [[months, "month"], [days, "day"]];
+  const amounts = units.filter(([count]) => count > 0).map(([count, unit]) => plural(count, unit));
+  return amounts.length ? `${amounts.join(" ")} ${before ? "before" : "after"}` : "day 0";
+}
+
+// Distinct shown dates of manuscript scenes, earliest first, optionally
+// leaving one scene out so it can be renumbered against the others.
+function manuscriptDates(b = board, excluding = -1) {
+  const dates = manuscriptScenes(b).filter(({index}) => index !== excluding).map(({scene}) => shownDate(scene));
+  return [...new Set(dates.filter(d => d !== null))].sort();
+}
+
+// The date that would be day `number` among `dates`. Counting only dates
+// with scenes, a number past the last day lands that many days after it, and
+// one before day 1 that many days before it. Mirrors CalendarDays::date_of.
+function dateOfDayNumber(dates, number, absolute) {
+  if (!dates.length) return null;
+  const ordinal = number - 1;
+  if (absolute || ordinal < 0) return isoFromEpochDays(epochDays(dates[0]) + ordinal);
+  if (ordinal < dates.length) return dates[ordinal];
+  return isoFromEpochDays(epochDays(dates.at(-1)) + ordinal - (dates.length - 1));
+}
+
+// "Day 3", "Day 3 · Wed 18 Mar 2026" or, for archived scenes on a calendar,
+// "Wed 18 Mar 2026", with the distance from day 0 before the date when the
+// board has one: "Day 3 · 2 days before · Wed 18 Mar 2026".
+function storyDayLabel({number, date, fromDayZero}) {
+  return [
+    number === null ? null : `Day ${number}`,
+    fromDayZero === null ? null : dayZeroOffsetLabel(fromDayZero),
+    date === null ? null : longDateLabel(date),
+  ].filter(part => part !== null).join(" · ");
+}
+
+function sceneIndex(id) { return board.scenes.findIndex(s => s.id === id); }
+function characterIndex(id) { return board.characters.findIndex(c => c.id === id); }
+function findCharacter(id) { return id ? board.characters.find(c => c.id === id) : undefined; }
+function povSceneCount(id) { return board.scenes.filter(s => s.pov === id).length; }
+function locationIndex(id) { return board.locations.findIndex(l => l.id === id); }
+function findLocation(id) { return id ? board.locations.find(l => l.id === id) : undefined; }
+function locationSceneCount(id) { return board.scenes.filter(s => s.location === id).length; }
+
+function wordCount(text) {
+  const trimmed = text.trim();
+  return trimmed ? trimmed.split(/\s+/).length : 0;
+}
+
+function manuscriptScenes(b = board) {
+  return b.scenes.map((scene, index) => ({scene, index})).filter(({scene}) => scene.status !== "Archived");
+}
+
+function sceneWords(entries) {
+  return entries.reduce((sum, {scene}) => sum + wordCount(scene.text), 0);
+}
+
+function manuscriptWordCount(b = board) {
+  return sceneWords(manuscriptScenes(b));
+}
+
+// Acts in order, then "" for scenes without an act.
+function actWordCounts() {
+  const scenes = manuscriptScenes();
+  return [...ACTS, ""].map(act => [act, sceneWords(scenes.filter(({scene}) => scene.act === act))]);
+}
+
+// Characters with a manuscript POV scene, most words first.
+function povWordCounts() {
+  const scenes = manuscriptScenes();
+  return board.characters
+    .map(character => [character, scenes.filter(({scene}) => scene.pov === character.id)])
+    .filter(([, owned]) => owned.length > 0)
+    .map(([character, owned]) => [character, sceneWords(owned)])
+    .sort((a, b) => b[1] - a[1]);
+}
+
+const HONORIFICS = new Set([
+  "mr", "mrs", "ms", "miss", "dr", "sir", "dame", "lady", "lord", "captain", "professor", "king",
+  "queen", "prince", "princess", "aunt", "uncle", "saint", "st", "the", "of", "von",
+]);
+
+function wordsOf(text) {
+  return text.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+}
+
+// Capitalized because prose capitalizes names and a lowercase match
+// ("will", "hope") is usually not the name.
+function distinctiveNameParts(name) {
+  return new Set(wordsOf(name)
+    .filter(part => Array.from(part).length >= 2 && !HONORIFICS.has(part.toLowerCase()))
+    .map(part => part[0].toUpperCase() + part.slice(1)));
+}
+
+// Manuscript scenes each character appears in, in board order: as POV, or by
+// a name part no other character shares, written as a whole word in the
+// title, summary or prose.
+function characterAppearances() {
+  const nameParts = board.characters.map(c => distinctiveNameParts(c.name));
+  const owners = new Map();
+  for (const part of nameParts.flatMap(parts => [...parts])) owners.set(part, (owners.get(part) ?? 0) + 1);
+  const sceneWords = manuscriptScenes().map(({scene, index}) =>
+    ({scene, index, words: new Set([scene.title, scene.summary, scene.text].flatMap(wordsOf))}));
+  return board.characters.map((character, i) => {
+    const unique = [...nameParts[i]].filter(part => owners.get(part) === 1);
+    const scenes = sceneWords
+      .filter(({scene, words}) => scene.pov === character.id || unique.some(part => words.has(part)))
+      .map(({index}) => index);
+    return [character, scenes];
+  });
+}
+
+function sceneGaps() {
+  const scenes = manuscriptScenes();
+  const indicesWhere = missing => scenes.filter(({scene}) => missing(scene)).map(({index}) => index);
+  const days = storyDays();
+  return {
+    pov: indicesWhere(s => !s.pov),
+    location: indicesWhere(s => !s.location),
+    day: scenes.filter(({index}) => days[index] === null).map(({index}) => index),
+  };
+}
+
+// Dated, non-archived scenes in story order; same-day scenes keep board order.
+function chronologicalIndices() {
+  const days = storyDays();
+  return manuscriptScenes()
+    .filter(({index}) => days[index] !== null)
+    .sort((a, b) => days[a.index].number - days[b.index].number || a.index - b.index)
+    .map(({index}) => index);
+}
+
+// Each scene's chapter by board index, as {number, starts} or null. Chapters
+// split the manuscript scenes at chapter breaks, and once there is one, the
+// first scene opens chapter 1 so no prose falls outside a chapter.
+function chapters(b = board) {
+  const places = b.scenes.map(() => null);
+  const scenes = manuscriptScenes(b);
+  if (!scenes.some(({scene}) => scene.chapterBreak)) return places;
+  let number = 0;
+  for (const {scene, index} of scenes) {
+    const starts = number === 0 || scene.chapterBreak;
+    if (starts) number += 1;
+    places[index] = {number, starts};
+  }
+  return places;
+}
+
+function chapterCount() {
+  return Math.max(0, ...chapters().filter(Boolean).map(place => place.number));
+}
+
+function addSceneToBoard() {
+  const scene = {
+    id: generateId(), title: "", summary: "", status: "Outline", pov: "", act: "",
+    location: "", day: null, date: null, dayHidden: false, text: "", chapterBreak: false,
+  };
+  board.scenes.push(scene);
+  return scene.id;
+}
+
+function duplicateSceneOnBoard(id) {
+  const index = sceneIndex(id);
+  if (index < 0) return null;
+  const original = board.scenes[index];
+  const copy = {
+    ...original,
+    id: generateId(),
+    title: original.title ? `${original.title} (copy)` : "",
+    chapterBreak: false,
+  };
+  board.scenes.splice(index + 1, 0, copy);
+  return copy.id;
+}
+
+function shiftBy(items, id, offset) {
+  const from = items.findIndex(item => item.id === id);
+  const to = from + offset;
+  if (from < 0 || to < 0 || to >= items.length || to === from) return false;
+  const [item] = items.splice(from, 1);
+  items.splice(to, 0, item);
+  return true;
+}
+
+function moveScene(from, to) {
+  const count = board.scenes.length;
+  if (from >= count || to >= count || from === to) return;
+  const [scene] = board.scenes.splice(from, 1);
+  board.scenes.splice(to, 0, scene);
+}
+
+function addCharacterToBoard(name) {
+  const trimmed = name.trim();
+  if (!trimmed) return false;
+  board.characters.push({id: generateId(), name: trimmed, role: "", gender: "", goal: "", notes: ""});
+  return true;
+}
+
+function deleteCharacterFromBoard(id) {
+  board.characters = board.characters.filter(c => c.id !== id);
+  board.relationships = board.relationships.filter(r => r.from !== id && r.to !== id);
+  for (const scene of board.scenes) if (scene.pov === id) scene.pov = "";
+}
+
+function addLocationToBoard(name) {
+  const trimmed = name.trim();
+  if (!trimmed) return false;
+  board.locations.push({id: generateId(), name: trimmed, notes: ""});
+  return true;
+}
+
+function deleteLocationFromBoard(id) {
+  board.locations = board.locations.filter(l => l.id !== id);
+  for (const scene of board.scenes) if (scene.location === id) scene.location = "";
+}
+
+function addRelationshipToBoard(from, to, label) {
+  if (from === to || !findCharacter(from) || !findCharacter(to)) return false;
+  board.relationships.push({id: generateId(), from, to, label: label.trim()});
+  return true;
+}
+
+function hasRelationship(from, to) {
+  return board.relationships.some(r => r.from === from && r.to === to);
+}
+
+function addReverseRelationshipToBoard(id) {
+  const relationship = board.relationships.find(r => r.id === id);
+  if (!relationship || hasRelationship(relationship.to, relationship.from)) return false;
+  return addRelationshipToBoard(relationship.to, relationship.from, "");
+}
+
+function matchingIndices() {
+  const needle = filters.query.trim().toLowerCase();
+  const indices = [];
+  board.scenes.forEach((scene, index) => {
+    if (filters.status && scene.status !== filters.status) return;
+    if (filters.act && scene.act !== filters.act) return;
+    if (filters.pov && scene.pov !== filters.pov) return;
+    if (needle) {
+      const povName = findCharacter(scene.pov)?.name ?? "";
+      const locationName = findLocation(scene.location)?.name ?? "";
+      const haystack = [scene.title, scene.summary, scene.status, scene.act, povName, locationName, scene.text]
+        .join(" ").toLowerCase();
+      if (!haystack.includes(needle)) return;
+    }
+    indices.push(index);
+  });
+  return indices;
+}
+
+/* ---------- history ---------- */
+
+// Snapshots are compared as JSON; a burst of edits between two commits
+// becomes a single undo step.
+class History {
+  constructor(initial, limit) {
+    this.checkpoint = JSON.stringify(initial);
+    this.undoStack = [];
+    this.redoStack = [];
+    this.limit = Math.max(1, limit);
+  }
+  commit(current) {
+    const snapshot = JSON.stringify(current);
+    if (snapshot === this.checkpoint) return false;
+    this.undoStack.push(this.checkpoint);
+    if (this.undoStack.length > this.limit) this.undoStack.shift();
+    this.checkpoint = snapshot;
+    this.redoStack = [];
+    return true;
+  }
+  undo(current) {
+    this.commit(current);
+    const previous = this.undoStack.pop();
+    if (previous === undefined) return null;
+    this.redoStack.push(this.checkpoint);
+    this.checkpoint = previous;
+    return JSON.parse(previous);
+  }
+  redo(current) {
+    if (JSON.stringify(current) !== this.checkpoint) return null;
+    const next = this.redoStack.pop();
+    if (next === undefined) return null;
+    this.undoStack.push(this.checkpoint);
+    this.checkpoint = next;
+    return JSON.parse(next);
+  }
+  canUndo(current) {
+    return this.undoStack.length > 0 || JSON.stringify(current) !== this.checkpoint;
+  }
+  canRedo(current) {
+    return this.redoStack.length > 0 && JSON.stringify(current) === this.checkpoint;
+  }
+}
+
+/* ---------- outline / export ---------- */
+
+function sceneNumber(index) {
+  return `SCENE ${String(index + 1).padStart(2, "0")}`;
+}
+
+// Archived scenes are cut material, so they stay out of the outline; the
+// remaining scenes keep their board numbers so they match the cards.
+function toMarkdown(b) {
+  let out = `# ${b.title.trim() || DEFAULT_TITLE}\n\n`;
+  const places = chapters(b);
+  const days = storyDays(b);
+  const sceneLevel = places.some(Boolean) ? "###" : "##";
+  b.scenes.forEach((scene, index) => {
+    if (scene.status === "Archived") return;
+    out += chapterHeading(places[index]);
+    out += `${sceneLevel} Scene ${String(index + 1).padStart(2, "0")}: ${scene.title.trim() || "Untitled"}\n\n`;
+    const facts = [scene.status];
+    if (scene.act) facts.push(scene.act);
+    const pov = b.characters.find(c => c.id === scene.pov && scene.pov);
+    if (pov) facts.push(`POV: ${pov.name.trim()}`);
+    const location = b.locations.find(l => l.id === scene.location && scene.location);
+    if (location) facts.push(`Location: ${location.name.trim()}`);
+    if (days[index] !== null) facts.push(storyDayLabel(days[index]));
+    out += `_${facts.join(" · ")}_\n\n`;
+    const summary = scene.summary.trim();
+    if (summary) out += `${summary}\n\n`;
+  });
+  if (b.characters.length) {
+    out += "## Characters\n\n";
+    for (const character of b.characters) {
+      out += `### ${character.name.trim()}\n\n`;
+      for (const [field, value] of [["Role", character.role], ["Gender", character.gender], ["Goal", character.goal]]) {
+        if (value.trim()) out += `**${field}:** ${value.trim()}\n\n`;
+      }
+      const outgoing = b.relationships.filter(r => r.from === character.id);
+      for (const relationship of outgoing) {
+        const other = b.characters.find(c => c.id === relationship.to);
+        if (other) out += `- ${relationship.label.trim() || "related to"} → ${other.name.trim()}\n`;
+      }
+      if (outgoing.length) out += "\n";
+      const notes = character.notes.trim();
+      if (notes) out += `${notes}\n\n`;
+    }
+  }
+  if (b.locations.length) {
+    out += "## Locations\n\n";
+    for (const location of b.locations) {
+      out += `### ${location.name.trim()}\n\n`;
+      const notes = location.notes.trim();
+      if (notes) out += `${notes}\n\n`;
+    }
+  }
+  return out.trimEnd() + "\n";
+}
+
+// The prose of every non-archived scene in board order, one heading per scene
+// under its chapter's, ready to paste into a word processor. An untitled
+// scene gets a scene-break heading unless it opens a chapter.
+function manuscriptMarkdown(b) {
+  let out = `# ${b.title.trim() || DEFAULT_TITLE}\n\n`;
+  const places = chapters(b);
+  const sceneLevel = places.some(Boolean) ? "###" : "##";
+  for (const [index, scene] of b.scenes.entries()) {
+    if (scene.status === "Archived") continue;
+    out += chapterHeading(places[index]);
+    const title = scene.title.trim();
+    if (title) out += `${sceneLevel} ${title}\n\n`;
+    else if (!places[index]?.starts) out += `${sceneLevel} * * *\n\n`;
+    const text = scene.text.trim();
+    if (text) out += `${text}\n\n`;
+  }
+  return out.trimEnd() + "\n";
+}
+
+function chapterHeading(place) {
+  return place?.starts ? `## Chapter ${place.number}\n\n` : "";
+}
+
+// The outline and the manuscript under one title, each a section with its
+// own headings nested one level deeper.
+function combinedMarkdown(b) {
+  let out = `# ${b.title.trim() || DEFAULT_TITLE}\n\n`;
+  for (const [section, document] of [["Outline", toMarkdown(b)], ["Manuscript", manuscriptMarkdown(b)]]) {
+    out += `## ${section}\n\n`;
+    const newline = document.indexOf("\n");
+    const body = newline < 0 ? "" : document.slice(newline + 1).replace(/^\n+/, "");
+    if (!body) continue;
+    for (const line of body.trimEnd().split("\n")) out += `${line.startsWith("#") ? "#" : ""}${line}\n`;
+    out += "\n";
+  }
+  return out.trimEnd() + "\n";
+}
+
+function exportFileName(extension, suffix = null) {
+  const stem = (board.title.trim() || "novel").split(/\s+/).join("_");
+  return suffix ? `${stem}_${suffix}.${extension}` : `${stem}.${extension}`;
+}
+
+function download(name, text, type) {
+  const url = URL.createObjectURL(new Blob([text], {type}));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+/* ---------- storage ---------- */
+
+function migrateLegacyBoard() {
+  if (localStorage.getItem(BOARD_KEY) !== null) return;
+  for (const key of LEGACY_BOARD_KEYS) {
+    const raw = localStorage.getItem(key);
+    if (raw === null) continue;
+    localStorage.setItem(BOARD_KEY, raw);
+    localStorage.removeItem(key);
+    return;
+  }
+}
+
+// An unreadable board is moved aside rather than silently overwritten by the
+// next autosave.
+function loadBoard() {
+  let migrationAlert = null;
+  try { migrateLegacyBoard(); }
+  catch (e) { migrationAlert = `Could not carry over data from before the rename: ${e.message}`; }
+
+  let raw;
+  try { raw = localStorage.getItem(BOARD_KEY); }
+  catch (e) { return {board: defaultBoard(), alert: `Could not open your board: ${e.message}`}; }
+  if (raw === null) return {board: defaultBoard(), alert: migrationAlert, neverSaved: true};
+
+  try {
+    return {board: parseBoard(raw), alert: migrationAlert};
+  } catch (err) {
+    const backupKey = `${BOARD_KEY}.corrupt`;
+    let note;
+    try {
+      localStorage.setItem(backupKey, raw);
+      localStorage.removeItem(BOARD_KEY);
+      note = `It was moved to "${backupKey}" in this browser's storage.`;
+    } catch (e) {
+      note = `Moving it aside also failed: ${e.message}.`;
+    }
+    return {
+      board: defaultBoard(),
+      alert: `Could not open your board: ${err.message}\n\n${note} Starting with an empty board.`,
+    };
+  }
+}
+
+function loadSettings() {
+  const defaults = {colorScheme: DEFAULT_SCHEME, lastExportAt: 0, githubRepo: null, githubAutoBackup: false};
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    if (raw === null) return {settings: defaults, alert: null};
+    const data = JSON.parse(raw);
+    if (!isPlainObject(data)) throw new Error("expected a JSON object");
+    const scheme = data["color-scheme"] ?? DEFAULT_SCHEME;
+    if (!COLOR_SCHEMES.some(s => s.key === scheme)) throw new Error(`unknown color scheme ${JSON.stringify(scheme)}`);
+    const lastExportAt = data["last-export"] ?? 0;
+    if (!Number.isFinite(lastExportAt)) throw new Error("last-export must be a timestamp");
+    const githubRepo = data["github-repo"] ?? null;
+    if (githubRepo !== null && parseRepo(githubRepo) !== githubRepo) {
+      throw new Error("github-repo must be owner/name");
+    }
+    const githubAutoBackup = data["github-auto-backup"] ?? data["gist-auto-backup"] ?? false;
+    if (typeof githubAutoBackup !== "boolean") throw new Error("github-auto-backup must be true or false");
+    return {settings: {colorScheme: scheme, lastExportAt, githubRepo, githubAutoBackup}, alert: null};
+  } catch (e) {
+    return {settings: defaults, alert: `Could not read settings, using defaults: ${e.message}`};
+  }
+}
+
+function persistSettings() {
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+    "color-scheme": settings.colorScheme,
+    "last-export": settings.lastExportAt,
+    ...(settings.githubRepo ? {"github-repo": settings.githubRepo} : {}),
+    "github-auto-backup": settings.githubAutoBackup,
+  }, null, 2));
+}
+
+/* ---------- IndexedDB: backups and the linked file handle ---------- */
+
+let dbPromise = null;
+
+function openDb() {
+  if (!globalThis.indexedDB) return Promise.reject(new Error("this browser has no IndexedDB"));
+  dbPromise ??= new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore("backups", {keyPath: "id", autoIncrement: true});
+      request.result.createObjectStore("handles");
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => { dbPromise = null; reject(request.error); };
+  });
+  return dbPromise;
+}
+
+async function idb(storeName, mode, operation) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, mode);
+    const request = operation(tx.objectStore(storeName));
+    tx.oncomplete = () => resolve(request?.result);
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error ?? new Error("transaction aborted"));
+  });
+}
+
+async function addBackup(json, tag = "") {
+  await idb("backups", "readwrite", store => store.add({at: Date.now(), tag, json}));
+  const keys = await idb("backups", "readonly", store => store.getAllKeys());
+  const excess = keys.slice(0, Math.max(0, keys.length - BACKUPS_KEPT));
+  if (excess.length) await idb("backups", "readwrite", store => { for (const key of excess) store.delete(key); });
+}
+
+async function listBackups() {
+  return (await idb("backups", "readonly", store => store.getAll())).reverse();
+}
+
+function readFileMeta() {
+  try { return {lastModified: 0, unsynced: false, ...JSON.parse(localStorage.getItem(FILE_KEY) ?? "{}")}; }
+  catch { return {lastModified: 0, unsynced: false}; }
+}
+
+function writeFileMeta(meta) {
+  try { localStorage.setItem(FILE_KEY, JSON.stringify(meta)); } catch { /* best effort */ }
+}
+
+/* ---------- app state ---------- */
+
+const $ = id => document.getElementById(id);
+
+const settingsLoad = loadSettings();
+let settings = settingsLoad.settings;
+let settingsSaveError = null;
+
+const boardLoad = loadBoard();
+let board = boardLoad.board;
+const history = new History(board, UNDO_LIMIT);
+
+let selected = null;
+let saveState = {kind: "saved"};
+let saveTimer = null;
+let focusSceneTitle = false;
+let showStats = false;
+const filters = {query: "", status: "", act: "", pov: ""};
+let dragFrom = null;
+const modalStack = [];
+let view = "board";
+let lastBackupAt = 0;
+let persistRequested = false;
+// {handle, name, connected, lastModified}; null when the board only lives here.
+let linkedFile = null;
+let fileWrites = Promise.resolve();
+const githubBackup = {
+  token: readToken(), busy: false, error: null, repoInvalid: false,
+  boardChanged: false, lastAttemptAt: 0, lastSuccessAt: 0, lastPushedJson: null,
+  // A cancelled repo creation stops automatic backup from asking again this visit.
+  repoCreationOpen: false, repoCreationDeclined: false,
+  // A board never saved in this browser, or just reset, whose first change offers it a repository.
+  newBoard: boardLoad.neverSaved === true,
+  // {repo, before, after}: the link a Reset removed, with the boards on either side of it.
+  resetLink: null,
+};
+
+function isSelected(kind, id) {
+  return selected?.kind === kind && selected.id === id;
+}
+
+function schemeByKey(key) {
+  return COLOR_SCHEMES.find(s => s.key === key) ?? COLOR_SCHEMES[0];
+}
+
+function applyTheme(p) {
+  const style = document.documentElement.style;
+  const vars = {
+    board: p.board, header: p.header, "header-text": p.headerText, ink: p.ink, muted: p.muted,
+    card: p.card, line: p.line, sidebar: p.sidebar, inspector: p.inspector, accent: p.accent,
+    "on-accent": p.onAccent, danger: p.danger, act: p.act, field: p.field,
+  };
+  for (const [name, value] of Object.entries(vars)) style.setProperty(`--${name}`, value);
+  STATUSES.forEach((status, i) => style.setProperty(`--status-${status}`, p.statuses[i]));
+  style.colorScheme = p.dark ? "dark" : "light";
+}
+
+function saveSettingsReportingErrors() {
+  try {
+    persistSettings();
+    settingsSaveError = null;
+  } catch (e) {
+    settingsSaveError = `Could not save settings: ${e.message}`;
+  }
+}
+
+function setColorScheme(key) {
+  settings.colorScheme = key;
+  applyTheme(schemeByKey(key));
+  saveSettingsReportingErrors();
+}
+
+/* ---------- saving ---------- */
+
+function saveNow() {
+  clearTimeout(saveTimer);
+  saveTimer = null;
+  history.commit(board);
+  backUpIfDue();
+  requestPersistentStorage();
+  const json = serializeBoard(board);
+  try {
+    localStorage.setItem(BOARD_KEY, json);
+    saveState = {kind: "saved"};
+  } catch (e) {
+    saveState = {kind: "failed", reason: e.message};
+  }
+  writeToLinkedFile(json);
+  githubBackup.boardChanged = true;
+  render();
+  offerRepoForNewBoard();
+}
+
+// Runs before the session's first write and then periodically, so backups
+// hold the board as it was before each stretch of editing.
+function backUpIfDue() {
+  if (Date.now() - lastBackupAt < BACKUP_INTERVAL_MS) return;
+  lastBackupAt = Date.now();
+  let previous;
+  try { previous = localStorage.getItem(BOARD_KEY); } catch { return; }
+  if (previous === null) return;
+  addBackup(previous).catch(e => alertDialog(`Could not back up the board: ${e.message}`));
+}
+
+// Without this, browsers may evict the board under storage pressure.
+function requestPersistentStorage() {
+  if (persistRequested) return;
+  persistRequested = true;
+  navigator.storage?.persist?.().catch(() => {});
+}
+
+/* ---------- linked file ---------- */
+
+function writeToLinkedFile(json) {
+  if (!linkedFile) return;
+  if (!linkedFile.connected) {
+    writeFileMeta({...readFileMeta(), unsynced: true});
+    return;
+  }
+  const target = linkedFile;
+  fileWrites = fileWrites
+    .then(() => writeBoardFile(target, json))
+    .catch(e => {
+      writeFileMeta({...readFileMeta(), unsynced: true});
+      saveState = {kind: "failed", reason: `Could not write ${target.name}: ${e.message}`};
+      render();
+    });
+}
+
+// Another device rewrote the file while there were unsaved edits here. Ours
+// wins, but theirs is kept as a backup; if that fails, the write is refused.
+async function writeBoardFile(target, json) {
+  const current = await target.handle.getFile();
+  if (current.lastModified !== target.lastModified) {
+    await addBackup(await current.text(), "conflict");
+    alertDialog(`${target.name} was changed outside this tab, perhaps on another device, while you had ` +
+      "unsaved edits here. Your version was kept; the other one is in Settings → Restore backup.");
+  }
+  const writable = await target.handle.createWritable();
+  await writable.write(json);
+  await writable.close();
+  target.lastModified = (await target.handle.getFile()).lastModified;
+  writeFileMeta({lastModified: target.lastModified, unsynced: false});
+}
+
+function replaceBoard(loaded, kind) {
+  history.commit(board);
+  board = loaded;
+  githubBackup.newBoard = false;
+  githubBackup.boardChanged = true;
+  history.commit(board);
+  try { localStorage.setItem(BOARD_KEY, serializeBoard(board)); } catch { /* next save retries */ }
+  saveState = {kind};
+  render();
+}
+
+// Picks up edits synced in from another device. Skipped while edits are
+// pending here; writeBoardFile handles that case as a conflict.
+async function pollLinkedFile() {
+  if (!linkedFile?.connected || document.hidden) return;
+  await fileWrites;
+  const target = linkedFile;
+  const busy = () => target !== linkedFile || saveState.kind === "pending" || saveState.kind === "failed";
+  if (busy()) return;
+  const file = await target.handle.getFile();
+  if (file.lastModified === target.lastModified) return;
+  let loaded;
+  // A parse failure usually means a sync client is mid-write; try again later.
+  try { loaded = parseBoard(await file.text()); } catch { return; }
+  if (busy()) return;
+  target.lastModified = file.lastModified;
+  writeFileMeta({lastModified: file.lastModified, unsynced: false});
+  if (JSON.stringify(loaded) !== JSON.stringify(board)) replaceBoard(loaded, "reloaded");
+}
+
+async function rememberHandle(handle) {
+  try { await idb("handles", "readwrite", store => store.put(handle, "board")); }
+  catch (e) { alertDialog(`The file is linked for now, but could not be remembered: ${e.message}`); }
+}
+
+async function openLinkedFile() {
+  let handle;
+  try {
+    [handle] = await showOpenFilePicker({types: [{description: "StorySquish board", accept: {"application/json": [".json"]}}]});
+  } catch (e) {
+    if (e.name !== "AbortError") alertDialog(`Could not open the file: ${e.message}`);
+    return;
+  }
+  try {
+    if (await handle.requestPermission({mode: "readwrite"}) !== "granted") return;
+    const file = await handle.getFile();
+    const loaded = parseBoard(await file.text());
+    if (saveState.kind === "pending") saveNow();
+    linkedFile = {handle, name: handle.name, connected: true, lastModified: file.lastModified};
+    writeFileMeta({lastModified: file.lastModified, unsynced: false});
+    selected = null;
+    replaceBoard(loaded, "imported");
+    await rememberHandle(handle);
+  } catch (e) {
+    alertDialog(`Could not open ${handle.name}: ${e.message}`);
+  }
+}
+
+async function saveToLinkedFile() {
+  let handle;
+  try {
+    handle = await showSaveFilePicker({
+      suggestedName: exportFileName("json"),
+      types: [{description: "StorySquish board", accept: {"application/json": [".json"]}}],
+    });
+  } catch (e) {
+    if (e.name !== "AbortError") alertDialog(`Could not choose the file: ${e.message}`);
+    return;
+  }
+  try {
+    const target = {handle, name: handle.name, connected: true, lastModified: (await handle.getFile()).lastModified};
+    await writeBoardFile(target, serializeBoard(board));
+    linkedFile = target;
+    await rememberHandle(handle);
+    render();
+  } catch (e) {
+    alertDialog(`Could not save to ${handle.name}: ${e.message}`);
+  }
+}
+
+async function unlinkFile() {
+  linkedFile = null;
+  try { localStorage.removeItem(FILE_KEY); } catch { /* best effort */ }
+  try { await idb("handles", "readwrite", store => store.delete("board")); } catch { /* best effort */ }
+  render();
+}
+
+// Browsers forget file permissions between visits, so reconnecting needs a
+// click; until then edits are kept here and flagged as unsynced.
+async function connectLinkedFile() {
+  const target = linkedFile;
+  if (!target) return;
+  try {
+    if (await target.handle.requestPermission({mode: "readwrite"}) !== "granted") return;
+    const file = await target.handle.getFile();
+    target.connected = true;
+    const {unsynced} = readFileMeta();
+    if (unsynced || saveState.kind === "pending") {
+      if (saveState.kind === "pending") saveNow();
+      else writeToLinkedFile(serializeBoard(board));
+    } else if (file.lastModified !== target.lastModified) {
+      target.lastModified = file.lastModified;
+      writeFileMeta({lastModified: file.lastModified, unsynced: false});
+      const loaded = parseBoard(await file.text());
+      if (JSON.stringify(loaded) !== JSON.stringify(board)) replaceBoard(loaded, "reloaded");
+    }
+  } catch (e) {
+    alertDialog(`Could not reconnect ${target.name}: ${e.message}`);
+  }
+  render();
+}
+
+async function restoreLinkedFile() {
+  if (!FILE_ACCESS) return;
+  let handle;
+  try { handle = await idb("handles", "readonly", store => store.get("board")); } catch { return; }
+  if (!handle) return;
+  linkedFile = {handle, name: handle.name, connected: false, lastModified: readFileMeta().lastModified};
+  if (await handle.queryPermission({mode: "readwrite"}) === "granted") await connectLinkedFile();
+  render();
+}
+
+function needsBackupNudge() {
+  if (linkedFile) return false;
+  const hasWork = board.scenes.length > 0 || board.characters.length > 0;
+  return hasWork && Date.now() - settings.lastExportAt > BACKUP_NUDGE_AFTER_MS;
+}
+
+function markDirty() {
+  saveState = {kind: "pending"};
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveNow, SAVE_DEBOUNCE_MS);
+  render();
+  offerRepoForNewBoard();
+}
+
+/* ---------- actions ---------- */
+
+function undo() {
+  const restored = history.undo(board);
+  if (restored) restoreBoard(restored);
+}
+
+function redo() {
+  const restored = history.redo(board);
+  if (restored) restoreBoard(restored);
+}
+
+function restoreBoard(restored) {
+  board = restored;
+  const unlinked = followResetLink();
+  saveNow();
+  if (unlinked) startNewBoard();
+}
+
+// Saved but not yet changed, so the repository offer waits for a real edit.
+function startNewBoard() {
+  githubBackup.boardChanged = false;
+  githubBackup.newBoard = true;
+}
+
+// Undoing a Reset brings back the story, so it gets its repository back too;
+// redoing it unlinks again. A repository linked since then is left alone.
+// Returns whether it unlinked.
+function followResetLink() {
+  const reset = githubBackup.resetLink;
+  if (!reset) return false;
+  const current = JSON.stringify(board);
+  if (current === reset.before && !settings.githubRepo) {
+    linkRepo(reset.repo);
+    githubBackup.newBoard = false;
+  } else if (current === reset.after && settings.githubRepo === reset.repo) {
+    linkRepo(null);
+    githubBackup.newBoard = false;
+    return true;
+  }
+  return false;
+}
+
+function addScene() {
+  selected = {kind: "scene", id: addSceneToBoard()};
+  focusSceneTitle = true;
+  saveNow();
+}
+
+function duplicateSelectedScene() {
+  if (selected?.kind !== "scene") return;
+  const copy = duplicateSceneOnBoard(selected.id);
+  if (copy) { selected = {kind: "scene", id: copy}; saveNow(); }
+}
+
+function shiftSelection(offset) {
+  if (!selected) return;
+  const items = {scene: board.scenes, character: board.characters, location: board.locations}[selected.kind];
+  if (shiftBy(items, selected.id, offset)) saveNow();
+}
+
+function deleteLocation(id) {
+  deleteLocationFromBoard(id);
+  if (isSelected("location", id)) selected = null;
+  saveNow();
+}
+
+function deleteCharacter(id) {
+  deleteCharacterFromBoard(id);
+  if (isSelected("character", id)) selected = null;
+  saveNow();
+}
+
+function confirmDeleteScene(id) {
+  confirmDialog("Delete this scene?", () => {
+    board.scenes = board.scenes.filter(s => s.id !== id);
+    if (board.dayZero === id) board.dayZero = null;
+    if (isSelected("scene", id)) selected = null;
+    saveNow();
+  });
+}
+
+// The story's repository holds the story, not this browser's slot, so a
+// Reset unlinks it; otherwise the next backup would overwrite it with the
+// empty board. The first change then offers a repository, as on a first visit.
+function confirmReset() {
+  const repo = settings.githubRepo;
+  const unlinkNote = repo ? ` This board stops backing up to ${repo}, which stays on GitHub.` : "";
+  confirmDialog(`Delete ALL scenes, characters and locations?${unlinkNote} You can still undo this.`, () => {
+    if (saveState.kind === "pending") saveNow();
+    const before = JSON.stringify(board);
+    board = defaultBoard();
+    selected = null;
+    githubBackup.newBoard = false;
+    if (repo) {
+      githubBackup.resetLink = {repo, before, after: JSON.stringify(board)};
+      linkRepo(null);
+    }
+    saveNow();
+    startNewBoard();
+  });
+}
+
+function closeInspector() {
+  selected = null;
+  render();
+}
+
+function filtersActive() {
+  return filters.query.trim() !== "" || filters.status !== "" || filters.act !== "" || filters.pov !== "";
+}
+
+// Deleting, resetting or undoing can remove the character a filter points
+// at, which would otherwise hide every card.
+function dropStalePovFilter() {
+  if (filters.pov && !findCharacter(filters.pov)) filters.pov = "";
+}
+
+async function importBoard(file) {
+  try {
+    board = parseBoard(await file.text());
+  } catch (e) {
+    alertDialog(`Could not import: ${e.message}`);
+    return;
+  }
+  selected = null;
+  saveNow();
+  if (saveState.kind === "saved") { saveState = {kind: "imported"}; render(); }
+}
+
+function exportBoard() {
+  try {
+    download(exportFileName("json"), serializeBoard(board), "application/json");
+  } catch (e) {
+    alertDialog(`Could not export: ${e.message}`);
+    return;
+  }
+  settings.lastExportAt = Date.now();
+  try { persistSettings(); } catch { /* the nudge just comes back */ }
+  render();
+}
+
+function exportMarkdown(what, suffix, renderMarkdown) {
+  try { download(exportFileName("md", suffix), renderMarkdown(board), "text/markdown"); }
+  catch (e) { alertDialog(`Could not export ${what}: ${e.message}`); }
+}
+
+/* ---------- rendering ---------- */
+
+function esc(value) {
+  return String(value).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+}
+
+function characterDisplayName(name) {
+  return name.trim() ? name : "Unnamed";
+}
+
+function sceneTitle(scene) {
+  return scene.title.trim() ? scene.title : "Untitled";
+}
+
+function formatCount(count) {
+  return count.toLocaleString("en-US");
+}
+
+function words(count) {
+  return `${formatCount(count)} word${count === 1 ? "" : "s"}`;
+}
+
+function preview(text) {
+  const chars = Array.from(text);
+  if (chars.length <= SUMMARY_PREVIEW_CHARS) return text;
+  return chars.slice(0, SUMMARY_PREVIEW_CHARS).join("").trimEnd() + "…";
+}
+
+function plural(count, noun) {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+// Leaves a field alone while the user is typing in it, so re-rendering on
+// every keystroke never moves the caret.
+function syncValue(input, value) {
+  if (document.activeElement !== input && input.value !== value) input.value = value;
+}
+
+function syncOptions(select, options, value) {
+  const html = options.map(([v, label]) => `<option value="${esc(v)}">${esc(label)}</option>`).join("");
+  if (select.dataset.options !== html) {
+    select.innerHTML = html;
+    select.dataset.options = html;
+  }
+  select.value = value;
+}
+
+function render() {
+  dropStalePovFilter();
+  renderHeader();
+  renderFilters();
+  renderCharacters();
+  renderLocations();
+  renderTabs();
+  renderInspector();
+  renderStats();
+  const failed = saveState.kind === "failed" ? " (save failed)" : "";
+  document.title = `${board.title.trim() || DEFAULT_TITLE} — StorySquish${failed}`;
+}
+
+function renderHeader() {
+  syncValue($("bookTitle"), board.title);
+  $("statsToggle").checked = showStats;
+  const label = $("saveState");
+  label.textContent = {
+    saved: "saved", pending: "saving…", imported: "imported", reloaded: "reloaded", failed: "save failed",
+  }[saveState.kind];
+  label.classList.toggle("failed", saveState.kind === "failed");
+  label.title = saveState.kind === "failed" ? saveState.reason
+    : saveState.kind === "reloaded" ? "Picked up changes made to the board file elsewhere"
+    : linkedFile?.connected ? `Saved in this browser and to ${linkedFile.name}`
+    : "Saved in this browser";
+  $("reconnectBtn").hidden = !linkedFile || linkedFile.connected;
+  $("reconnectBtn").title = linkedFile ? `Allow this tab to read and write ${linkedFile.name} again` : "";
+  $("backupNudge").hidden = !needsBackupNudge();
+  $("undoBtn").disabled = !history.canUndo(board);
+  $("redoBtn").disabled = !history.canRedo(board);
+}
+
+function renderFilters() {
+  syncValue($("search"), filters.query);
+  syncOptions($("filterStatus"), [["", "All"], ...STATUSES.map(s => [s, s])], filters.status);
+  syncOptions($("filterAct"), [["", "All"], ...ACTS.map(a => [a, a])], filters.act);
+  syncOptions($("filterPov"),
+    [["", "All"], ...board.characters.map(c => [c.id, characterDisplayName(c.name)])], filters.pov);
+  $("matchCount").textContent = plural(matchingIndices().length, "scene");
+  $("clearFilters").hidden = !filtersActive();
+}
+
+function renderCharacters() {
+  const list = $("charList");
+  if (!board.characters.length) {
+    list.innerHTML = '<div class="hint" style="margin-bottom:6px">No characters yet.</div>';
+    return;
+  }
+  list.innerHTML = board.characters.map(c => `
+    <div class="char${isSelected("character", c.id) ? " selected" : ""}" data-id="${esc(c.id)}">
+      <div class="cname"><span>${esc(characterDisplayName(c.name))}</span><span class="x" title="Remove character">×</span></div>
+      <div class="hint">${plural(povSceneCount(c.id), "POV scene")}</div>
+      ${c.notes ? `<div class="cnotes">${esc(preview(c.notes))}</div>` : ""}
+    </div>`).join("");
+}
+
+function renderLocations() {
+  const list = $("locList");
+  if (!board.locations.length) {
+    list.innerHTML = '<div class="hint" style="margin-bottom:6px">No locations yet.</div>';
+    return;
+  }
+  list.innerHTML = board.locations.map(l => `
+    <div class="char${isSelected("location", l.id) ? " selected" : ""}" data-id="${esc(l.id)}">
+      <div class="cname"><span>${esc(characterDisplayName(l.name))}</span></div>
+      <div class="hint">${plural(locationSceneCount(l.id), "scene")}</div>
+    </div>`).join("");
+}
+
+// Location, story day and word count: the parts that are set.
+function sceneFootnote(scene, storyDay) {
+  const parts = [];
+  const location = findLocation(scene.location);
+  if (location) parts.push(characterDisplayName(location.name));
+  if (storyDay !== null) parts.push(storyDayLabel(storyDay));
+  const count = wordCount(scene.text);
+  if (count) parts.push(words(count));
+  return parts.join(" · ");
+}
+
+function sceneDetails(scene) {
+  const parts = [scene.status];
+  const pov = findCharacter(scene.pov);
+  if (pov) parts.push(`POV ${characterDisplayName(pov.name)}`);
+  const location = findLocation(scene.location);
+  if (location) parts.push(characterDisplayName(location.name));
+  return parts.join(" · ");
+}
+
+function sceneCard(scene, index, place, storyDay) {
+  const pov = findCharacter(scene.pov);
+  const footnote = sceneFootnote(scene, storyDay);
+  const classes = ["card"];
+  if (isSelected("scene", scene.id)) classes.push("selected");
+  if (dragFrom === index) classes.push("dragging");
+  return `
+    <div class="${classes.join(" ")}" draggable="true" data-index="${index}" data-id="${esc(scene.id)}">
+      <div class="num">${sceneNumber(index)}${place?.starts ? ` · CHAPTER ${place.number}` : ""}</div>
+      ${scene.title
+        ? `<div class="ttl">${esc(scene.title)}</div>`
+        : '<div class="ttl untitled">Untitled scene</div>'}
+      <div class="sum">${esc(preview(scene.summary || "No summary yet."))}</div>
+      <div class="badges">
+        <span class="badge status-${scene.status}">${esc(scene.status)}</span>
+        ${scene.act ? `<span class="badge act">${esc(scene.act)}</span>` : ""}
+        ${pov ? `<span class="badge pov">${esc(characterDisplayName(pov.name))}</span>` : ""}
+      </div>
+      ${footnote ? `<div class="footnote">${esc(footnote)}</div>` : ""}
+    </div>`;
+}
+
+const VIEWS = {board: renderBoard, write: renderWrite, timeline: renderTimeline, graph: renderGraph};
+
+function renderTabs() {
+  for (const tab of document.querySelectorAll(".tab")) {
+    const active = tab.dataset.view === view;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+  }
+  for (const name of Object.keys(VIEWS)) $(name).hidden = name !== view;
+  VIEWS[view]();
+}
+
+function emptyState(heading, hint) {
+  return `<div class="empty"><strong>${esc(heading)}</strong>${esc(hint)}</div>`;
+}
+
+function renderWrite() {
+  const index = selected?.kind === "scene" ? sceneIndex(selected.id) : -1;
+  const picker = $("writePicker");
+  $("writeEditor").hidden = index < 0;
+  picker.hidden = index >= 0;
+  if (index < 0) {
+    picker.innerHTML = board.scenes.length
+      ? `<h2>Pick a scene to write</h2>${board.scenes.map((scene, i) =>
+          `<button class="link" data-id="${esc(scene.id)}">${sceneNumber(i)}  ${esc(sceneTitle(scene))}</button>`).join("")}`
+      : emptyState("No scenes yet", "Add a scene, then write its prose here.");
+    return;
+  }
+  const scene = board.scenes[index];
+  const place = chapters()[index];
+  $("wHeading").textContent = `${place ? `Chapter ${place.number} · ` : ""}${sceneNumber(index)}  ${sceneTitle(scene)}`;
+  $("wPrev").disabled = index === 0;
+  $("wNext").disabled = index === board.scenes.length - 1;
+  const manuscript = board.wordGoal === null
+    ? `${formatCount(manuscriptWordCount())} in manuscript`
+    : `${formatCount(manuscriptWordCount())} / ${formatCount(board.wordGoal)} goal in manuscript`;
+  $("wWords").textContent = `${words(wordCount(scene.text))} · ${manuscript}`;
+  $("wSummary").textContent = scene.summary.trim();
+  syncValue($("prose"), scene.text);
+}
+
+function timelineRow(index) {
+  const scene = board.scenes[index];
+  return `<div class="trow${isSelected("scene", scene.id) ? " selected" : ""}" data-id="${esc(scene.id)}">
+    <span class="num">${sceneNumber(index)}</span>
+    <strong>${esc(sceneTitle(scene))}</strong>
+    <span class="hint">${esc(sceneDetails(scene))}</span>
+  </div>`;
+}
+
+function renderTimeline() {
+  const host = $("timeline");
+  const dated = chronologicalIndices();
+  const undated = sceneGaps().day;
+  const days = storyDays();
+  if (!dated.length && !undated.length) {
+    host.innerHTML = emptyState("No scenes yet", "Scenes with a story day appear here in story order.");
+    return;
+  }
+  let html = dated.length ? "" : '<p class="hint">Set a story day or date on scenes in the inspector to see them in story order, flashbacks included.</p>';
+  let currentHeading = null;
+  for (const index of dated) {
+    const heading = storyDayLabel(days[index]).toUpperCase();
+    if (heading !== currentHeading) {
+      currentHeading = heading;
+      html += `<div class="day-heading">${esc(heading)}</div>`;
+    }
+    html += timelineRow(index);
+  }
+  if (undated.length) html += `<div class="day-heading" style="margin-top:20px">UNDATED</div>${undated.map(timelineRow).join("")}`;
+  host.innerHTML = html;
+}
+
+const NODE_RADIUS = 26;
+// Short of the midpoint, so the labels of A→B and B→A land apart.
+const LABEL_POSITION = 0.4;
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function renderGraph() {
+  const host = $("graph");
+  const characters = board.characters;
+  if (characters.length < 2) {
+    host.innerHTML = emptyState("Not enough characters", "Add at least two characters to map how they relate.");
+    return;
+  }
+  const width = Math.max(host.clientWidth, 320);
+  const hint = board.relationships.length ? ""
+    : '<p class="hint graph-hint">Select a character and add relationships in the inspector.</p>';
+  const height = Math.max(host.clientHeight - (hint ? 40 : 0), 320);
+  const center = {x: width / 2, y: height / 2};
+  const ring = Math.max(Math.min(width, height) / 2 - NODE_RADIUS - 24, NODE_RADIUS);
+  const positions = new Map(characters.map((c, i) => {
+    const angle = (2 * Math.PI * i) / characters.length - Math.PI / 2;
+    return [c.id, {x: center.x + ring * Math.cos(angle), y: center.y + ring * Math.sin(angle)}];
+  }));
+
+  let edges = "";
+  for (const relationship of board.relationships) {
+    const from = positions.get(relationship.from);
+    const to = positions.get(relationship.to);
+    if (!from || !to) continue;
+    const length = Math.hypot(to.x - from.x, to.y - from.y) || 1;
+    const dir = {x: (to.x - from.x) / length, y: (to.y - from.y) / length};
+    // Offsetting sideways keeps A→B and B→A from drawing on top of each other.
+    const side = {x: -dir.y * 6, y: dir.x * 6};
+    const start = {x: from.x + dir.x * NODE_RADIUS + side.x, y: from.y + dir.y * NODE_RADIUS + side.y};
+    const tip = {x: to.x - dir.x * (NODE_RADIUS + 2) + side.x, y: to.y - dir.y * (NODE_RADIUS + 2) + side.y};
+    const wing = (sign) => `${tip.x - dir.x * 9 + sign * -dir.y * 5},${tip.y - dir.y * 9 + sign * dir.x * 5}`;
+    edges += `<line class="edge" x1="${start.x}" y1="${start.y}" x2="${tip.x}" y2="${tip.y}"/>`;
+    edges += `<polyline class="edge" points="${wing(1)} ${tip.x},${tip.y} ${wing(-1)}"/>`;
+    const label = relationship.label.trim();
+    if (label) {
+      edges += `<text class="edge-label" text-anchor="middle" dominant-baseline="middle"
+        x="${start.x + (tip.x - start.x) * LABEL_POSITION + side.x * 1.5}"
+        y="${start.y + (tip.y - start.y) * LABEL_POSITION + side.y * 1.5}">${esc(label)}</text>`;
+    }
+  }
+
+  const nodes = characters.map(c => {
+    const {x, y} = positions.get(c.id);
+    const name = characterDisplayName(c.name);
+    const initials = name.split(/\s+/).filter(Boolean).slice(0, 2).map(w => Array.from(w)[0]).join("");
+    return `<g class="node${isSelected("character", c.id) ? " selected" : ""}" data-id="${esc(c.id)}"
+        tabindex="0" role="button" aria-label="${esc(name)}">
+      <circle cx="${x}" cy="${y}" r="${NODE_RADIUS}"/>
+      <text class="initials" x="${x}" y="${y}" text-anchor="middle" dominant-baseline="central" font-size="15">${esc(initials)}</text>
+      <text x="${x}" y="${y + NODE_RADIUS + 14}" text-anchor="middle" font-size="12">${esc(name)}</text>
+    </g>`;
+  }).join("");
+
+  host.innerHTML = `${hint}<svg xmlns="${SVG_NS}" viewBox="0 0 ${width} ${height}" role="img"
+    aria-label="Character relationships">${edges}${nodes}</svg>`;
+}
+
+function renderBoard() {
+  const host = $("board");
+  if (!board.scenes.length) {
+    host.innerHTML = '<div class="empty"><strong>No scenes yet</strong>Click “+ Scene” to pin your first index card.</div>';
+    return;
+  }
+  const indices = matchingIndices();
+  if (!indices.length) {
+    host.innerHTML = '<div class="empty"><strong>No matching scenes</strong>Clear the search or filters to show cards.</div>';
+    return;
+  }
+  const places = chapters();
+  const days = storyDays();
+  host.innerHTML = `<div class="grid">${indices.map(i => sceneCard(board.scenes[i], i, places[i], days[i])).join("")}</div>`;
+}
+
+function renderInspector() {
+  const panel = $("inspector");
+  if (selected?.kind === "scene" && sceneIndex(selected.id) < 0) selected = null;
+  if (selected?.kind === "character" && characterIndex(selected.id) < 0) selected = null;
+  if (selected?.kind === "location" && locationIndex(selected.id) < 0) selected = null;
+  panel.hidden = !selected;
+  if (!selected) return;
+
+  $("sceneInspector").hidden = selected.kind !== "scene";
+  $("characterInspector").hidden = selected.kind !== "character";
+  $("locationInspector").hidden = selected.kind !== "location";
+  ({scene: renderSceneInspector, character: renderCharacterInspector, location: renderLocationInspector})[selected.kind]();
+}
+
+function renderSceneInspector() {
+  const index = sceneIndex(selected.id);
+  const scene = board.scenes[index];
+  $("sNum").textContent = sceneNumber(index);
+  $("sHeading").textContent = scene.title || "Untitled";
+  syncValue($("sTitle"), scene.title);
+  syncValue($("sSum"), scene.summary);
+  syncOptions($("sStatus"), STATUSES.map(s => [s, s]), scene.status);
+  syncOptions($("sPov"),
+    [["", NONE_LABEL], ...board.characters.map(c => [c.id, characterDisplayName(c.name)])], scene.pov);
+  syncOptions($("sAct"), [["", NONE_LABEL], ...ACTS.map(a => [a, a])], scene.act);
+  syncOptions($("sLocation"),
+    [["", NONE_LABEL], ...board.locations.map(l => [l.id, characterDisplayName(l.name)])], scene.location);
+  const storyDay = storyDays()[index];
+  $("sDayLabel").textContent = board.calendar ? "Story date" : "Story day";
+  $("sDated").checked = (board.calendar ? shownDate(scene) : shownDay(scene)) !== null;
+  const dayNumber = board.calendar ? storyDay?.number ?? null : shownDay(scene);
+  $("sDay").hidden = dayNumber === null;
+  syncValue($("sDay"), dayNumber === null ? "" : String(dayNumber));
+  $("sDay").title = board.calendar ? "Changing the day moves the scene's date to match" : "";
+  $("sToday").hidden = !board.calendar || shownDate(scene) === null;
+  $("sDayZeroField").hidden = !$("sDated").checked;
+  $("sDayZero").checked = board.dayZero === scene.id;
+  const place = chapters()[index];
+  $("sChapterBreak").checked = scene.chapterBreak;
+  $("sChapterLabel").textContent = place?.starts ? `Starts a chapter (chapter ${place.number})` : "Starts a chapter";
+  $("sDate").hidden = !board.calendar || shownDate(scene) === null;
+  syncValue($("sDate"), scene.date ?? "");
+  $("sWords").textContent = words(wordCount(scene.text));
+  $("sWrite").hidden = view === "write";
+  $("sEarlier").disabled = index === 0;
+  $("sLater").disabled = index === board.scenes.length - 1;
+  if (focusSceneTitle) {
+    focusSceneTitle = false;
+    $("sTitle").focus();
+  }
+}
+
+function renderCharacterInspector() {
+  const index = characterIndex(selected.id);
+  const character = board.characters[index];
+  $("cHeading").textContent = characterDisplayName(character.name);
+  syncValue($("cName"), character.name);
+  syncValue($("cRole"), character.role);
+  syncValue($("cGender"), character.gender);
+  syncValue($("cGoal"), character.goal);
+  syncValue($("cNotes"), character.notes);
+  $("cPovCount").textContent = `POV in ${plural(povSceneCount(character.id), "scene")}`;
+  const appearances = characterAppearances().find(([c]) => c.id === character.id)?.[1] ?? [];
+  $("cAppearCount").textContent = `Appears in ${plural(appearances.length, "scene")}`;
+  $("cUp").disabled = index === 0;
+  $("cDown").disabled = index === board.characters.length - 1;
+  renderRelationshipEditor(character);
+}
+
+// Rows are rebuilt only when the set of relationships changes, so typing a
+// label never loses the caret.
+function renderRelationshipEditor(character) {
+  const rows = board.relationships
+    .filter(r => r.from === character.id || r.to === character.id)
+    .map(r => {
+      const outgoing = r.from === character.id;
+      const other = findCharacter(outgoing ? r.to : r.from);
+      const reversible = !hasRelationship(r.to, r.from);
+      return {r, reversible, text: `${outgoing ? "to" : "from"} ${characterDisplayName(other?.name ?? "")}`};
+    });
+  const list = $("relList");
+  const signature = rows.map(({r, reversible, text}) => `${r.id}:${reversible}:${text}`).join("|") || "none";
+  if (list.dataset.signature !== signature) {
+    list.dataset.signature = signature;
+    list.innerHTML = rows.length
+      ? rows.map(({r, reversible, text}) => `<div class="rel-row" data-id="${esc(r.id)}">
+          <span>${esc(text)}</span>
+          <input class="rel-label" placeholder="how they relate" aria-label="${esc(`Relationship ${text}`)}">
+          ${reversible ? '<button class="rel-reverse" title="Add a relationship pointing the other way">Add reverse</button>' : ""}
+          <button class="icon rel-remove" title="Remove relationship">×</button>
+        </div>`).join("")
+      : '<div class="hint">None yet.</div>';
+  }
+  for (const {r} of rows) syncValue(list.querySelector(`[data-id="${CSS.escape(r.id)}"] input`), r.label);
+
+  const others = board.characters.filter(c => c.id !== character.id);
+  $("relAdd").hidden = !others.length;
+  const target = $("relTarget");
+  const keep = others.some(c => c.id === target.value) ? target.value : "";
+  syncOptions(target, [["", "Character…"], ...others.map(c => [c.id, characterDisplayName(c.name)])], keep);
+  $("relAddBtn").disabled = !keep;
+}
+
+function renderLocationInspector() {
+  const index = locationIndex(selected.id);
+  const location = board.locations[index];
+  $("lHeading").textContent = characterDisplayName(location.name);
+  syncValue($("lName"), location.name);
+  syncValue($("lNotes"), location.notes);
+  $("lCount").textContent = `Setting of ${plural(locationSceneCount(location.id), "scene")}`;
+  $("lUp").disabled = index === 0;
+  $("lDown").disabled = index === board.locations.length - 1;
+}
+
+function renderStats() {
+  $("stats").hidden = !showStats;
+  if (!showStats) return;
+  const rows = [
+    ...STATUSES.map(s => [s, board.scenes.filter(sc => sc.status === s).length]),
+    ...ACTS.map(a => [a, board.scenes.filter(sc => sc.act === a).length]),
+  ];
+  $("statsBody").innerHTML =
+    rows.map(([label, count]) => `<tr><td>${esc(label)}</td><td>${count}</td></tr>`).join("") +
+    `<tr class="total"><td>Total</td><td>${board.scenes.length}</td></tr>` +
+    (chapterCount() > 0 ? `<tr><td>Chapters</td><td>${chapterCount()}</td></tr>` : "") +
+    `<tr><td>Words</td><td>${wordsAgainstGoal()}</td></tr>`;
+
+  const total = manuscriptWordCount();
+  const shareRow = (label, count) =>
+    `<tr><td>${esc(label)}</td><td class="num">${formatCount(count)}</td><td class="num">${percent(count, total).toFixed(0)}%</td></tr>`;
+
+  $("statsActWords").innerHTML = actWordCounts()
+    .filter(([act, count]) => act || count > 0)
+    .map(([act, count]) => shareRow(act || "No act", count))
+    .join("");
+
+  const POV_SHOWN = 7;
+  const pov = povWordCounts();
+  const rest = pov.slice(POV_SHOWN);
+  $("statsPovWords").innerHTML = pov.length === 0
+    ? `<tr><td class="none">No POV scenes yet.</td></tr>`
+    : pov.slice(0, POV_SHOWN).map(([c, count]) => shareRow(characterDisplayName(c.name), count)).join("") +
+      (rest.length ? shareRow(`${rest.length} more`, rest.reduce((sum, [, count]) => sum + count, 0)) : "");
+
+  const gaps = sceneGaps();
+  const APPEAR_SHOWN = 7;
+  const appearances = characterAppearances();
+  const present = appearances.filter(([, scenes]) => scenes.length > 0).sort((a, b) => b[1].length - a[1].length);
+  const absent = appearances.filter(([, scenes]) => scenes.length === 0);
+  $("statsAppearances").innerHTML = appearances.length === 0
+    ? `<tr><td class="none">No characters yet.</td></tr>`
+    : present.slice(0, APPEAR_SHOWN).map(([c, scenes]) =>
+        `<tr><td>${esc(characterDisplayName(c.name))}</td><td class="num" title="${esc(sceneList(scenes))}">${scenes.length}</td></tr>`).join("") +
+      (present.length > APPEAR_SHOWN ? `<tr><td>${present.length - APPEAR_SHOWN} more</td></tr>` : "") +
+      (absent.length ? `<tr><td>Never appear</td><td class="num gap" title="${esc(absent.map(([c]) => characterDisplayName(c.name)).join("\n"))}">${absent.length}</td></tr>` : "");
+
+  $("statsGaps").innerHTML = [["No POV", gaps.pov], ["No location", gaps.location], ["No day", gaps.day]]
+    .map(([label, indices]) => indices.length === 0
+      ? `<tr><td>${label}</td><td class="num none">0</td></tr>`
+      : `<tr><td>${label}</td><td class="num gap" title="${esc(sceneList(indices))}">${indices.length}</td></tr>`)
+    .join("");
+}
+
+function wordsAgainstGoal() {
+  const count = manuscriptWordCount();
+  if (board.wordGoal === null) return formatCount(count);
+  const pct = Math.min(percent(count, board.wordGoal), 999);
+  return `${formatCount(count)} / ${formatCount(board.wordGoal)} (${pct.toFixed(0)}%)`;
+}
+
+function percent(part, whole) {
+  return whole === 0 ? 0 : part / whole * 100;
+}
+
+function sceneList(indices) {
+  const SHOWN = 12;
+  const lines = indices.slice(0, SHOWN).map(i => `${sceneNumber(i)}  ${sceneTitle(board.scenes[i])}`);
+  if (indices.length > SHOWN) lines.push(`…and ${indices.length - SHOWN} more`);
+  return lines.join("\n");
+}
+
+/* ---------- dialogs ---------- */
+
+function modalOpen() {
+  return modalStack.length > 0;
+}
+
+function openModal(dialog) {
+  modalStack.push(dialog);
+  drawModal();
+}
+
+function closeModal() {
+  modalStack.pop();
+  drawModal();
+}
+
+function dismissModal() {
+  const top = modalStack.at(-1);
+  if (!top) return;
+  closeModal();
+  top.onDismiss?.();
+}
+
+let drawnModal = null;
+
+function drawModal() {
+  const host = $("modalHost");
+  const top = modalStack.at(-1);
+  const keptScroll = top && top === drawnModal ? host.firstElementChild?.scrollTop ?? 0 : 0;
+  host.replaceChildren();
+  host.hidden = !top;
+  drawnModal = top ?? null;
+  if (!top) return;
+  const box = document.createElement("div");
+  box.className = "modal";
+  box.setAttribute("role", "dialog");
+  box.setAttribute("aria-modal", "true");
+  host.append(box);
+  top.draw(box);
+  box.scrollTop = keptScroll;
+}
+
+function button(label, className, onClick) {
+  const b = document.createElement("button");
+  b.textContent = label;
+  if (className) b.className = className;
+  b.addEventListener("click", onClick);
+  return b;
+}
+
+function message(text) {
+  const p = document.createElement("p");
+  p.className = "message";
+  p.textContent = text;
+  return p;
+}
+
+function alertDialog(text) {
+  openModal({
+    draw(box) {
+      const ok = button("OK", "", closeModal);
+      box.append(message(text), ok);
+      ok.focus();
+    },
+  });
+}
+
+function confirmDialog(prompt, onAccept) {
+  openModal({
+    draw(box) {
+      const actions = document.createElement("div");
+      actions.className = "row";
+      const cancel = button("Cancel", "", closeModal);
+      actions.append(button("Delete", "danger", () => { closeModal(); onAccept(); }), cancel);
+      box.append(message(prompt), actions);
+      cancel.focus();
+    },
+  });
+}
+
+function settingsDialog() {
+  openModal({
+    draw(box) {
+      const heading = document.createElement("h2");
+      heading.textContent = "Settings";
+      const label = document.createElement("label");
+      label.className = "field-label";
+      label.htmlFor = "schemeSelect";
+      label.textContent = "Color scheme";
+      const picker = document.createElement("div");
+      picker.className = "scheme-picker";
+      const swatch = schemeSwatch(schemeByKey(settings.colorScheme));
+      const select = document.createElement("select");
+      select.id = "schemeSelect";
+      for (const scheme of COLOR_SCHEMES) select.add(new Option(scheme.name, scheme.key));
+      select.value = settings.colorScheme;
+      select.addEventListener("change", () => {
+        setColorScheme(select.value);
+        drawModal();
+        document.getElementById("schemeSelect")?.focus();
+      });
+      picker.append(swatch, select);
+      const status = hint(settingsSaveError ?? "Saved in this browser's storage.");
+      if (settingsSaveError) status.style.color = "var(--danger)";
+      box.append(heading, label, picker, status, ...boardFileSection(), ...wordGoalSection(), ...storyCalendarSection(), ...backupSection(), ...githubSection(),
+        button("Close", "", closeModal));
+      box.style.maxWidth = "420px";
+    },
+  });
+}
+
+function schemeSwatch(scheme) {
+  const swatch = document.createElement("span");
+  swatch.className = "swatch";
+  for (const fill of [scheme.header, scheme.board, scheme.card, scheme.accent]) {
+    const stripe = document.createElement("span");
+    stripe.style.background = fill;
+    swatch.append(stripe);
+  }
+  return swatch;
+}
+
+function hint(text) {
+  const div = document.createElement("div");
+  div.className = "hint";
+  div.style.margin = "6px 0";
+  div.textContent = text;
+  return div;
+}
+
+function fieldLabel(text) {
+  const div = document.createElement("div");
+  div.className = "field-label";
+  div.textContent = text;
+  return div;
+}
+
+function row(...children) {
+  const div = document.createElement("div");
+  div.className = "row";
+  div.append(...children);
+  return div;
+}
+
+function boardFileSection() {
+  const label = fieldLabel("Board file");
+  if (!FILE_ACCESS) {
+    return [label, hint("This browser can only keep the board in its own storage. To keep it in a file " +
+      "(and use it on several computers through iCloud Drive, Dropbox, OneDrive or Syncthing), use " +
+      "Chrome or Edge on a desktop, or the desktop app. Otherwise, export a copy regularly.")];
+  }
+  const afterAction = action => async () => { await action(); drawModal(); };
+  if (!linkedFile) {
+    return [label,
+      hint("Kept only in this browser. Link a file so the board survives clearing browser data and can " +
+        "be used on several computers through a synced folder (iCloud Drive, Dropbox, OneDrive, Syncthing)."),
+      row(button("Save to file…", "", afterAction(saveToLinkedFile)), button("Open file…", "", afterAction(openLinkedFile)))];
+  }
+  const state = linkedFile.connected
+    ? `Every change is saved to ${linkedFile.name}; changes synced in from elsewhere load automatically.`
+    : `Linked to ${linkedFile.name}, but this tab needs permission again. Edits are kept here until then.`;
+  return [label, hint(state), row(
+    ...(linkedFile.connected ? [] : [button("Reconnect", "primary", afterAction(connectLinkedFile))]),
+    button("Open other…", "", afterAction(openLinkedFile)),
+    button("Unlink", "", afterAction(unlinkFile)),
+  )];
+}
+
+// "80,000" and "80.000" are both eighty thousand; blank or 0 clears the goal,
+// and anything else is ignored so a typo mid-edit keeps the last goal.
+function parseWordGoal(text) {
+  const digits = text.replace(/[,._ \u00a0]/g, "");
+  if (digits === "") return null;
+  if (!/^\d+$/.test(digits)) return undefined;
+  const goal = Number(digits);
+  if (!Number.isSafeInteger(goal)) return undefined;
+  return goal > 0 ? goal : null;
+}
+
+function wordGoalSection() {
+  const label = fieldLabel("Manuscript word target");
+  const input = document.createElement("input");
+  input.type = "text";
+  input.inputMode = "numeric";
+  input.placeholder = "e.g. 80000, for this novel (optional)";
+  input.setAttribute("aria-label", "Manuscript word target");
+  input.value = board.wordGoal === null ? "" : String(board.wordGoal);
+  input.addEventListener("input", () => {
+    const goal = parseWordGoal(input.value);
+    if (goal === undefined || goal === board.wordGoal) return;
+    board.wordGoal = goal;
+    markDirty();
+  });
+  return [label, input];
+}
+
+function storyCalendarSection() {
+  const toggle = (label, title, checked, disabled, onChange) => {
+    const wrapper = document.createElement("label");
+    wrapper.className = "toggle";
+    wrapper.title = title;
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = checked;
+    checkbox.disabled = disabled;
+    checkbox.addEventListener("change", () => { onChange(checkbox.checked); markDirty(); drawModal(); });
+    wrapper.append(checkbox, ` ${label}`);
+    return wrapper;
+  };
+  const explanation = !board.calendar ? "Story days are numbered by hand. Dates already picked are kept."
+    : board.absoluteDays ? "The earliest scene date is day 1; later days count every calendar day."
+      : "The earliest scene date is day 1; each later date with a scene is the next day.";
+  return [fieldLabel("Story calendar"),
+    toggle("Use calendar", "Pick scene dates instead of numbering days by hand", board.calendar, false,
+      checked => { board.calendar = checked; }),
+    toggle("Absolute days",
+      "Number days by calendar distance from the first scene (Day 1, Day 5) instead of counting only dates that have scenes (Day 1, Day 2)",
+      board.absoluteDays, !board.calendar, checked => { board.absoluteDays = checked; }),
+    hint(explanation)];
+}
+
+function backupSection() {
+  const storageState = hint("");
+  navigator.storage?.persisted?.().then(persisted => {
+    storageState.textContent = persisted
+      ? "This browser has agreed not to clear the board's storage on its own."
+      : "This browser may clear the board's storage when space runs low; link a file or export regularly.";
+  }).catch(() => {});
+  return [fieldLabel("Backups"),
+    hint(`The last ${BACKUPS_KEPT} versions are kept in this browser: one before the first save of each visit, then every 30 minutes of editing.`),
+    storageState,
+    row(button("Restore backup…", "", restoreBackupDialog))];
+}
+
+async function restoreBackupDialog() {
+  let backups;
+  try { backups = await listBackups(); }
+  catch (e) { alertDialog(`Could not read backups: ${e.message}`); return; }
+  openModal({
+    draw(box) {
+      const heading = document.createElement("h2");
+      heading.textContent = "Restore backup";
+      const list = document.createElement("div");
+      list.className = "backup-list";
+      for (const backup of backups) {
+        let summary;
+        try {
+          const b = parseBoard(backup.json);
+          summary = `${b.title.trim() || DEFAULT_TITLE} · ${plural(b.scenes.length, "scene")}`;
+        } catch {
+          summary = "unreadable";
+        }
+        const when = new Date(backup.at).toLocaleString();
+        const tag = backup.tag === "conflict" ? " · other device's version" : "";
+        list.append(button(`${when} — ${summary}${tag}`, "", () => {
+          try {
+            const restored = parseBoard(backup.json);
+            modalStack.length = 0;
+            drawModal();
+            history.commit(board);
+            board = restored;
+            selected = null;
+            saveNow();
+            if (saveState.kind === "saved") { saveState = {kind: "imported"}; render(); }
+          } catch (e) {
+            alertDialog(`Could not restore: ${e.message}`);
+          }
+        }));
+      }
+      box.append(heading,
+        backups.length ? hint("Restoring can be undone.") : hint("No backups yet."),
+        list, button("Cancel", "", closeModal));
+    },
+  });
+}
+
+/* ---------- GitHub backup to a private repository ---------- */
+
+function readToken() {
+  try { return localStorage.getItem(TOKEN_KEY) || null; } catch { return null; }
+}
+
+// Accepts owner/name or a GitHub URL for the repository, e.g. one copied from
+// the address bar or a clone URL.
+function parseRepo(input) {
+  let path = String(input).trim().replace(/^https?:\/\/(www\.)?/, "");
+  path = path.replace(/^github\.com\//, "").replace(/^git@github\.com:/, "");
+  const [owner = "", rawName = ""] = path.split(/[/#?]/);
+  const name = rawName.replace(/\.git$/, "");
+  const ownerIsValid = /^[A-Za-z0-9-]+$/.test(owner);
+  return ownerIsValid && isValidRepoName(name) ? `${owner}/${name}` : null;
+}
+
+function isValidRepoName(name) {
+  return /^[A-Za-z0-9._-]{1,100}$/.test(name) && name !== "." && name !== "..";
+}
+
+function repoDescription(title) {
+  const trimmed = title.trim();
+  return trimmed ? `StorySquish board: ${trimmed}` : "StorySquish board";
+}
+
+// The title a push recorded in the description, or null when the
+// description was not written by StorySquish.
+function titleFromDescription(description) {
+  const trimmed = (description ?? "").trim();
+  if (trimmed === "StorySquish board") return "";
+  return trimmed.startsWith("StorySquish board: ") ? trimmed.slice("StorySquish board: ".length).trim() : null;
+}
+
+function numberedRepoName(baseName, attempt) {
+  return attempt === 1 ? baseName : `${baseName}-${attempt}`;
+}
+
+// The base name to rename `existing` to when `title` gives a different name
+// than the title it was last backed up under, or null when the name stays,
+// including when it already follows `title`, e.g. renamed on another device.
+function renamedRepoBase(existing, title) {
+  const previousTitle = titleFromDescription(existing.description);
+  if (previousTitle === null) return null;
+  const baseName = repoNameFor(title);
+  const name = existing.full_name.split("/").pop();
+  const followsTitle = Array.from({length: GITHUB_MAX_REPO_NAME_ATTEMPTS},
+    (_, i) => numberedRepoName(baseName, i + 1)).includes(name);
+  return baseName !== repoNameFor(previousTitle) && !followsTitle ? baseName : null;
+}
+
+// Compared without case, as GitHub compares repository names.
+function hasRepoPrefix(name) {
+  return name.toLowerCase().startsWith(GITHUB_REPO_NAME_PREFIX);
+}
+
+function prefixedRepoName(name) {
+  return `${GITHUB_REPO_NAME_PREFIX}${name}`.slice(0, GITHUB_MAX_REPO_NAME_LEN).replace(/-+$/, "");
+}
+
+function repoNameFor(title) {
+  let slug = "";
+  for (const c of title) {
+    if (/^[A-Za-z0-9]$/.test(c)) slug += c.toLowerCase();
+    else if (slug && !slug.endsWith("-")) slug += "-";
+  }
+  slug = slug.replace(/-+$/, "");
+  if (!slug) return GITHUB_UNTITLED_REPO_NAME;
+  return `${GITHUB_REPO_NAME_PREFIX}${slug}`.slice(0, GITHUB_MAX_REPO_NAME_LEN).replace(/-+$/, "");
+}
+
+function commitMessage(title) {
+  const trimmed = title.trim();
+  return trimmed ? `Back up ${trimmed}` : "Back up untitled board";
+}
+
+function base64Utf8(text) {
+  const bytes = new TextEncoder().encode(text);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(binary);
+}
+
+function describeGithubFailure(status, detail) {
+  const hint = {
+    401: "the token is invalid or expired",
+    403: "the token lacks the Contents or Administration permission, or the rate limit was hit",
+    404: "the repository does not exist or the token cannot see it",
+    409: "GitHub rejected the change; another device may have backed up at the same time",
+    422: "GitHub rejected the change; another device may have backed up at the same time",
+  }[status] ?? "GitHub refused the request";
+  return detail ? `${hint} (HTTP ${status}: ${detail})` : `${hint} (HTTP ${status})`;
+}
+
+class MissingRepoError extends Error {
+  constructor(repo) {
+    super(`${repo} does not exist or the token cannot see it`);
+    this.repo = repo;
+  }
+}
+
+class GithubError extends Error {
+  constructor(status, detail, body) {
+    super(describeGithubFailure(status, detail));
+    this.status = status;
+    this.body = body;
+  }
+}
+
+// `raw` returns the file itself rather than JSON metadata; statuses listed
+// in `absentOn` resolve to null instead of failing.
+async function github(path, {method = "GET", body, raw = false, absentOn = []} = {}) {
+  let response;
+  try {
+    response = await fetch(`${GITHUB_API}${path}`, {
+      method,
+      headers: {
+        Accept: raw ? "application/vnd.github.raw+json" : "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        Authorization: `Bearer ${githubBackup.token}`,
+        ...(body ? {"Content-Type": "application/json"} : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+      cache: "no-store",
+    });
+  } catch (e) {
+    throw new Error(`contacting GitHub: ${e.message}`);
+  }
+  const text = await response.text();
+  if (absentOn.includes(response.status)) return null;
+  if (!response.ok) {
+    let detail = "";
+    try { detail = JSON.parse(text).message ?? ""; } catch { /* not JSON */ }
+    throw new GithubError(response.status, detail, text);
+  }
+  if (raw) return text;
+  try { return JSON.parse(text); } catch { throw new Error("GitHub sent an unexpected response"); }
+}
+
+function boardFilePath(repo) {
+  return `/repos/${repo}/contents/${GITHUB_BOARD_FILE}`;
+}
+
+// A taken name is an error, never a reuse of someone else's repository.
+async function createRepo(name, title) {
+  if (!isValidRepoName(name)) throw new Error(`“${name}” is not a valid repository name`);
+  try {
+    const created = await github("/user/repos", {method: "POST", body: {
+      name, description: repoDescription(title), private: true,
+      has_issues: false, has_projects: false, has_wiki: false,
+    }});
+    return created.full_name;
+  } catch (e) {
+    if (e instanceof GithubError && e.status === 422 && e.body.includes("name already exists")) {
+      throw new Error(`${name} already exists on your account; choose another name`);
+    }
+    throw e;
+  }
+}
+
+// The title's slug, numbered past names the account already uses, with the
+// account it would be created on.
+async function suggestRepoName(title) {
+  const {login} = await github("/user");
+  const baseName = repoNameFor(title);
+  for (let attempt = 1; attempt <= GITHUB_MAX_REPO_NAME_ATTEMPTS; attempt++) {
+    const name = numberedRepoName(baseName, attempt);
+    if (await github(`/repos/${login}/${name}`, {absentOn: [404]}) === null) return {owner: login, name};
+  }
+  throw new Error(`every repository name tried for this board, from ${baseName}, is taken`);
+}
+
+// Tries `baseName` and its numbered variants, keeping the current name when
+// every one is taken, and returns the resulting owner/name.
+async function renameRepo(repo, baseName) {
+  for (let attempt = 1; attempt <= GITHUB_MAX_REPO_NAME_ATTEMPTS; attempt++) {
+    try {
+      const renamed = await github(`/repos/${repo}`, {method: "PATCH", body: {name: numberedRepoName(baseName, attempt)}});
+      return renamed.full_name;
+    } catch (e) {
+      if (!(e instanceof GithubError && e.status === 422 && e.body.includes("already exists"))) throw e;
+    }
+  }
+  return repo;
+}
+
+// A repository that is gone or public keeps its name; the next push reports either.
+async function addRepoPrefix(repo) {
+  if (hasRepoPrefix(repo.split("/").pop())) return repo;
+  const existing = await github(`/repos/${repo}`, {absentOn: [404]});
+  if (!existing) return repo;
+  const name = existing.full_name.split("/").pop();
+  if (!existing.private || hasRepoPrefix(name)) return existing.full_name;
+  return renameRepo(existing.full_name, prefixedRepoName(name));
+}
+
+// Runs on page load, the browser's way of opening the board.
+async function addPrefixToLinkedRepo() {
+  const repo = settings.githubRepo;
+  if (!githubBackup.token || githubBackup.busy || !repo || hasRepoPrefix(repo.split("/").pop())) return;
+  try {
+    const renamed = await runGithubJob(() => addRepoPrefix(repo));
+    if (renamed !== repo && settings.githubRepo === repo) {
+      settings.githubRepo = renamed;
+      saveSettingsReportingErrors();
+    }
+  } catch (e) {
+    githubBackup.error = `Could not rename the repository to start with ${GITHUB_REPO_NAME_PREFIX}: ${e.message}`;
+  }
+  drawModal();
+}
+
+// Refuses a public repository, so a pasted link can never publish the novel,
+// and renames the repository when the title changes.
+async function pushBoard(repo, title, json) {
+  const existing = await github(`/repos/${repo}`, {absentOn: [404]});
+  if (!existing) throw new MissingRepoError(repo);
+  if (!existing.private) throw new Error(`${repo} is public; StorySquish backs up only to private repositories`);
+  const baseName = renamedRepoBase(existing, title);
+  repo = baseName ? await renameRepo(existing.full_name, baseName) : existing.full_name;
+  const description = repoDescription(title);
+  if (existing.description !== description) {
+    await github(`/repos/${repo}`, {method: "PATCH", body: {description}});
+  }
+  const current = await github(boardFilePath(repo), {absentOn: [404]});
+  await github(boardFilePath(repo), {method: "PUT", body: {
+    message: commitMessage(title),
+    content: base64Utf8(json),
+    ...(current ? {sha: current.sha} : {}),
+  }});
+  return repo;
+}
+
+async function runGithubJob(job) {
+  githubBackup.busy = true;
+  drawModal();
+  try {
+    return await job();
+  } finally {
+    githubBackup.busy = false;
+    drawModal();
+  }
+}
+
+// Asks before creating a repository for the first push, or when the linked
+// one is gone, then commits to it.
+async function backUpToGithub(kind) {
+  if (!githubBackup.token || githubBackup.busy || githubBackup.repoCreationOpen) return;
+  if (!settings.githubRepo) {
+    repoCreationDialog(null);
+    return;
+  }
+  githubBackup.lastAttemptAt = Date.now();
+  githubBackup.boardChanged = false;
+  const json = serializeBoard(board);
+  try {
+    const repo = await runGithubJob(() => pushBoard(settings.githubRepo, board.title, json));
+    githubBackup.lastPushedJson = json;
+    githubBackup.lastSuccessAt = Date.now();
+    githubBackup.error = null;
+    if (repo !== settings.githubRepo) {
+      settings.githubRepo = repo;
+      saveSettingsReportingErrors();
+    }
+  } catch (e) {
+    if (e instanceof MissingRepoError) {
+      githubBackup.error = null;
+      repoCreationDialog(e.repo);
+      return;
+    }
+    const message = `GitHub backup failed: ${e.message}`;
+    if (kind === "auto" && !githubBackup.error) {
+      alertDialog(`${message}\n\nEdits are still saved in this browser. Check Settings → GitHub backup.`);
+    }
+    githubBackup.error = message;
+  }
+  drawModal();
+}
+
+function hasPlaceholderTitle() {
+  const title = board.title.trim();
+  return !title || title === DEFAULT_TITLE;
+}
+
+// Waits while the header title is being typed, which the dialog would
+// otherwise interrupt after the first keystroke; its blur tries again.
+function offerRepoForNewBoard() {
+  if (!githubBackup.newBoard || !githubBackup.token || githubBackup.repoCreationOpen) return;
+  if (!githubBackup.boardChanged && saveState.kind !== "pending") return;
+  if (document.activeElement === $("bookTitle")) return;
+  githubBackup.newBoard = false;
+  if (!settings.githubRepo) repoCreationDialog(null);
+}
+
+// A placeholder title is asked for first, since the suggested name comes from it.
+function repoCreationDialog(missingRepo) {
+  const askTitle = !missingRepo && hasPlaceholderTitle();
+  const state = {
+    owner: missingRepo ? missingRepo.split("/")[0] : null,
+    name: missingRepo ? missingRepo.split("/").pop() : repoNameFor(askTitle ? "" : board.title),
+    titleDraft: askTitle ? "" : null,
+    focus: askTitle ? "title" : "name",
+    edited: false, suggesting: !missingRepo, creating: false, error: null,
+  };
+  let suggestion = 0;
+  let suggestTimer = null;
+  const currentTitle = () => state.titleDraft ?? board.title;
+  const redraw = () => { if (modalStack.at(-1) === dialog) drawModal(); };
+  const suggest = () => {
+    const title = currentTitle();
+    const ticket = ++suggestion;
+    suggestRepoName(title)
+      .then(suggested => {
+        if (ticket !== suggestion) return;
+        state.owner = suggested.owner;
+        if (!state.edited) state.name = suggested.name;
+      }, e => {
+        if (ticket === suggestion) state.error = `Could not check which names are free: ${e.message}`;
+      })
+      .finally(() => {
+        if (ticket !== suggestion) return;
+        state.suggesting = false;
+        redraw();
+      });
+  };
+  const decline = () => {
+    clearTimeout(suggestTimer);
+    githubBackup.repoCreationOpen = false;
+    githubBackup.repoCreationDeclined = true;
+  };
+  const create = async () => {
+    clearTimeout(suggestTimer);
+    if (state.titleDraft !== null) {
+      board.title = state.titleDraft.trim();
+      state.titleDraft = null;
+      saveNow();
+    }
+    state.creating = true;
+    state.error = null;
+    redraw();
+    try {
+      const repo = await runGithubJob(() => createRepo(state.name.trim(), board.title));
+      const index = modalStack.indexOf(dialog);
+      if (index >= 0) { modalStack.splice(index, 1); drawModal(); }
+      githubBackup.repoCreationOpen = false;
+      githubBackup.repoCreationDeclined = false;
+      settings.githubRepo = repo;
+      githubBackup.lastPushedJson = null;
+      saveSettingsReportingErrors();
+      backUpToGithub("manual");
+    } catch (e) {
+      state.creating = false;
+      state.error = `Could not create the repository: ${e.message}`;
+      redraw();
+    }
+  };
+  const dialog = {
+    onDismiss: decline,
+    draw(box) {
+      const heading = document.createElement("h2");
+      heading.textContent = "Save to a GitHub repository";
+      box.append(heading);
+      if (missingRepo) box.append(message(`${missingRepo} does not exist, or the token cannot see it.`));
+      const createButton = button("Create", "", create);
+      const invalid = hint("Use letters, digits, '-', '_' or '.'");
+      invalid.style.color = "var(--danger)";
+      const sync = () => {
+        const valid = isValidRepoName(state.name.trim());
+        const titled = state.titleDraft === null || state.titleDraft.trim() !== "";
+        invalid.hidden = valid;
+        createButton.disabled = !valid || !titled || state.suggesting || state.creating;
+      };
+      const submitOnEnter = e => { if (e.key === "Enter" && !createButton.disabled) create(); };
+
+      let titleInput = null;
+      if (state.titleDraft !== null) {
+        box.append(message("Give the story a title; the repository is named after it."));
+        titleInput = document.createElement("input");
+        titleInput.value = state.titleDraft;
+        titleInput.placeholder = DEFAULT_TITLE;
+        titleInput.disabled = state.creating;
+        titleInput.setAttribute("aria-label", "Story title");
+        titleInput.addEventListener("focus", () => { state.focus = "title"; });
+        titleInput.addEventListener("input", () => {
+          state.titleDraft = titleInput.value;
+          state.error = null;
+          if (!state.edited) { state.name = repoNameFor(state.titleDraft); nameInput.value = state.name; }
+          state.suggesting = true;
+          suggestion++;
+          clearTimeout(suggestTimer);
+          suggestTimer = setTimeout(suggest, GITHUB_SUGGEST_DELAY_MS);
+          sync();
+        });
+        titleInput.addEventListener("keydown", submitOnEnter);
+        box.append(fieldLabel("Story title"), titleInput);
+      } else {
+        box.append(message(`Back up “${board.title.trim() || "Untitled"}” to a new private repository ` +
+          "on your GitHub account."));
+      }
+
+      const nameInput = document.createElement("input");
+      nameInput.className = "repo-input";
+      nameInput.value = state.name;
+      nameInput.disabled = state.creating;
+      nameInput.setAttribute("aria-label", "Repository name");
+      nameInput.addEventListener("focus", () => { state.focus = "name"; });
+      nameInput.addEventListener("input", () => { state.name = nameInput.value; state.edited = true; sync(); });
+      nameInput.addEventListener("keydown", submitOnEnter);
+      const owner = hint(`${state.owner ?? "…"} /`);
+      owner.style.margin = "0";
+      box.append(fieldLabel("Repository name"), row(owner, nameInput), invalid);
+      if (!missingRepo) {
+        box.append(hint("You can change the title later in the header; a repository named after the " +
+          "title is renamed to match on the next backup."));
+      }
+      if (state.error) {
+        const error = hint(state.error);
+        error.style.color = "var(--danger)";
+        box.append(error);
+      }
+      if (state.suggesting) box.append(hint("Checking which names are free…"));
+      if (state.creating) box.append(hint("Creating…"));
+      const cancel = button("Cancel", "", () => { closeModal(); decline(); });
+      cancel.disabled = state.creating;
+      box.append(row(createButton, cancel));
+      sync();
+      if (!state.creating) {
+        // Redraws rebuild the fields, so focus and caret go back where they were.
+        const focused = state.focus === "title" && titleInput ? titleInput : nameInput;
+        focused.focus();
+        focused.setSelectionRange(focused.value.length, focused.value.length);
+      }
+    },
+  };
+  githubBackup.repoCreationOpen = true;
+  openModal(dialog);
+  if (!missingRepo) suggest();
+}
+
+// At most once per interval and only after the board changed, so a long
+// writing session leaves a version every few minutes, not one per keystroke.
+function backUpToGithubIfDue({ignoreInterval = false} = {}) {
+  if (!settings.githubAutoBackup || !githubBackup.token || githubBackup.busy) return;
+  if (githubBackup.repoCreationOpen || githubBackup.repoCreationDeclined) return;
+  if (!githubBackup.boardChanged || saveState.kind === "pending") return;
+  if (!ignoreInterval && Date.now() - githubBackup.lastAttemptAt < GITHUB_BACKUP_INTERVAL_MS) return;
+  if (serializeBoard(board) === githubBackup.lastPushedJson) { githubBackup.boardChanged = false; return; }
+  backUpToGithub("auto");
+}
+
+async function githubRevisions(repo) {
+  const path = `/repos/${repo}/commits?path=${GITHUB_BOARD_FILE}&per_page=${GITHUB_REVISIONS_LISTED}`;
+  // GitHub answers 409 for a repository without any commits.
+  const commits = await github(path, {absentOn: [409]});
+  return (commits ?? []).map(c => ({version: c.sha, committedAt: c.commit.committer.date}));
+}
+
+async function githubBoardAt(repo, version) {
+  const text = await github(`${boardFilePath(repo)}?ref=${version}`, {raw: true, absentOn: [404]});
+  if (text === null) throw new Error(`this version of the repository has no ${GITHUB_BOARD_FILE}`);
+  return text;
+}
+
+function connectGithub(token) {
+  const trimmed = token.trim();
+  if (!trimmed) return;
+  try {
+    localStorage.setItem(TOKEN_KEY, trimmed);
+    githubBackup.token = trimmed;
+    githubBackup.error = null;
+  } catch (e) {
+    githubBackup.error = `Could not save the token: ${e.message}`;
+  }
+}
+
+// Forgets the token but keeps the repo link, so reconnecting resumes backing
+// up to the same repo.
+function disconnectGithub() {
+  try { localStorage.removeItem(TOKEN_KEY); } catch { /* best effort */ }
+  githubBackup.token = null;
+  githubBackup.error = null;
+  githubBackup.lastSuccessAt = 0;
+}
+
+function setGithubRepo(input) {
+  const trimmed = input.trim();
+  const repo = trimmed ? parseRepo(trimmed) : null;
+  githubBackup.repoInvalid = trimmed !== "" && repo === null;
+  if (githubBackup.repoInvalid || repo === settings.githubRepo) return;
+  linkRepo(repo);
+}
+
+function linkRepo(repo) {
+  settings.githubRepo = repo;
+  githubBackup.repoCreationDeclined = false;
+  githubBackup.lastPushedJson = null;
+  githubBackup.lastSuccessAt = 0;
+  githubBackup.error = null;
+  saveSettingsReportingErrors();
+}
+
+function minutesAgo(at) {
+  const minutes = Math.floor((Date.now() - at) / 60000);
+  return minutes === 0 ? "just now" : minutes === 1 ? "a minute ago" : `${minutes} minutes ago`;
+}
+
+function githubStatus() {
+  if (githubBackup.error) return {text: githubBackup.error, danger: true};
+  if (!githubBackup.token) return null;
+  if (githubBackup.busy) return {text: "Talking to GitHub…"};
+  if (githubBackup.lastSuccessAt) return {text: `Backed up ${minutesAgo(githubBackup.lastSuccessAt)}`};
+  if (!settings.githubRepo) return {text: "No repository yet; the first backup offers to create a private one."};
+  return {text: "Not backed up in this visit yet."};
+}
+
+function githubSection() {
+  const label = fieldLabel("GitHub backup");
+  const parts = [label];
+  if (!githubBackup.token) {
+    parts.push(hint("Optionally back up the board to a private repository on your GitHub account, with " +
+      "every version kept in its history. Create a fine-grained token for all repositories with the " +
+      "permissions Administration and Contents: read and write (or a classic token with the repo " +
+      "scope) and paste it here. It is kept in this browser's storage."));
+    const input = document.createElement("input");
+    input.type = "password";
+    input.className = "repo-input";
+    input.placeholder = "GitHub token";
+    input.setAttribute("aria-label", "GitHub token");
+    const connect = () => { connectGithub(input.value); drawModal(); };
+    input.addEventListener("keydown", e => { if (e.key === "Enter") connect(); });
+    parts.push(row(input, button("Connect", "", connect)));
+  } else {
+    const input = document.createElement("input");
+    input.className = "repo-input";
+    input.placeholder = "owner/repo or URL; empty offers to create one";
+    input.setAttribute("aria-label", "GitHub repository");
+    input.value = settings.githubRepo ?? "";
+    input.addEventListener("change", () => { setGithubRepo(input.value); drawModal(); });
+    const repoRow = row(input);
+    if (settings.githubRepo) {
+      const link = document.createElement("a");
+      link.href = `https://github.com/${settings.githubRepo}`;
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.textContent = "Open";
+      repoRow.append(link);
+    }
+    parts.push(repoRow);
+    if (githubBackup.repoInvalid) {
+      const invalid = hint("Not a GitHub repository name or URL");
+      invalid.style.color = "var(--danger)";
+      parts.push(invalid);
+    }
+    const auto = document.createElement("label");
+    auto.className = "toggle";
+    auto.title = "At most every five minutes while you edit, and when you leave the page";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = settings.githubAutoBackup;
+    checkbox.addEventListener("change", () => {
+      settings.githubAutoBackup = checkbox.checked;
+      saveSettingsReportingErrors();
+    });
+    auto.append(checkbox, " Back up automatically");
+    const backUp = button("Back up now", "", () => backUpToGithub("manual"));
+    const restore = button("Restore from GitHub…", "", restoreGithubDialog);
+    backUp.disabled = githubBackup.busy;
+    restore.disabled = githubBackup.busy || !settings.githubRepo;
+    const disconnect = button("Disconnect", "", () => { disconnectGithub(); drawModal(); });
+    disconnect.title = "Forget the token; the repository itself stays on GitHub";
+    parts.push(row(auto), row(backUp, restore, disconnect));
+  }
+  const status = githubStatus();
+  if (status) {
+    const line = hint(status.text);
+    if (status.danger) line.style.color = "var(--danger)";
+    parts.push(line);
+  }
+  return parts;
+}
+
+async function restoreGithubDialog() {
+  const repo = settings.githubRepo;
+  const state = {revisions: null, error: null};
+  openModal({
+    draw(box) {
+      const heading = document.createElement("h2");
+      heading.textContent = "Restore from GitHub";
+      box.append(heading);
+      if (state.error) {
+        const error = hint(state.error);
+        error.style.color = "var(--danger)";
+        box.append(error);
+      }
+      if (state.revisions === null) {
+        if (!state.error) box.append(hint("Loading versions…"));
+      } else if (!state.revisions.length) {
+        box.append(hint("This repository has no versions yet."));
+      } else {
+        box.append(hint(githubBackup.busy ? "Downloading…" : "Newest first. Restoring can be undone."));
+        const list = document.createElement("div");
+        list.className = "backup-list";
+        for (const revision of state.revisions) {
+          const when = new Date(revision.committedAt).toLocaleString();
+          const choose = button(`${when} · ${revision.version.slice(0, 7)}`, "", async () => {
+            state.error = null;
+            let restored;
+            try {
+              restored = parseBoard(await runGithubJob(() => githubBoardAt(repo, revision.version)));
+            } catch (e) {
+              state.error = `GitHub backup failed: ${e.message}`;
+              drawModal();
+              return;
+            }
+            modalStack.length = 0;
+            drawModal();
+            history.commit(board);
+            board = restored;
+            selected = null;
+            saveNow();
+            if (saveState.kind === "saved") { saveState = {kind: "imported"}; render(); }
+          });
+          choose.disabled = githubBackup.busy;
+          list.append(choose);
+        }
+        box.append(list);
+      }
+      box.append(button("Cancel", "", closeModal));
+    },
+  });
+  try {
+    state.revisions = await runGithubJob(() => githubRevisions(repo));
+  } catch (e) {
+    state.error = `GitHub backup failed: ${e.message}`;
+  }
+  drawModal();
+}
+
+/* ---------- wiring ---------- */
+
+function withSelectedScene(fn) {
+  return e => {
+    if (selected?.kind !== "scene") return;
+    const scene = board.scenes[sceneIndex(selected.id)];
+    if (scene) { fn(scene, e.target.value); markDirty(); }
+  };
+}
+
+function withSelectedCharacter(fn) {
+  return e => {
+    if (selected?.kind !== "character") return;
+    const character = findCharacter(selected.id);
+    if (character) { fn(character, e.target.value); markDirty(); }
+  };
+}
+
+$("bookTitle").addEventListener("input", e => { board.title = e.target.value; markDirty(); });
+$("bookTitle").addEventListener("blur", offerRepoForNewBoard);
+$("statsToggle").addEventListener("change", e => { showStats = e.target.checked; render(); });
+$("settingsBtn").addEventListener("click", settingsDialog);
+const exportMenu = $("exportMenu");
+exportMenu.addEventListener("click", e => {
+  const item = e.target.closest("[data-export]");
+  if (!item) return;
+  exportMenu.open = false;
+  if (item.dataset.export === "board") exportBoard();
+  else if (item.dataset.export === "outline") exportMarkdown("outline", "outline", toMarkdown);
+  else if (item.dataset.export === "manuscript") exportMarkdown("manuscript", "manuscript", manuscriptMarkdown);
+  else exportMarkdown("outline and manuscript", null, combinedMarkdown);
+});
+document.addEventListener("click", e => { if (!exportMenu.contains(e.target)) exportMenu.open = false; });
+$("backupNudge").addEventListener("click", exportBoard);
+$("reconnectBtn").addEventListener("click", connectLinkedFile);
+$("importBtn").addEventListener("click", () => $("importFile").click());
+$("importFile").addEventListener("change", e => {
+  const [file] = e.target.files;
+  e.target.value = "";
+  if (file) importBoard(file);
+});
+$("resetBtn").addEventListener("click", confirmReset);
+$("undoBtn").addEventListener("click", undo);
+$("redoBtn").addEventListener("click", redo);
+$("addBtn").addEventListener("click", addScene);
+
+$("search").addEventListener("input", e => { filters.query = e.target.value; render(); });
+$("filterStatus").addEventListener("change", e => { filters.status = e.target.value; render(); });
+$("filterAct").addEventListener("change", e => { filters.act = e.target.value; render(); });
+$("filterPov").addEventListener("change", e => { filters.pov = e.target.value; render(); });
+$("clearFilters").addEventListener("click", () => {
+  Object.assign(filters, {query: "", status: "", act: "", pov: ""});
+  render();
+});
+
+$("charList").addEventListener("click", e => {
+  const card = e.target.closest(".char");
+  if (!card) return;
+  if (e.target.closest(".x")) deleteCharacter(card.dataset.id);
+  else { selected = {kind: "character", id: card.dataset.id}; render(); }
+});
+$("locList").addEventListener("click", e => {
+  const card = e.target.closest(".char");
+  if (card) { selected = {kind: "location", id: card.dataset.id}; render(); }
+});
+$("newLoc").addEventListener("keydown", e => {
+  if (e.key !== "Enter") return;
+  e.preventDefault();
+  if (addLocationToBoard(e.target.value)) {
+    e.target.value = "";
+    saveNow();
+  }
+});
+
+$("tabs").addEventListener("click", e => {
+  const tab = e.target.closest(".tab");
+  if (tab) { view = tab.dataset.view; render(); }
+});
+function selectScene(id) {
+  selected = {kind: "scene", id};
+  render();
+}
+$("writePicker").addEventListener("click", e => {
+  const link = e.target.closest(".link");
+  if (link) selectScene(link.dataset.id);
+});
+$("wPrev").addEventListener("click", () => {
+  const index = sceneIndex(selected?.id);
+  if (index > 0) selectScene(board.scenes[index - 1].id);
+});
+$("wNext").addEventListener("click", () => {
+  const index = sceneIndex(selected?.id);
+  if (index >= 0 && index < board.scenes.length - 1) selectScene(board.scenes[index + 1].id);
+});
+$("prose").addEventListener("input", withSelectedScene((s, v) => { s.text = v; }));
+$("timeline").addEventListener("click", e => {
+  const rowEl = e.target.closest(".trow");
+  if (rowEl) selectScene(rowEl.dataset.id);
+});
+const graphHost = $("graph");
+function selectGraphNode(e) {
+  const node = e.target.closest(".node");
+  if (node) { selected = {kind: "character", id: node.dataset.id}; render(); }
+}
+graphHost.addEventListener("click", selectGraphNode);
+graphHost.addEventListener("keydown", e => {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectGraphNode(e); }
+});
+window.addEventListener("resize", () => { if (view === "graph") renderGraph(); });
+
+$("newChar").addEventListener("keydown", e => {
+  if (e.key !== "Enter") return;
+  e.preventDefault();
+  if (addCharacterToBoard(e.target.value)) {
+    e.target.value = "";
+    saveNow();
+  }
+});
+
+const boardHost = $("board");
+boardHost.addEventListener("click", e => {
+  const card = e.target.closest(".card");
+  if (card) { selected = {kind: "scene", id: card.dataset.id}; render(); }
+});
+boardHost.addEventListener("dragstart", e => {
+  const card = e.target.closest(".card");
+  if (!card) return;
+  dragFrom = Number(card.dataset.index);
+  card.classList.add("dragging");
+  e.dataTransfer.effectAllowed = "move";
+  e.dataTransfer.setData("text/plain", card.dataset.id);
+});
+boardHost.addEventListener("dragover", e => {
+  const card = e.target.closest(".card");
+  if (dragFrom === null || !card) return;
+  e.preventDefault();
+  const isOther = Number(card.dataset.index) !== dragFrom;
+  e.dataTransfer.dropEffect = "move";
+  for (const c of boardHost.querySelectorAll(".drop-target")) if (c !== card) c.classList.remove("drop-target");
+  card.classList.toggle("drop-target", isOther);
+});
+boardHost.addEventListener("drop", e => {
+  const card = e.target.closest(".card");
+  if (dragFrom === null || !card) return;
+  e.preventDefault();
+  const from = dragFrom;
+  const to = Number(card.dataset.index);
+  dragFrom = null;
+  if (from === to) { render(); return; }
+  moveScene(from, to);
+  saveNow();
+});
+boardHost.addEventListener("dragend", () => {
+  if (dragFrom === null) return;
+  dragFrom = null;
+  render();
+});
+
+$("sTitle").addEventListener("input", withSelectedScene((s, v) => { s.title = v; }));
+$("sSum").addEventListener("input", withSelectedScene((s, v) => { s.summary = v; }));
+$("sStatus").addEventListener("change", withSelectedScene((s, v) => { s.status = v; }));
+$("sPov").addEventListener("change", withSelectedScene((s, v) => { s.pov = v; }));
+$("sAct").addEventListener("change", withSelectedScene((s, v) => { s.act = v; }));
+$("sLocation").addEventListener("change", withSelectedScene((s, v) => { s.location = v; }));
+$("sChapterBreak").addEventListener("change", withSelectedScene(s => { s.chapterBreak = $("sChapterBreak").checked; }));
+$("sDayZero").addEventListener("change", withSelectedScene(s => { board.dayZero = $("sDayZero").checked ? s.id : null; }));
+// Unticking only hides the day and date, so an accidental click loses nothing.
+$("sDated").addEventListener("change", withSelectedScene(s => {
+  s.dayHidden = !$("sDated").checked;
+  if (s.dayHidden) return;
+  if (board.calendar) s.date ??= manuscriptDates()[0] ?? todayIso();
+  else s.day ??= 1;
+}));
+$("sDate").addEventListener("change", e => {
+  if (epochDays(e.target.value) !== null) withSelectedScene((s, v) => { s.date = v; })(e);
+});
+$("sDay").addEventListener("input", e => {
+  const day = Number(e.target.value);
+  if (e.target.value.trim() === "" || !Number.isInteger(day) || Math.abs(day) >= 2 ** 31) return;
+  withSelectedScene(s => {
+    if (!board.calendar) {
+      s.day = day;
+      return;
+    }
+    const others = manuscriptDates(board, board.scenes.indexOf(s));
+    s.date = dateOfDayNumber(others, day, board.absoluteDays) ?? s.date;
+  })(e);
+});
+$("sToday").addEventListener("click", withSelectedScene(s => { s.date = todayIso(); }));
+$("sWrite").addEventListener("click", () => { view = "write"; render(); });
+$("sClose").addEventListener("click", closeInspector);
+$("sEarlier").addEventListener("click", () => shiftSelection(-1));
+$("sLater").addEventListener("click", () => shiftSelection(1));
+$("sDuplicate").addEventListener("click", duplicateSelectedScene);
+$("sDelete").addEventListener("click", () => { if (selected?.kind === "scene") confirmDeleteScene(selected.id); });
+
+$("cName").addEventListener("input", withSelectedCharacter((c, v) => { c.name = v; }));
+$("cRole").addEventListener("input", withSelectedCharacter((c, v) => { c.role = v; }));
+$("cGender").addEventListener("input", withSelectedCharacter((c, v) => { c.gender = v; }));
+$("cGoal").addEventListener("input", withSelectedCharacter((c, v) => { c.goal = v; }));
+$("cNotes").addEventListener("input", withSelectedCharacter((c, v) => { c.notes = v; }));
+$("relTarget").addEventListener("change", render);
+$("relAddBtn").addEventListener("click", () => {
+  if (selected?.kind !== "character") return;
+  if (addRelationshipToBoard(selected.id, $("relTarget").value, $("relLabel").value)) {
+    $("relLabel").value = "";
+    $("relTarget").value = "";
+    saveNow();
+  }
+});
+$("relList").addEventListener("input", e => {
+  const relationship = board.relationships.find(r => r.id === e.target.closest(".rel-row")?.dataset.id);
+  if (relationship) { relationship.label = e.target.value; markDirty(); }
+});
+$("relList").addEventListener("click", e => {
+  const button = e.target.closest("button");
+  if (!button) return;
+  const id = e.target.closest(".rel-row")?.dataset.id;
+  if (button.classList.contains("rel-reverse")) {
+    if (addReverseRelationshipToBoard(id)) saveNow();
+    return;
+  }
+  board.relationships = board.relationships.filter(r => r.id !== id);
+  saveNow();
+});
+
+function withSelectedLocation(fn) {
+  return e => {
+    if (selected?.kind !== "location") return;
+    const location = findLocation(selected.id);
+    if (location) { fn(location, e.target.value); markDirty(); }
+  };
+}
+$("lName").addEventListener("input", withSelectedLocation((l, v) => { l.name = v; }));
+$("lNotes").addEventListener("input", withSelectedLocation((l, v) => { l.notes = v; }));
+$("lClose").addEventListener("click", closeInspector);
+$("lUp").addEventListener("click", () => shiftSelection(-1));
+$("lDown").addEventListener("click", () => shiftSelection(1));
+$("lDelete").addEventListener("click", () => { if (selected?.kind === "location") deleteLocation(selected.id); });
+$("cClose").addEventListener("click", closeInspector);
+$("cUp").addEventListener("click", () => shiftSelection(-1));
+$("cDown").addEventListener("click", () => shiftSelection(1));
+$("cDelete").addEventListener("click", () => { if (selected?.kind === "character") deleteCharacter(selected.id); });
+
+$("modalHost").addEventListener("click", e => { if (e.target === e.currentTarget) dismissModal(); });
+
+$("addBtn").title = SHORTCUT_LABELS.newScene;
+$("undoBtn").title = SHORTCUT_LABELS.undo;
+$("redoBtn").title = SHORTCUT_LABELS.redo;
+$("sDuplicate").title = SHORTCUT_LABELS.duplicate;
+$("sEarlier").title = SHORTCUT_LABELS.earlier;
+$("sLater").title = SHORTCUT_LABELS.later;
+$("cUp").title = SHORTCUT_LABELS.up;
+$("cDown").title = SHORTCUT_LABELS.down;
+$("lUp").title = SHORTCUT_LABELS.up;
+$("lDown").title = SHORTCUT_LABELS.down;
+
+function isTextEntry(el) {
+  return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement
+    || el instanceof HTMLSelectElement || el?.isContentEditable;
+}
+
+// Undo, Escape and Delete mean something different inside a text field, so
+// those only act on the board when no field holds keyboard focus.
+document.addEventListener("keydown", e => {
+  if (modalOpen()) {
+    if (e.key === "Escape") { e.preventDefault(); dismissModal(); }
+    return;
+  }
+  const command = IS_MAC ? e.metaKey : e.ctrlKey;
+  const key = e.key.toLowerCase();
+  const plainCommand = command && !e.shiftKey && !e.altKey;
+
+  if (plainCommand && key === "n") { e.preventDefault(); addScene(); return; }
+  if (plainCommand && key === "f") { e.preventDefault(); $("search").focus(); $("search").select(); return; }
+  if (plainCommand && key === "d") { e.preventDefault(); duplicateSelectedScene(); return; }
+
+  if (isTextEntry(document.activeElement)) {
+    if (e.key === "Escape") document.activeElement.blur();
+    return;
+  }
+  if (command && !e.altKey && key === "z") {
+    e.preventDefault();
+    if (e.shiftKey) redo(); else undo();
+    return;
+  }
+  const noModifiers = !command && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey;
+  if (e.altKey && !command && !e.shiftKey) {
+    if (e.key === "ArrowLeft" || e.key === "ArrowUp") { e.preventDefault(); shiftSelection(-1); }
+    if (e.key === "ArrowRight" || e.key === "ArrowDown") { e.preventDefault(); shiftSelection(1); }
+    return;
+  }
+  if (noModifiers && e.key === "Escape") { closeInspector(); return; }
+  if (noModifiers && (e.key === "Delete" || e.key === "Backspace") && selected?.kind === "scene") {
+    e.preventDefault();
+    confirmDeleteScene(selected.id);
+  }
+});
+
+window.addEventListener("pagehide", () => { if (saveState.kind === "pending") saveNow(); });
+
+// Another tab of this page saved; follow it unless there are unsaved edits here.
+window.addEventListener("storage", e => {
+  if (e.key !== BOARD_KEY || e.newValue === null || saveState.kind === "pending") return;
+  let loaded;
+  try { loaded = parseBoard(e.newValue); } catch { return; }
+  if (JSON.stringify(loaded) !== JSON.stringify(board)) replaceBoard(loaded, "reloaded");
+});
+
+const pollQuietly = () => pollLinkedFile().catch(() => {});
+setInterval(pollQuietly, FILE_POLL_MS);
+window.addEventListener("focus", pollQuietly);
+setInterval(backUpToGithubIfDue, GITHUB_CHECK_MS);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) backUpToGithubIfDue({ignoreInterval: true});
+});
+
+applyTheme(schemeByKey(settings.colorScheme));
+render();
+restoreLinkedFile().catch(() => {});
+addPrefixToLinkedRepo();
+const startupAlert = boardLoad.alert ?? settingsLoad.alert;
+if (startupAlert) alertDialog(startupAlert);
+</script>
+</body>
+</html>
