@@ -358,3 +358,9 @@ drive the app headlessly with `egui_kittest`.
 | [`thesaurus`](src/thesaurus.rs)          | MyThes thesaurus download, parsing and lookup    |
 | [`theme`](src/theme.rs)                  | Color schemes and palettes                       |
 | [`migration`](src/migration.rs)          | Move data from pre-rename directories            |
+
+## License
+
+[MIT](LICENSE). The bundled English dictionaries under
+[`assets/dictionaries`](assets/dictionaries) keep their own SCOWL license; see
+the `LICENSE` file in each one.
