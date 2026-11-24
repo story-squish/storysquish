@@ -1,6 +1,6 @@
 use std::fmt::Write;
 
-use crate::model::{Board, Status};
+use crate::model::{Board, ChapterPlace, Status};
 
 /// Archived scenes are cut material, so they stay out of the outline; the
 /// remaining scenes keep their board numbers so they match the cards.
@@ -8,14 +8,21 @@ pub fn to_markdown(board: &Board) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "# {}\n", novel_title(board));
 
+    let chapters = board.chapters();
+    let scene_level = if chapters.iter().any(Option::is_some) {
+        "###"
+    } else {
+        "##"
+    };
     for (index, scene) in board.scenes.iter().enumerate() {
         if scene.status == Status::Archived {
             continue;
         }
+        write_chapter_heading(&mut out, chapters[index]);
         let scene_title = scene.title.trim();
         let _ = writeln!(
             out,
-            "## Scene {:02}: {}\n",
+            "{scene_level} Scene {:02}: {}\n",
             index + 1,
             if scene_title.is_empty() {
                 "Untitled"
@@ -100,21 +107,29 @@ pub fn to_markdown(board: &Board) -> String {
 }
 
 /// The prose of every non-archived scene in board order, one heading per
-/// scene, ready to paste into a word processor.
+/// scene under its chapter's, ready to paste into a word processor. An
+/// untitled scene gets a scene-break heading unless it opens a chapter.
 pub fn manuscript_markdown(board: &Board) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "# {}\n", novel_title(board));
-    for scene in board.scenes.iter().filter(|s| s.status != Status::Archived) {
+    let chapters = board.chapters();
+    let scene_level = if chapters.iter().any(Option::is_some) {
+        "###"
+    } else {
+        "##"
+    };
+    for (scene, chapter) in board.scenes.iter().zip(chapters) {
+        if scene.status == Status::Archived {
+            continue;
+        }
+        write_chapter_heading(&mut out, chapter);
         let scene_title = scene.title.trim();
-        let _ = writeln!(
-            out,
-            "## {}\n",
-            if scene_title.is_empty() {
-                "* * *"
-            } else {
-                scene_title
-            }
-        );
+        let opens_chapter = chapter.is_some_and(|c| c.starts);
+        if !scene_title.is_empty() {
+            let _ = writeln!(out, "{scene_level} {scene_title}\n");
+        } else if !opens_chapter {
+            let _ = writeln!(out, "{scene_level} * * *\n");
+        }
         let text = scene.text.trim();
         if !text.is_empty() {
             let _ = writeln!(out, "{text}\n");
@@ -147,6 +162,16 @@ pub fn combined_markdown(board: &Board) -> String {
         out.push('\n');
     }
     finish(out)
+}
+
+fn write_chapter_heading(out: &mut String, chapter: Option<ChapterPlace>) {
+    if let Some(ChapterPlace {
+        number,
+        starts: true,
+    }) = chapter
+    {
+        let _ = writeln!(out, "## Chapter {number}\n");
+    }
 }
 
 fn without_title(document: &str) -> &str {
@@ -315,6 +340,51 @@ mod tests {
             combined_markdown(&Board::default()),
             "# Untitled Novel\n\n## Outline\n\n## Manuscript\n"
         );
+    }
+
+    fn chaptered_board() -> Board {
+        let mut board = Board {
+            title: "Dune".into(),
+            ..Board::default()
+        };
+        for (title, text, chapter_break) in [
+            ("Arrakis", "Sand.", false),
+            ("", "More sand.", false),
+            ("", "Worms.", true),
+            ("Sietch", "Water.", true),
+        ] {
+            let id = board.add_scene();
+            let scene = board.scene_mut(&id).unwrap();
+            scene.title = title.into();
+            scene.text = text.into();
+            scene.chapter_break = chapter_break;
+        }
+        board
+    }
+
+    #[test]
+    fn manuscript_heads_chapters_and_drops_break_marks_that_open_them() {
+        assert_eq!(
+            manuscript_markdown(&chaptered_board()),
+            "# Dune\n\n\
+             ## Chapter 1\n\n\
+             ### Arrakis\n\nSand.\n\n\
+             ### * * *\n\nMore sand.\n\n\
+             ## Chapter 2\n\n\
+             Worms.\n\n\
+             ## Chapter 3\n\n\
+             ### Sietch\n\nWater.\n"
+        );
+    }
+
+    #[test]
+    fn outline_nests_scenes_under_chapters() {
+        let outline = to_markdown(&chaptered_board());
+        assert!(outline.starts_with(
+            "# Dune\n\n## Chapter 1\n\n### Scene 01: Arrakis\n\n_Outline_\n\n### Scene 02: Untitled\n"
+        ));
+        assert!(outline.contains("## Chapter 2\n\n### Scene 03: Untitled\n"));
+        assert!(outline.contains("## Chapter 3\n\n### Scene 04: Sietch\n"));
     }
 
     #[test]

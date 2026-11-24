@@ -117,6 +117,23 @@ pub struct Scene {
     pub day: Option<i32>,
     #[serde(default)]
     pub text: String,
+    #[serde(rename = "chapterBreak", default, skip_serializing_if = "is_false")]
+    pub chapter_break: bool,
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde passes fields by reference"
+)]
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
+/// A scene's chapter and whether the chapter opens with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChapterPlace {
+    pub number: usize,
+    pub starts: bool,
 }
 
 impl Scene {
@@ -131,6 +148,7 @@ impl Scene {
             location: None,
             day: None,
             text: String::new(),
+            chapter_break: false,
         }
     }
 
@@ -223,6 +241,7 @@ impl Board {
             } else {
                 format!("{} (copy)", original.title)
             },
+            chapter_break: false,
             ..original.clone()
         };
         let copy_id = copy.id.clone();
@@ -519,6 +538,35 @@ impl Board {
                 (character, scenes)
             })
             .collect()
+    }
+
+    /// Each scene's chapter, by board index. Chapters split the manuscript
+    /// scenes at chapter breaks, and once there is one, the first scene opens
+    /// chapter 1 so no prose falls outside a chapter. Archived scenes, and
+    /// every scene on a board without breaks, have none.
+    pub fn chapters(&self) -> Vec<Option<ChapterPlace>> {
+        let mut places = vec![None; self.scenes.len()];
+        if !self.manuscript_scenes().any(|(_, s)| s.chapter_break) {
+            return places;
+        }
+        let mut number = 0;
+        for (index, scene) in self.manuscript_scenes() {
+            let starts = number == 0 || scene.chapter_break;
+            if starts {
+                number += 1;
+            }
+            places[index] = Some(ChapterPlace { number, starts });
+        }
+        places
+    }
+
+    pub fn chapter_count(&self) -> usize {
+        self.chapters()
+            .into_iter()
+            .flatten()
+            .map(|place| place.number)
+            .max()
+            .unwrap_or(0)
     }
 
     pub fn scene_gaps(&self) -> SceneGaps {
@@ -1219,6 +1267,64 @@ mod tests {
         let json = serde_json::to_string(&board).unwrap();
         assert!(json.contains(r#""wordGoal":80000"#));
         assert_eq!(serde_json::from_str::<Board>(&json).unwrap(), board);
+    }
+
+    #[test]
+    fn chapters_split_manuscript_scenes_at_breaks() {
+        let mut board = Board::default();
+        scene_with(&mut board, "", |_| {});
+        scene_with(&mut board, "", |_| {});
+        scene_with(&mut board, "", |s| s.chapter_break = true);
+        scene_with(&mut board, "", |s| {
+            s.chapter_break = true;
+            s.status = Status::Archived;
+        });
+        scene_with(&mut board, "", |_| {});
+        scene_with(&mut board, "", |s| s.chapter_break = true);
+
+        let place = |number, starts| Some(ChapterPlace { number, starts });
+        assert_eq!(
+            board.chapters(),
+            vec![
+                place(1, true),
+                place(1, false),
+                place(2, true),
+                None,
+                place(2, false),
+                place(3, true)
+            ]
+        );
+        assert_eq!(board.chapter_count(), 3);
+    }
+
+    #[test]
+    fn boards_without_live_breaks_have_no_chapters() {
+        let mut board = Board::default();
+        scene_with(&mut board, "", |_| {});
+        scene_with(&mut board, "", |s| {
+            s.chapter_break = true;
+            s.status = Status::Archived;
+        });
+
+        assert_eq!(board.chapters(), vec![None, None]);
+        assert_eq!(board.chapter_count(), 0);
+    }
+
+    #[test]
+    fn chapter_break_is_saved_only_when_set_and_not_duplicated() {
+        let mut board = Board::default();
+        scene_with(&mut board, "", |_| {});
+        let json = serde_json::to_string(&board).unwrap();
+        assert!(!json.contains("chapterBreak"));
+
+        board.scenes[0].chapter_break = true;
+        let json = serde_json::to_string(&board).unwrap();
+        assert!(json.contains(r#""chapterBreak":true"#));
+        assert_eq!(serde_json::from_str::<Board>(&json).unwrap(), board);
+
+        let original = board.scenes[0].id.clone();
+        board.duplicate_scene(&original);
+        assert!(!board.scenes[1].chapter_break);
     }
 
     #[test]

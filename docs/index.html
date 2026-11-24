@@ -61,6 +61,8 @@
   .footnote{font-size:11px;color:var(--muted);margin-top:6px}
   .day-field{display:flex;gap:6px;align-items:center}
   .day-field input[type=checkbox]{width:auto;margin:0}
+  .check-field{display:flex;gap:6px;align-items:center;margin-top:8px;cursor:pointer}
+  .check-field input{width:auto;margin:0}
   .rel-row{display:flex;gap:6px;align-items:center;margin-top:4px}
   .rel-row > span{white-space:nowrap}
   .rel-row input{flex:1;min-width:0}
@@ -266,6 +268,9 @@
           </div>
         </div>
       </div>
+      <label class="check-field" title="A chapter runs until the next scene that starts one. Once any scene does, the first scene opens chapter 1.">
+        <input type="checkbox" id="sChapterBreak"> <span id="sChapterLabel">Starts a chapter</span>
+      </label>
       <div class="row">
         <span class="hint" id="sWords"></span>
         <button class="small" id="sWrite" title="Open this scene's prose in the editor">Write prose</button>
@@ -460,6 +465,12 @@ function requiredTextField(value, what) {
   return textField(value, what);
 }
 
+function boolField(value, what) {
+  if (value === undefined) return false;
+  if (typeof value !== "boolean") throw new Error(`${what} must be true or false`);
+  return value;
+}
+
 // Mirrors the desktop app's usize.
 function wordGoalField(value, what) {
   if (value === undefined || value === null) return null;
@@ -536,6 +547,7 @@ function parseScene(raw, index) {
     location: raw.location === null ? "" : textField(raw.location, `${what} location`),
     day: dayField(raw.day, `${what} day`),
     text: textField(raw.text, `${what} text`),
+    chapterBreak: boolField(raw.chapterBreak, `${what} chapter break`),
   };
 }
 
@@ -555,7 +567,8 @@ function parseBoard(text) {
 
 // The desktop app leaves "day" out when unset, so do the same.
 function serializeBoard(b) {
-  return JSON.stringify(b, (key, value) => ((key === "day" || key === "wordGoal") && value === null ? undefined : value), 2);
+  return JSON.stringify(b, (key, value) => (((key === "day" || key === "wordGoal") && value === null) || (key === "chapterBreak" && value === false)
+    ? undefined : value), 2);
 }
 
 function sceneIndex(id) { return board.scenes.findIndex(s => s.id === id); }
@@ -653,10 +666,30 @@ function chronologicalIndices() {
     .map(({index}) => index);
 }
 
+// Each scene's chapter by board index, as {number, starts} or null. Chapters
+// split the manuscript scenes at chapter breaks, and once there is one, the
+// first scene opens chapter 1 so no prose falls outside a chapter.
+function chapters(b = board) {
+  const places = b.scenes.map(() => null);
+  const scenes = manuscriptScenes(b);
+  if (!scenes.some(({scene}) => scene.chapterBreak)) return places;
+  let number = 0;
+  for (const {scene, index} of scenes) {
+    const starts = number === 0 || scene.chapterBreak;
+    if (starts) number += 1;
+    places[index] = {number, starts};
+  }
+  return places;
+}
+
+function chapterCount() {
+  return Math.max(0, ...chapters().filter(Boolean).map(place => place.number));
+}
+
 function addSceneToBoard() {
   const scene = {
     id: generateId(), title: "", summary: "", status: "Outline", pov: "", act: "",
-    location: "", day: null, text: "",
+    location: "", day: null, text: "", chapterBreak: false,
   };
   board.scenes.push(scene);
   return scene.id;
@@ -670,6 +703,7 @@ function duplicateSceneOnBoard(id) {
     ...original,
     id: generateId(),
     title: original.title ? `${original.title} (copy)` : "",
+    chapterBreak: false,
   };
   board.scenes.splice(index + 1, 0, copy);
   return copy.id;
@@ -805,9 +839,12 @@ function sceneNumber(index) {
 // remaining scenes keep their board numbers so they match the cards.
 function toMarkdown(b) {
   let out = `# ${b.title.trim() || DEFAULT_TITLE}\n\n`;
+  const places = chapters(b);
+  const sceneLevel = places.some(Boolean) ? "###" : "##";
   b.scenes.forEach((scene, index) => {
     if (scene.status === "Archived") return;
-    out += `## Scene ${String(index + 1).padStart(2, "0")}: ${scene.title.trim() || "Untitled"}\n\n`;
+    out += chapterHeading(places[index]);
+    out += `${sceneLevel} Scene ${String(index + 1).padStart(2, "0")}: ${scene.title.trim() || "Untitled"}\n\n`;
     const facts = [scene.status];
     if (scene.act) facts.push(scene.act);
     const pov = b.characters.find(c => c.id === scene.pov && scene.pov);
@@ -847,17 +884,27 @@ function toMarkdown(b) {
   return out.trimEnd() + "\n";
 }
 
-// The prose of every non-archived scene in board order, ready to paste into
-// a word processor.
+// The prose of every non-archived scene in board order, one heading per scene
+// under its chapter's, ready to paste into a word processor. An untitled
+// scene gets a scene-break heading unless it opens a chapter.
 function manuscriptMarkdown(b) {
   let out = `# ${b.title.trim() || DEFAULT_TITLE}\n\n`;
-  for (const scene of b.scenes) {
+  const places = chapters(b);
+  const sceneLevel = places.some(Boolean) ? "###" : "##";
+  for (const [index, scene] of b.scenes.entries()) {
     if (scene.status === "Archived") continue;
-    out += `## ${scene.title.trim() || "* * *"}\n\n`;
+    out += chapterHeading(places[index]);
+    const title = scene.title.trim();
+    if (title) out += `${sceneLevel} ${title}\n\n`;
+    else if (!places[index]?.starts) out += `${sceneLevel} * * *\n\n`;
     const text = scene.text.trim();
     if (text) out += `${text}\n\n`;
   }
   return out.trimEnd() + "\n";
+}
+
+function chapterHeading(place) {
+  return place?.starts ? `## Chapter ${place.number}\n\n` : "";
 }
 
 // The outline and the manuscript under one title, each a section with its
@@ -1579,7 +1626,7 @@ function sceneDetails(scene) {
   return parts.join(" · ");
 }
 
-function sceneCard(scene, index) {
+function sceneCard(scene, index, place) {
   const pov = findCharacter(scene.pov);
   const footnote = sceneFootnote(scene);
   const classes = ["card"];
@@ -1587,7 +1634,7 @@ function sceneCard(scene, index) {
   if (dragFrom === index) classes.push("dragging");
   return `
     <div class="${classes.join(" ")}" draggable="true" data-index="${index}" data-id="${esc(scene.id)}">
-      <div class="num">${sceneNumber(index)}</div>
+      <div class="num">${sceneNumber(index)}${place?.starts ? ` · CHAPTER ${place.number}` : ""}</div>
       ${scene.title
         ? `<div class="ttl">${esc(scene.title)}</div>`
         : '<div class="ttl untitled">Untitled scene</div>'}
@@ -1630,7 +1677,8 @@ function renderWrite() {
     return;
   }
   const scene = board.scenes[index];
-  $("wHeading").textContent = `${sceneNumber(index)}  ${sceneTitle(scene)}`;
+  const place = chapters()[index];
+  $("wHeading").textContent = `${place ? `Chapter ${place.number} · ` : ""}${sceneNumber(index)}  ${sceneTitle(scene)}`;
   $("wPrev").disabled = index === 0;
   $("wNext").disabled = index === board.scenes.length - 1;
   const manuscript = board.wordGoal === null
@@ -1747,7 +1795,8 @@ function renderBoard() {
     host.innerHTML = '<div class="empty"><strong>No matching scenes</strong>Clear the search or filters to show cards.</div>';
     return;
   }
-  host.innerHTML = `<div class="grid">${indices.map(i => sceneCard(board.scenes[i], i)).join("")}</div>`;
+  const places = chapters();
+  host.innerHTML = `<div class="grid">${indices.map(i => sceneCard(board.scenes[i], i, places[i])).join("")}</div>`;
 }
 
 function renderInspector() {
@@ -1780,6 +1829,9 @@ function renderSceneInspector() {
   $("sDated").checked = scene.day !== null;
   $("sDay").hidden = scene.day === null;
   syncValue($("sDay"), scene.day === null ? "" : String(scene.day));
+  const place = chapters()[index];
+  $("sChapterBreak").checked = scene.chapterBreak;
+  $("sChapterLabel").textContent = place?.starts ? `Starts a chapter (chapter ${place.number})` : "Starts a chapter";
   $("sWords").textContent = words(wordCount(scene.text));
   $("sWrite").hidden = view === "write";
   $("sEarlier").disabled = index === 0;
@@ -1862,6 +1914,7 @@ function renderStats() {
   $("statsBody").innerHTML =
     rows.map(([label, count]) => `<tr><td>${esc(label)}</td><td>${count}</td></tr>`).join("") +
     `<tr class="total"><td>Total</td><td>${board.scenes.length}</td></tr>` +
+    (chapterCount() > 0 ? `<tr><td>Chapters</td><td>${chapterCount()}</td></tr>` : "") +
     `<tr><td>Words</td><td>${wordsAgainstGoal()}</td></tr>`;
 
   const total = manuscriptWordCount();
@@ -2960,6 +3013,7 @@ $("sStatus").addEventListener("change", withSelectedScene((s, v) => { s.status =
 $("sPov").addEventListener("change", withSelectedScene((s, v) => { s.pov = v; }));
 $("sAct").addEventListener("change", withSelectedScene((s, v) => { s.act = v; }));
 $("sLocation").addEventListener("change", withSelectedScene((s, v) => { s.location = v; }));
+$("sChapterBreak").addEventListener("change", withSelectedScene(s => { s.chapterBreak = $("sChapterBreak").checked; }));
 $("sDated").addEventListener("change", withSelectedScene(s => { s.day = $("sDated").checked ? 1 : null; }));
 $("sDay").addEventListener("input", e => {
   const day = Number(e.target.value);

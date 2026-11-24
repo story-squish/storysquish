@@ -2447,3 +2447,26 @@ fn legacy_settings_word_goal_does_not_replace_the_boards_own() {
             .contains("word-goal")
     );
 }
+
+#[test]
+fn starting_a_chapter_marks_the_cards_and_counts_chapters() {
+    let Fixture { mut harness, .. } = launch(board_with_scenes(&["Arrival", "Storm"]));
+
+    harness.get_by_label("Storm").click();
+    harness.run();
+    harness.get_by_label("Starts a chapter").click();
+    harness.run();
+
+    assert!(harness.state().board().scenes[1].chapter_break);
+    assert!(harness.query_by_label("SCENE 01 · CHAPTER 1").is_some());
+    assert!(harness.query_by_label("SCENE 02 · CHAPTER 2").is_some());
+    assert!(
+        harness
+            .query_by_label("Starts a chapter (chapter 2)")
+            .is_some()
+    );
+
+    harness.get_by_label("Stats").click();
+    harness.run();
+    assert!(harness.query_by_label("Chapters").is_some());
+}
