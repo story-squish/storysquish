@@ -88,8 +88,9 @@ sudo apt-get install libxcb-render0-dev libxcb-shape0-dev \
 - Optional story calendar per novel (**Settings → Story calendar → Use
   calendar**): pick each scene's date and the earliest one becomes day 1, with
   later dates numbered day 2, 3 and so on. **Absolute days** numbers them by
-  calendar distance instead (day 1, day 5). Cards, the timeline and the
-  outline show both day and date. Without the calendar, days are numbered by
+  calendar distance instead (day 1, day 5). A scene's day number stays
+  editable and moves its date to match, and **Today** dates it today. Cards,
+  the timeline and the outline show both day and date. Without the calendar, days are numbered by
   hand, and unticking a scene's day only hides it
 - **Relationships** view: a graph of directed, labelled relationships between
   characters (added in the character inspector)
