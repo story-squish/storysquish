@@ -10,6 +10,7 @@ use eframe::egui::{
     Layout, Margin, Modifiers, RichText, Sense, Stroke, TextEdit, Ui, Vec2,
 };
 
+use crate::calendar::{self, StoryDate};
 use crate::github::{self, CloudBoard, Revision};
 use crate::history::History;
 use crate::model::{Act, Board, ChapterPlace, Character, Id, Location, Scene, Status};
@@ -3237,6 +3238,7 @@ impl PlannerApp {
         };
         let characters = self.board.characters.clone();
         let locations = self.board.locations.clone();
+        let story_start = self.board.story_start;
         let in_write_view = self.view == View::Write;
         let is_last = index + 1 == self.board.scenes.len();
         let chapter = self.board.chapters()[index];
@@ -3276,7 +3278,7 @@ impl PlannerApp {
             .changed();
 
         changed |= classification_fields(ui, colors, scene, &characters);
-        changed |= setting_fields(ui, colors, scene, &locations);
+        changed |= setting_fields(ui, colors, scene, &locations, story_start);
         changed |= chapter_break_field(ui, scene, chapter);
 
         ui.add_space(8.0);
@@ -3504,10 +3506,12 @@ impl PlannerApp {
                         current_day = day;
                         ui.add_space(6.0);
                         ui.label(
-                            RichText::new(format!("DAY {}", day.unwrap_or_default()))
-                                .size(12.0)
-                                .strong()
-                                .color(colors.muted),
+                            RichText::new(
+                                self.board.day_label(day.unwrap_or_default()).to_uppercase(),
+                            )
+                            .size(12.0)
+                            .strong()
+                            .color(colors.muted),
                         );
                     }
                     if self.timeline_row(ui, index) {
@@ -3973,6 +3977,7 @@ impl PlannerApp {
             .board
             .word_goal
             .map_or_else(String::new, |g| g.to_string());
+        let mut chosen_story_start = self.board.story_start;
         let mut close = false;
         let mut board_file_action = None;
         let mut backup_action = None;
@@ -3994,6 +3999,8 @@ impl PlannerApp {
                     .desired_width(ui.available_width()),
             )
             .labelled_by(goal_label);
+
+            story_calendar_section(ui, colors, &mut chosen_story_start);
 
             backup_action = self.github_section(ui, focus_github_token);
 
@@ -4028,6 +4035,10 @@ impl PlannerApp {
             && goal != self.board.word_goal
         {
             self.board.word_goal = goal;
+            self.mark_dirty();
+        }
+        if chosen_story_start != self.board.story_start {
+            self.board.story_start = chosen_story_start;
             self.mark_dirty();
         }
         match board_file_action {
@@ -4589,7 +4600,13 @@ fn inspector_header(ui: &mut Ui, colors: Palette, kind: &str, title: &str) -> bo
     close
 }
 
-fn setting_fields(ui: &mut Ui, colors: Palette, scene: &mut Scene, locations: &[Location]) -> bool {
+fn setting_fields(
+    ui: &mut Ui,
+    colors: Palette,
+    scene: &mut Scene,
+    locations: &[Location],
+    story_start: Option<StoryDate>,
+) -> bool {
     let mut changed = false;
     ui.columns(2, |cols| {
         let location_label = field_label(&mut cols[0], colors, "Location");
@@ -4619,6 +4636,7 @@ fn setting_fields(ui: &mut Ui, colors: Palette, scene: &mut Scene, locations: &[
             .labelled_by(location_label);
 
         let day_label = field_label(&mut cols[1], colors, "Story day");
+        let scene_date = story_start.zip(scene.day);
         cols[1].horizontal(|ui| {
             let mut dated = scene.day.is_some();
             if ui
@@ -4630,13 +4648,27 @@ fn setting_fields(ui: &mut Ui, colors: Palette, scene: &mut Scene, locations: &[
                 scene.day = dated.then_some(1);
                 changed = true;
             }
-            if let Some(day) = &mut scene.day {
-                changed |= ui
-                    .add(egui::DragValue::new(day).prefix("Day "))
-                    .labelled_by(day_label)
-                    .changed();
+            match (&mut scene.day, scene_date) {
+                (Some(day), None) => {
+                    changed |= ui
+                        .add(egui::DragValue::new(day).prefix("Day "))
+                        .labelled_by(day_label)
+                        .changed();
+                }
+                (Some(day), Some(_)) => {
+                    ui.label(RichText::new(format!("Day {day}")).color(colors.muted));
+                }
+                (None, _) => {}
             }
         });
+        if let Some((start, day)) = scene_date
+            && let Some(mut date) = calendar::date_of_day(start, day)
+            && date_picker(&mut cols[1], "scene-date", &mut date, day_label)
+            && let Some(picked_day) = calendar::day_of_date(start, date)
+        {
+            scene.day = Some(picked_day);
+            changed = true;
+        }
     });
     changed
 }
@@ -4664,6 +4696,34 @@ fn chapter_break_field(ui: &mut Ui, scene: &mut Scene, chapter: Option<ChapterPl
              does, the first scene opens chapter 1.",
         )
         .changed()
+}
+
+/// Day, month and year controls; returns whether the date changed.
+fn date_picker(ui: &mut Ui, id_salt: &str, date: &mut StoryDate, label: egui::Id) -> bool {
+    let (mut year, mut month, mut day) = (date.year(), date.month(), date.day());
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.add(egui::DragValue::new(&mut day).range(1..=calendar::days_in_month(year, month)))
+            .on_hover_text("Day of the month")
+            .labelled_by(label);
+        ComboBox::from_id_salt(id_salt)
+            .width(56.0)
+            .selected_text(calendar::MONTH_NAMES[usize::from(month - 1)])
+            .show_ui(ui, |ui| {
+                for (number, name) in (1..=12).zip(calendar::MONTH_NAMES) {
+                    ui.selectable_value(&mut month, number, name);
+                }
+            })
+            .response
+            .widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, true, "Month"));
+        ui.add(egui::DragValue::new(&mut year).range(calendar::YEARS))
+            .on_hover_text("Year")
+            .labelled_by(label);
+    });
+    let picked = StoryDate::with_year_month_day(year, month, day);
+    let changed = picked != *date;
+    *date = picked;
+    changed
 }
 
 fn scene_card_contents(
@@ -4727,7 +4787,7 @@ fn card_footnote(board: &Board, scene: &Scene) -> String {
         parts.push(display_name(&location.name).to_owned());
     }
     if let Some(day) = scene.day {
-        parts.push(format!("Day {day}"));
+        parts.push(board.day_label(day));
     }
     let words = scene.word_count();
     if words > 0 {
@@ -4942,6 +5002,35 @@ fn story_title_field(
             .desired_width(f32::INFINITY),
     )
     .labelled_by(label)
+}
+
+fn story_calendar_section(ui: &mut Ui, colors: Palette, story_start: &mut Option<StoryDate>) {
+    let label = field_label(ui, colors, "Story calendar");
+    let mut uses_calendar = story_start.is_some();
+    if ui
+        .checkbox(&mut uses_calendar, "Use calendar")
+        .on_hover_text("Pick scene dates instead of day numbers")
+        .changed()
+    {
+        *story_start = uses_calendar.then(StoryDate::today);
+    }
+    let Some(start) = story_start else {
+        ui.label(
+            RichText::new("Story days are numbered by hand.")
+                .small()
+                .color(colors.muted),
+        );
+        return;
+    };
+    ui.horizontal(|ui| {
+        ui.label("Day 1 is");
+        date_picker(ui, "story-start", start, label);
+    });
+    ui.label(
+        RichText::new("Scene days count from this date, so moving it shifts every scene's date.")
+            .small()
+            .color(colors.muted),
+    );
 }
 
 fn field_label(ui: &mut Ui, colors: Palette, text: &str) -> egui::Id {

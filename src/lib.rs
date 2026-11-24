@@ -1,4 +1,5 @@
 pub mod app;
+pub mod calendar;
 pub mod github;
 pub mod history;
 pub mod migration;

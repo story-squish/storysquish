@@ -85,6 +85,10 @@ sudo apt-get install libxcb-render0-dev libxcb-shape0-dev \
   panel and the Write view
 - **Timeline** view: scenes in story-day order, so flashbacks and parallel
   threads show up next to their place in the story's chronology
+- Optional story calendar per novel (**Settings → Story calendar → Use
+  calendar**): pick the date of day 1, then pick each scene's date and its day
+  number follows; cards, the timeline and the outline show both. Without it,
+  days are numbered by hand
 - **Relationships** view: a graph of directed, labelled relationships between
   characters (added in the character inspector)
 - Characters with role, gender, goal and notes; locations with notes

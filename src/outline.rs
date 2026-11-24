@@ -42,7 +42,7 @@ pub fn to_markdown(board: &Board) -> String {
             facts.push(format!("Location: {}", location.name.trim()));
         }
         if let Some(day) = scene.day {
-            facts.push(format!("Day {day}"));
+            facts.push(board.day_label(day));
         }
         let _ = writeln!(out, "_{}_\n", facts.join(" · "));
 
