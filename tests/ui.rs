@@ -90,6 +90,34 @@ fn stats_panel_is_on_screen_below_board() {
 }
 
 #[test]
+fn stats_panel_shows_act_words_pov_share_and_gaps() {
+    let mut board = board_with_scenes(&["Opening", "Unplaced"]);
+    board.add_character("Ada Lovelace");
+    let ada = board.characters[0].id.clone();
+    let opening = &mut board.scenes[0];
+    opening.pov = Some(ada);
+    opening.act = Some(storysquish::model::Act::One);
+    opening.text = "one two three four".to_owned();
+    let Fixture { mut harness, .. } = launch(board);
+
+    harness.get_by_label("Stats").click();
+    harness.run();
+
+    for heading in ["Words per act", "POV share", "Missing", "No location"] {
+        assert!(
+            harness.query_by_label(heading).is_some(),
+            "missing {heading}"
+        );
+    }
+    assert_eq!(
+        harness.get_all_by_label("100%").count(),
+        2,
+        "Act I and Ada each hold every manuscript word"
+    );
+    assert!(harness.query_by_label("No act").is_none());
+}
+
+#[test]
 fn cards_wrap_within_window_width() {
     let titles = many_scene_titles(12);
     let titles: Vec<&str> = titles.iter().map(String::as_str).collect();

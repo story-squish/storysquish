@@ -2677,6 +2677,110 @@ impl PlannerApp {
     fn stats_panel(&self, ui: &mut Ui) {
         ui.heading("Statistics");
         ui.add_space(4.0);
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 32.0;
+            self.scene_count_stats(ui);
+            ui.vertical(|ui| self.act_word_stats(ui));
+            ui.vertical(|ui| self.pov_word_stats(ui));
+            ui.vertical(|ui| self.scene_gap_stats(ui));
+        });
+    }
+
+    fn act_word_stats(&self, ui: &mut Ui) {
+        ui.label(RichText::new("Words per act").strong());
+        let total = self.board.manuscript_word_count();
+        Grid::new("stats_act_words")
+            .num_columns(3)
+            .spacing([12.0, 4.0])
+            .show(ui, |ui| {
+                for (act, words) in self.board.act_word_counts() {
+                    if act.is_none() && words == 0 {
+                        continue;
+                    }
+                    ui.label(act.map_or_else(|| "No act".to_owned(), |a| a.to_string()));
+                    ui.label(format_count(words));
+                    ui.label(format!("{:.0}%", percent(words, total)));
+                    ui.end_row();
+                }
+            });
+    }
+
+    fn pov_word_stats(&self, ui: &mut Ui) {
+        const SHOWN: usize = 7;
+        ui.label(RichText::new("POV share").strong());
+        let counts = self.board.pov_word_counts();
+        if counts.is_empty() {
+            ui.label(RichText::new("No POV scenes yet.").small());
+            return;
+        }
+        let total = self.board.manuscript_word_count();
+        Grid::new("stats_pov_words")
+            .num_columns(3)
+            .spacing([12.0, 4.0])
+            .show(ui, |ui| {
+                for (character, words) in counts.iter().take(SHOWN) {
+                    ui.label(display_name(&character.name));
+                    ui.label(format_count(*words));
+                    ui.label(format!("{:.0}%", percent(*words, total)));
+                    ui.end_row();
+                }
+                let rest = counts.get(SHOWN..).unwrap_or_default();
+                if !rest.is_empty() {
+                    let words = rest.iter().map(|(_, w)| w).sum();
+                    ui.label(format!("{} more", rest.len()));
+                    ui.label(format_count(words));
+                    ui.label(format!("{:.0}%", percent(words, total)));
+                    ui.end_row();
+                }
+            });
+    }
+
+    fn scene_gap_stats(&self, ui: &mut Ui) {
+        ui.label(RichText::new("Missing").strong());
+        let colors = self.colors;
+        let gaps = self.board.scene_gaps();
+        Grid::new("stats_gaps")
+            .num_columns(2)
+            .spacing([12.0, 4.0])
+            .show(ui, |ui| {
+                for (label, indices) in [
+                    ("No POV", &gaps.pov),
+                    ("No location", &gaps.location),
+                    ("No day", &gaps.day),
+                ] {
+                    ui.label(label);
+                    let count = RichText::new(indices.len().to_string());
+                    if indices.is_empty() {
+                        ui.label(count.color(colors.muted));
+                    } else {
+                        ui.label(count.color(colors.danger))
+                            .on_hover_text(self.scene_list(indices));
+                    }
+                    ui.end_row();
+                }
+            });
+    }
+
+    fn scene_list(&self, indices: &[usize]) -> String {
+        const SHOWN: usize = 12;
+        let mut lines: Vec<String> = indices
+            .iter()
+            .take(SHOWN)
+            .map(|&i| {
+                format!(
+                    "{}  {}",
+                    scene_number(i),
+                    scene_title(&self.board.scenes[i])
+                )
+            })
+            .collect();
+        if indices.len() > SHOWN {
+            lines.push(format!("…and {} more", indices.len() - SHOWN));
+        }
+        lines.join("\n")
+    }
+
+    fn scene_count_stats(&self, ui: &mut Ui) {
         Grid::new("stats")
             .num_columns(2)
             .spacing([12.0, 4.0])
@@ -2697,12 +2801,7 @@ impl PlannerApp {
                 ui.label("Words");
                 let word_count = self.board.manuscript_word_count();
                 if let Some(goal) = self.settings.word_goal {
-                    #[expect(clippy::cast_precision_loss, reason = "word count fits in f32")]
-                    let pct = if goal > 0 {
-                        (word_count as f32 / goal as f32 * 100.0).min(999.0)
-                    } else {
-                        0.0
-                    };
+                    let pct = percent(word_count, goal).min(999.0);
                     ui.label(format!(
                         "{} / {} ({pct:.0}%)",
                         format_count(word_count),
@@ -4545,6 +4644,15 @@ fn empty_state(ui: &mut Ui, heading: &str, hint: &str) {
         ui.label(RichText::new(heading).size(20.0).strong());
         ui.label(hint);
     });
+}
+
+#[expect(clippy::cast_precision_loss, reason = "word counts fit in f32")]
+fn percent(part: usize, whole: usize) -> f32 {
+    if whole == 0 {
+        0.0
+    } else {
+        part as f32 / whole as f32 * 100.0
+    }
 }
 
 fn plural(count: usize) -> &'static str {
