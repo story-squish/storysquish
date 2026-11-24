@@ -3,6 +3,8 @@ use std::fmt;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::calendar::{self, StoryDate};
+
 pub const DEFAULT_TITLE: &str = "Untitled Novel";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -181,6 +183,14 @@ pub struct Board {
     /// Target manuscript word count. Older apps drop it on save.
     #[serde(rename = "wordGoal", default, skip_serializing_if = "Option::is_none")]
     pub word_goal: Option<usize>,
+    /// The date of story day 1. When set, scene days are shown and picked
+    /// as calendar dates; days stay the stored chronology either way.
+    #[serde(
+        rename = "storyStart",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub story_start: Option<StoryDate>,
 }
 
 impl Default for Board {
@@ -192,6 +202,7 @@ impl Default for Board {
             locations: Vec::new(),
             relationships: Vec::new(),
             word_goal: None,
+            story_start: None,
         }
     }
 }
@@ -406,6 +417,22 @@ impl Board {
             .collect();
         dated.sort_unstable();
         dated.into_iter().map(|(_, i)| i).collect()
+    }
+
+    pub fn date_of_day(&self, day: i32) -> Option<StoryDate> {
+        calendar::date_of_day(self.story_start?, day)
+    }
+
+    pub fn day_of_date(&self, date: StoryDate) -> Option<i32> {
+        calendar::day_of_date(self.story_start?, date)
+    }
+
+    /// `Day 3`, or `Day 3 · Wed 18 Mar 2026` when the board uses a calendar.
+    pub fn day_label(&self, day: i32) -> String {
+        match self.date_of_day(day) {
+            Some(date) => format!("Day {day} · {}", date.long_label()),
+            None => format!("Day {day}"),
+        }
     }
 
     pub fn character(&self, id: &Id) -> Option<&Character> {
@@ -1325,6 +1352,40 @@ mod tests {
         let original = board.scenes[0].id.clone();
         board.duplicate_scene(&original);
         assert!(!board.scenes[1].chapter_break);
+    }
+
+    #[test]
+    fn story_start_is_saved_only_when_set() {
+        let mut board = Board::default();
+        assert!(
+            !serde_json::to_string(&board)
+                .unwrap()
+                .contains("storyStart")
+        );
+
+        board.story_start = Some("2026-03-16".parse().unwrap());
+        let json = serde_json::to_string(&board).unwrap();
+        assert!(json.contains(r#""storyStart":"2026-03-16""#));
+        assert_eq!(serde_json::from_str::<Board>(&json).unwrap(), board);
+
+        let invalid = json.replace("2026-03-16", "2026-02-30");
+        assert!(serde_json::from_str::<Board>(&invalid).is_err());
+    }
+
+    #[test]
+    fn calendar_maps_day_one_to_the_story_start() {
+        let mut board = Board::default();
+        assert_eq!(board.date_of_day(1), None);
+        assert_eq!(board.day_label(3), "Day 3");
+
+        let start: StoryDate = "2026-03-16".parse().unwrap();
+        board.story_start = Some(start);
+        assert_eq!(board.date_of_day(1), Some(start));
+        assert_eq!(board.date_of_day(0), "2026-03-15".parse().ok());
+        assert_eq!(board.date_of_day(i32::MAX), None);
+        assert_eq!(board.day_of_date("2026-04-01".parse().unwrap()), Some(17));
+        assert_eq!(board.day_of_date("2026-03-10".parse().unwrap()), Some(-5));
+        assert_eq!(board.day_label(3), "Day 3 · Wed 18 Mar 2026");
     }
 
     #[test]

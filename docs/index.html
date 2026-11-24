@@ -59,7 +59,8 @@
   #graph .edge{stroke:var(--muted);stroke-width:1.5;fill:none}
   #graph .edge-label{fill:var(--ink);font-size:12px;paint-order:stroke;stroke:var(--board);stroke-width:5px;stroke-linejoin:round}
   .footnote{font-size:11px;color:var(--muted);margin-top:6px}
-  .day-field{display:flex;gap:6px;align-items:center}
+  .day-field{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+  .day-field input[type=date]{width:auto}
   .day-field input[type=checkbox]{width:auto;margin:0}
   .check-field{display:flex;gap:6px;align-items:center;margin-top:8px;cursor:pointer}
   .check-field input{width:auto;margin:0}
@@ -265,6 +266,8 @@
           <div class="day-field">
             <input type="checkbox" id="sDated" title="Place this scene on the timeline">
             <input type="number" id="sDay" step="1" aria-label="Story day">
+            <input type="date" id="sDate" min="0001-01-01" max="9999-12-31" aria-label="Story date" hidden>
+            <span class="hint" id="sDayNumber" hidden></span>
           </div>
         </div>
       </div>
@@ -447,7 +450,7 @@ function generateId() {
 }
 
 function defaultBoard() {
-  return {title: DEFAULT_TITLE, characters: [], scenes: [], locations: [], relationships: [], wordGoal: null};
+  return {title: DEFAULT_TITLE, characters: [], scenes: [], locations: [], relationships: [], wordGoal: null, storyStart: null};
 }
 
 function isPlainObject(value) {
@@ -475,6 +478,13 @@ function boolField(value, what) {
 function wordGoalField(value, what) {
   if (value === undefined || value === null) return null;
   if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${what} must be a whole number`);
+  return value;
+}
+
+// Mirrors the desktop app's StoryDate: YYYY-MM-DD in years 1 to 9999.
+function storyStartField(value, what) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string" || epochDays(value) === null) throw new Error(`${what} must be a date as YYYY-MM-DD`);
   return value;
 }
 
@@ -562,13 +572,67 @@ function parseBoard(text) {
     locations: listField(data.locations ?? undefined, "locations").map(parseLocation),
     relationships: listField(data.relationships ?? undefined, "relationships").map(parseRelationship),
     wordGoal: wordGoalField(data.wordGoal, "word goal"),
+    storyStart: storyStartField(data.storyStart, "story start"),
   };
 }
 
-// The desktop app leaves "day" out when unset, so do the same.
+// The desktop app leaves these out when unset, so do the same.
+const OMITTED_WHEN_NULL = new Set(["day", "wordGoal", "storyStart"]);
 function serializeBoard(b) {
-  return JSON.stringify(b, (key, value) => (((key === "day" || key === "wordGoal") && value === null) || (key === "chapterBreak" && value === false)
+  return JSON.stringify(b, (key, value) => ((OMITTED_WHEN_NULL.has(key) && value === null) || (key === "chapterBreak" && value === false)
     ? undefined : value), 2);
+}
+
+/* ---------- story calendar ---------- */
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const WEEKDAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+// Days since 1970-01-01 for a valid YYYY-MM-DD in years 1 to 9999, else null.
+function epochDays(iso) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (!match) return null;
+  const [year, month, day] = match.slice(1).map(Number);
+  const date = new Date(0);
+  // setUTCFullYear, unlike Date.UTC, does not read years 0 to 99 as 1900 to 1999.
+  date.setUTCFullYear(year, month - 1, day);
+  const valid = year >= 1 && date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+  return valid ? Math.round(date.getTime() / MS_PER_DAY) : null;
+}
+
+function isoFromEpochDays(days) {
+  const date = new Date(days * MS_PER_DAY);
+  const year = date.getUTCFullYear();
+  if (!(year >= 1 && year <= 9999)) return null;
+  const pad = n => String(n).padStart(2, "0");
+  return `${String(year).padStart(4, "0")}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`;
+}
+
+function todayIso() {
+  return isoFromEpochDays(Math.floor(Date.now() / MS_PER_DAY));
+}
+
+function dateOfDay(b, day) {
+  return b.storyStart === null ? null : isoFromEpochDays(epochDays(b.storyStart) + day - 1);
+}
+
+function dayOfDate(b, iso) {
+  const days = epochDays(iso);
+  if (b.storyStart === null || days === null) return null;
+  const day = days - epochDays(b.storyStart) + 1;
+  return Math.abs(day) < 2 ** 31 ? day : null;
+}
+
+function longDateLabel(iso) {
+  const date = new Date(epochDays(iso) * MS_PER_DAY);
+  return `${WEEKDAY_NAMES[date.getUTCDay()]} ${date.getUTCDate()} ${MONTH_NAMES[date.getUTCMonth()]} ${date.getUTCFullYear()}`;
+}
+
+// "Day 3", or "Day 3 · Wed 18 Mar 2026" when the board uses a calendar.
+function dayLabel(b, day) {
+  const date = dateOfDay(b, day);
+  return date === null ? `Day ${day}` : `Day ${day} · ${longDateLabel(date)}`;
 }
 
 function sceneIndex(id) { return board.scenes.findIndex(s => s.id === id); }
@@ -851,7 +915,7 @@ function toMarkdown(b) {
     if (pov) facts.push(`POV: ${pov.name.trim()}`);
     const location = b.locations.find(l => l.id === scene.location && scene.location);
     if (location) facts.push(`Location: ${location.name.trim()}`);
-    if (scene.day !== null) facts.push(`Day ${scene.day}`);
+    if (scene.day !== null) facts.push(dayLabel(b, scene.day));
     out += `_${facts.join(" · ")}_\n\n`;
     const summary = scene.summary.trim();
     if (summary) out += `${summary}\n\n`;
@@ -1611,7 +1675,7 @@ function sceneFootnote(scene) {
   const parts = [];
   const location = findLocation(scene.location);
   if (location) parts.push(characterDisplayName(location.name));
-  if (scene.day !== null) parts.push(`Day ${scene.day}`);
+  if (scene.day !== null) parts.push(dayLabel(board, scene.day));
   const count = wordCount(scene.text);
   if (count) parts.push(words(count));
   return parts.join(" · ");
@@ -1715,7 +1779,7 @@ function renderTimeline() {
     const {day} = board.scenes[index];
     if (day !== currentDay) {
       currentDay = day;
-      html += `<div class="day-heading">DAY ${day}</div>`;
+      html += `<div class="day-heading">${esc(dayLabel(board, day).toUpperCase())}</div>`;
     }
     html += timelineRow(index);
   }
@@ -1826,12 +1890,17 @@ function renderSceneInspector() {
   syncOptions($("sAct"), [["", NONE_LABEL], ...ACTS.map(a => [a, a])], scene.act);
   syncOptions($("sLocation"),
     [["", NONE_LABEL], ...board.locations.map(l => [l.id, characterDisplayName(l.name)])], scene.location);
+  const sceneDate = scene.day === null ? null : dateOfDay(board, scene.day);
   $("sDated").checked = scene.day !== null;
-  $("sDay").hidden = scene.day === null;
+  $("sDay").hidden = scene.day === null || sceneDate !== null;
   syncValue($("sDay"), scene.day === null ? "" : String(scene.day));
   const place = chapters()[index];
   $("sChapterBreak").checked = scene.chapterBreak;
   $("sChapterLabel").textContent = place?.starts ? `Starts a chapter (chapter ${place.number})` : "Starts a chapter";
+  $("sDate").hidden = sceneDate === null;
+  if (sceneDate !== null) syncValue($("sDate"), sceneDate);
+  $("sDayNumber").hidden = sceneDate === null;
+  $("sDayNumber").textContent = scene.day === null ? "" : `Day ${scene.day}`;
   $("sWords").textContent = words(wordCount(scene.text));
   $("sWrite").hidden = view === "write";
   $("sEarlier").disabled = index === 0;
@@ -2073,7 +2142,7 @@ function settingsDialog() {
       }
       const status = hint(settingsSaveError ?? "Saved in this browser's storage.");
       if (settingsSaveError) status.style.color = "var(--danger)";
-      box.append(heading, label, list, status, ...boardFileSection(), ...wordGoalSection(), ...backupSection(), ...githubSection(),
+      box.append(heading, label, list, status, ...boardFileSection(), ...wordGoalSection(), ...storyCalendarSection(), ...backupSection(), ...githubSection(),
         button("Close", "", closeModal));
       box.style.maxWidth = "420px";
     },
@@ -2152,6 +2221,38 @@ function wordGoalSection() {
     markDirty();
   });
   return [label, input];
+}
+
+function storyCalendarSection() {
+  const toggle = document.createElement("label");
+  toggle.className = "toggle";
+  toggle.title = "Pick scene dates instead of day numbers";
+  const checkbox = document.createElement("input");
+  checkbox.type = "checkbox";
+  checkbox.checked = board.storyStart !== null;
+  checkbox.addEventListener("change", () => {
+    board.storyStart = checkbox.checked ? todayIso() : null;
+    markDirty();
+    drawModal();
+  });
+  toggle.append(checkbox, " Use calendar");
+  if (board.storyStart === null) return [fieldLabel("Story calendar"), toggle, hint("Story days are numbered by hand.")];
+
+  const start = document.createElement("input");
+  start.type = "date";
+  start.min = "0001-01-01";
+  start.max = "9999-12-31";
+  start.value = board.storyStart;
+  start.setAttribute("aria-label", "Date of story day 1");
+  start.addEventListener("change", () => {
+    if (epochDays(start.value) === null || start.value === board.storyStart) return;
+    board.storyStart = start.value;
+    markDirty();
+  });
+  const startLabel = document.createElement("span");
+  startLabel.textContent = "Day 1 is";
+  return [fieldLabel("Story calendar"), toggle, row(startLabel, start),
+    hint("Scene days count from this date, so moving it shifts every scene's date.")];
 }
 
 function backupSection() {
@@ -3015,6 +3116,10 @@ $("sAct").addEventListener("change", withSelectedScene((s, v) => { s.act = v; })
 $("sLocation").addEventListener("change", withSelectedScene((s, v) => { s.location = v; }));
 $("sChapterBreak").addEventListener("change", withSelectedScene(s => { s.chapterBreak = $("sChapterBreak").checked; }));
 $("sDated").addEventListener("change", withSelectedScene(s => { s.day = $("sDated").checked ? 1 : null; }));
+$("sDate").addEventListener("change", e => {
+  const day = dayOfDate(board, e.target.value);
+  if (day !== null) withSelectedScene(s => { s.day = day; })(e);
+});
 $("sDay").addEventListener("input", e => {
   const day = Number(e.target.value);
   if (e.target.value.trim() === "" || !Number.isInteger(day) || Math.abs(day) >= 2 ** 31) return;

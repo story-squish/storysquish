@@ -2470,3 +2470,47 @@ fn starting_a_chapter_marks_the_cards_and_counts_chapters() {
     harness.run();
     assert!(harness.query_by_label("Chapters").is_some());
 }
+
+#[test]
+fn story_calendar_is_off_until_enabled_in_settings() {
+    let Fixture { mut harness, dir } = launch(board_with_scenes(&["Rain"]));
+    open_settings(&mut harness);
+    assert!(
+        harness
+            .query_by_label("Story days are numbered by hand.")
+            .is_some()
+    );
+
+    harness.get_by_label("Use calendar").click();
+    harness.run();
+
+    let today = storysquish::calendar::StoryDate::today();
+    assert_eq!(harness.state().board().story_start, Some(today));
+    flush_save(&mut harness);
+    assert_eq!(saved_board(&dir).story_start, Some(today));
+
+    harness.get_by_label("Use calendar").click();
+    harness.run();
+    assert_eq!(harness.state().board().story_start, None);
+}
+
+#[test]
+fn picking_a_scene_date_sets_its_story_day() {
+    let mut board = board_with_scenes(&["Rain"]);
+    board.story_start = Some("2026-03-16".parse().unwrap());
+    board.scenes[0].day = Some(3);
+    let Fixture { mut harness, .. } = launch(board);
+    assert!(harness.query_by_label("Day 3 · Wed 18 Mar 2026").is_some());
+
+    harness.get_by_label("Rain").click();
+    harness.run();
+    harness.get_by_label("Month").click();
+    harness.run();
+    harness.get_by_label("Apr").click();
+    harness.run();
+
+    assert_eq!(harness.state().board().scenes[0].day, Some(34));
+    harness.get_by_label("Timeline").click();
+    harness.run();
+    assert!(harness.query_by_label("DAY 34 · SAT 18 APR 2026").is_some());
+}
