@@ -262,7 +262,7 @@
           <select id="sLocation"></select>
         </div>
         <div>
-          <label class="field-label" for="sDated">Story day</label>
+          <label class="field-label" for="sDated" id="sDayLabel">Story day</label>
           <div class="day-field">
             <input type="checkbox" id="sDated" title="Place this scene on the timeline">
             <input type="number" id="sDay" step="1" aria-label="Story day">
@@ -450,7 +450,8 @@ function generateId() {
 }
 
 function defaultBoard() {
-  return {title: DEFAULT_TITLE, characters: [], scenes: [], locations: [], relationships: [], wordGoal: null, storyStart: null};
+  return {title: DEFAULT_TITLE, characters: [], scenes: [], locations: [], relationships: [], wordGoal: null,
+    calendar: false, absoluteDays: false};
 }
 
 function isPlainObject(value) {
@@ -482,7 +483,7 @@ function wordGoalField(value, what) {
 }
 
 // Mirrors the desktop app's StoryDate: YYYY-MM-DD in years 1 to 9999.
-function storyStartField(value, what) {
+function dateField(value, what) {
   if (value === undefined || value === null) return null;
   if (typeof value !== "string" || epochDays(value) === null) throw new Error(`${what} must be a date as YYYY-MM-DD`);
   return value;
@@ -556,6 +557,8 @@ function parseScene(raw, index) {
     act: choiceField(raw.act, `${what} act`, ACTS, ""),
     location: raw.location === null ? "" : textField(raw.location, `${what} location`),
     day: dayField(raw.day, `${what} day`),
+    date: dateField(raw.date, `${what} date`),
+    dayHidden: boolField(raw.dayHidden, `${what} day hidden`),
     text: textField(raw.text, `${what} text`),
     chapterBreak: boolField(raw.chapterBreak, `${what} chapter break`),
   };
@@ -565,21 +568,32 @@ function parseBoard(text) {
   const data = JSON.parse(text);
   if (!isPlainObject(data)) throw new Error("expected a JSON object");
   if (!Array.isArray(data.scenes)) throw new Error("missing the scenes list");
+  const scenes = data.scenes.map(parseScene);
+  // The first calendar stored a start date and kept scene days as offsets
+  // from it; those become per-scene dates.
+  const storyStart = dateField(data.storyStart, "story start");
+  if (storyStart !== null) {
+    for (const scene of scenes) {
+      if (scene.date === null && scene.day !== null) scene.date = isoFromEpochDays(epochDays(storyStart) + scene.day - 1);
+    }
+  }
   return {
     title: textField(data.title, "title"),
     characters: listField(data.characters ?? undefined, "characters").map(parseCharacter),
-    scenes: data.scenes.map(parseScene),
+    scenes,
     locations: listField(data.locations ?? undefined, "locations").map(parseLocation),
     relationships: listField(data.relationships ?? undefined, "relationships").map(parseRelationship),
     wordGoal: wordGoalField(data.wordGoal, "word goal"),
-    storyStart: storyStartField(data.storyStart, "story start"),
+    calendar: boolField(data.calendar, "calendar") || storyStart !== null,
+    absoluteDays: boolField(data.absoluteDays, "absolute days"),
   };
 }
 
 // The desktop app leaves these out when unset, so do the same.
-const OMITTED_WHEN_NULL = new Set(["day", "wordGoal", "storyStart"]);
+const OMITTED_WHEN_NULL = new Set(["day", "date", "wordGoal"]);
+const OMITTED_WHEN_FALSE = new Set(["dayHidden", "chapterBreak", "calendar", "absoluteDays"]);
 function serializeBoard(b) {
-  return JSON.stringify(b, (key, value) => ((OMITTED_WHEN_NULL.has(key) && value === null) || (key === "chapterBreak" && value === false)
+  return JSON.stringify(b, (key, value) => ((OMITTED_WHEN_NULL.has(key) && value === null) || (OMITTED_WHEN_FALSE.has(key) && value === false)
     ? undefined : value), 2);
 }
 
@@ -613,26 +627,38 @@ function todayIso() {
   return isoFromEpochDays(Math.floor(Date.now() / MS_PER_DAY));
 }
 
-function dateOfDay(b, day) {
-  return b.storyStart === null ? null : isoFromEpochDays(epochDays(b.storyStart) + day - 1);
-}
-
-function dayOfDate(b, iso) {
-  const days = epochDays(iso);
-  if (b.storyStart === null || days === null) return null;
-  const day = days - epochDays(b.storyStart) + 1;
-  return Math.abs(day) < 2 ** 31 ? day : null;
-}
-
 function longDateLabel(iso) {
   const date = new Date(epochDays(iso) * MS_PER_DAY);
   return `${WEEKDAY_NAMES[date.getUTCDay()]} ${date.getUTCDate()} ${MONTH_NAMES[date.getUTCMonth()]} ${date.getUTCFullYear()}`;
 }
 
-// "Day 3", or "Day 3 · Wed 18 Mar 2026" when the board uses a calendar.
-function dayLabel(b, day) {
-  const date = dateOfDay(b, day);
-  return date === null ? `Day ${day}` : `Day ${day} · ${longDateLabel(date)}`;
+function shownDay(scene) { return scene.dayHidden ? null : scene.day; }
+function shownDate(scene) { return scene.dayHidden ? null : scene.date; }
+
+// Each scene's place in the story's chronology by board index, as {number,
+// date} or null. On a calendar the earliest manuscript date is day 1, and
+// archived scenes keep their date but get no number. Mirrors Board::story_days.
+function storyDays(b = board) {
+  if (!b.calendar) return b.scenes.map(s => shownDay(s) === null ? null : {number: shownDay(s), date: null});
+  const dates = manuscriptDates(b);
+  return b.scenes.map(s => {
+    const date = shownDate(s);
+    if (date === null) return null;
+    if (s.status === "Archived") return {number: null, date};
+    const ordinal = b.absoluteDays ? epochDays(date) - epochDays(dates[0]) : dates.indexOf(date);
+    return {number: ordinal + 1, date};
+  });
+}
+
+// Distinct shown dates of manuscript scenes, earliest first.
+function manuscriptDates(b = board) {
+  return [...new Set(manuscriptScenes(b).map(({scene}) => shownDate(scene)).filter(d => d !== null))].sort();
+}
+
+// "Day 3", "Day 3 · Wed 18 Mar 2026" or, for archived scenes on a calendar, "Wed 18 Mar 2026".
+function storyDayLabel({number, date}) {
+  if (date === null) return `Day ${number}`;
+  return number === null ? longDateLabel(date) : `Day ${number} · ${longDateLabel(date)}`;
 }
 
 function sceneIndex(id) { return board.scenes.findIndex(s => s.id === id); }
@@ -714,19 +740,20 @@ function characterAppearances() {
 function sceneGaps() {
   const scenes = manuscriptScenes();
   const indicesWhere = missing => scenes.filter(({scene}) => missing(scene)).map(({index}) => index);
+  const days = storyDays();
   return {
     pov: indicesWhere(s => !s.pov),
     location: indicesWhere(s => !s.location),
-    day: indicesWhere(s => s.day === null),
+    day: scenes.filter(({index}) => days[index] === null).map(({index}) => index),
   };
 }
 
 // Dated, non-archived scenes in story order; same-day scenes keep board order.
 function chronologicalIndices() {
-  return board.scenes
-    .map((scene, index) => ({scene, index}))
-    .filter(({scene}) => scene.status !== "Archived" && scene.day !== null)
-    .sort((a, b) => a.scene.day - b.scene.day || a.index - b.index)
+  const days = storyDays();
+  return manuscriptScenes()
+    .filter(({index}) => days[index] !== null)
+    .sort((a, b) => days[a.index].number - days[b.index].number || a.index - b.index)
     .map(({index}) => index);
 }
 
@@ -753,7 +780,7 @@ function chapterCount() {
 function addSceneToBoard() {
   const scene = {
     id: generateId(), title: "", summary: "", status: "Outline", pov: "", act: "",
-    location: "", day: null, text: "", chapterBreak: false,
+    location: "", day: null, date: null, dayHidden: false, text: "", chapterBreak: false,
   };
   board.scenes.push(scene);
   return scene.id;
@@ -904,6 +931,7 @@ function sceneNumber(index) {
 function toMarkdown(b) {
   let out = `# ${b.title.trim() || DEFAULT_TITLE}\n\n`;
   const places = chapters(b);
+  const days = storyDays(b);
   const sceneLevel = places.some(Boolean) ? "###" : "##";
   b.scenes.forEach((scene, index) => {
     if (scene.status === "Archived") return;
@@ -915,7 +943,7 @@ function toMarkdown(b) {
     if (pov) facts.push(`POV: ${pov.name.trim()}`);
     const location = b.locations.find(l => l.id === scene.location && scene.location);
     if (location) facts.push(`Location: ${location.name.trim()}`);
-    if (scene.day !== null) facts.push(dayLabel(b, scene.day));
+    if (days[index] !== null) facts.push(storyDayLabel(days[index]));
     out += `_${facts.join(" · ")}_\n\n`;
     const summary = scene.summary.trim();
     if (summary) out += `${summary}\n\n`;
@@ -1671,11 +1699,11 @@ function renderLocations() {
 }
 
 // Location, story day and word count: the parts that are set.
-function sceneFootnote(scene) {
+function sceneFootnote(scene, storyDay) {
   const parts = [];
   const location = findLocation(scene.location);
   if (location) parts.push(characterDisplayName(location.name));
-  if (scene.day !== null) parts.push(dayLabel(board, scene.day));
+  if (storyDay !== null) parts.push(storyDayLabel(storyDay));
   const count = wordCount(scene.text);
   if (count) parts.push(words(count));
   return parts.join(" · ");
@@ -1690,9 +1718,9 @@ function sceneDetails(scene) {
   return parts.join(" · ");
 }
 
-function sceneCard(scene, index, place) {
+function sceneCard(scene, index, place, storyDay) {
   const pov = findCharacter(scene.pov);
-  const footnote = sceneFootnote(scene);
+  const footnote = sceneFootnote(scene, storyDay);
   const classes = ["card"];
   if (isSelected("scene", scene.id)) classes.push("selected");
   if (dragFrom === index) classes.push("dragging");
@@ -1765,21 +1793,19 @@ function timelineRow(index) {
 function renderTimeline() {
   const host = $("timeline");
   const dated = chronologicalIndices();
-  const undated = board.scenes
-    .map((scene, index) => ({scene, index}))
-    .filter(({scene}) => scene.day === null && scene.status !== "Archived")
-    .map(({index}) => index);
+  const undated = sceneGaps().day;
+  const days = storyDays();
   if (!dated.length && !undated.length) {
     host.innerHTML = emptyState("No scenes yet", "Scenes with a story day appear here in story order.");
     return;
   }
-  let html = dated.length ? "" : '<p class="hint">Set a story day on scenes in the inspector to see them in story order, flashbacks included.</p>';
-  let currentDay = null;
+  let html = dated.length ? "" : '<p class="hint">Set a story day or date on scenes in the inspector to see them in story order, flashbacks included.</p>';
+  let currentHeading = null;
   for (const index of dated) {
-    const {day} = board.scenes[index];
-    if (day !== currentDay) {
-      currentDay = day;
-      html += `<div class="day-heading">${esc(dayLabel(board, day).toUpperCase())}</div>`;
+    const heading = storyDayLabel(days[index]).toUpperCase();
+    if (heading !== currentHeading) {
+      currentHeading = heading;
+      html += `<div class="day-heading">${esc(heading)}</div>`;
     }
     html += timelineRow(index);
   }
@@ -1860,7 +1886,8 @@ function renderBoard() {
     return;
   }
   const places = chapters();
-  host.innerHTML = `<div class="grid">${indices.map(i => sceneCard(board.scenes[i], i, places[i])).join("")}</div>`;
+  const days = storyDays();
+  host.innerHTML = `<div class="grid">${indices.map(i => sceneCard(board.scenes[i], i, places[i], days[i])).join("")}</div>`;
 }
 
 function renderInspector() {
@@ -1890,17 +1917,18 @@ function renderSceneInspector() {
   syncOptions($("sAct"), [["", NONE_LABEL], ...ACTS.map(a => [a, a])], scene.act);
   syncOptions($("sLocation"),
     [["", NONE_LABEL], ...board.locations.map(l => [l.id, characterDisplayName(l.name)])], scene.location);
-  const sceneDate = scene.day === null ? null : dateOfDay(board, scene.day);
-  $("sDated").checked = scene.day !== null;
-  $("sDay").hidden = scene.day === null || sceneDate !== null;
+  const storyDay = storyDays()[index];
+  $("sDayLabel").textContent = board.calendar ? "Story date" : "Story day";
+  $("sDated").checked = (board.calendar ? shownDate(scene) : shownDay(scene)) !== null;
+  $("sDay").hidden = board.calendar || shownDay(scene) === null;
   syncValue($("sDay"), scene.day === null ? "" : String(scene.day));
   const place = chapters()[index];
   $("sChapterBreak").checked = scene.chapterBreak;
   $("sChapterLabel").textContent = place?.starts ? `Starts a chapter (chapter ${place.number})` : "Starts a chapter";
-  $("sDate").hidden = sceneDate === null;
-  if (sceneDate !== null) syncValue($("sDate"), sceneDate);
-  $("sDayNumber").hidden = sceneDate === null;
-  $("sDayNumber").textContent = scene.day === null ? "" : `Day ${scene.day}`;
+  $("sDate").hidden = !board.calendar || shownDate(scene) === null;
+  syncValue($("sDate"), scene.date ?? "");
+  $("sDayNumber").hidden = !board.calendar || storyDay?.number == null;
+  $("sDayNumber").textContent = storyDay?.number == null ? "" : `Day ${storyDay.number}`;
   $("sWords").textContent = words(wordCount(scene.text));
   $("sWrite").hidden = view === "write";
   $("sEarlier").disabled = index === 0;
@@ -2224,35 +2252,28 @@ function wordGoalSection() {
 }
 
 function storyCalendarSection() {
-  const toggle = document.createElement("label");
-  toggle.className = "toggle";
-  toggle.title = "Pick scene dates instead of day numbers";
-  const checkbox = document.createElement("input");
-  checkbox.type = "checkbox";
-  checkbox.checked = board.storyStart !== null;
-  checkbox.addEventListener("change", () => {
-    board.storyStart = checkbox.checked ? todayIso() : null;
-    markDirty();
-    drawModal();
-  });
-  toggle.append(checkbox, " Use calendar");
-  if (board.storyStart === null) return [fieldLabel("Story calendar"), toggle, hint("Story days are numbered by hand.")];
-
-  const start = document.createElement("input");
-  start.type = "date";
-  start.min = "0001-01-01";
-  start.max = "9999-12-31";
-  start.value = board.storyStart;
-  start.setAttribute("aria-label", "Date of story day 1");
-  start.addEventListener("change", () => {
-    if (epochDays(start.value) === null || start.value === board.storyStart) return;
-    board.storyStart = start.value;
-    markDirty();
-  });
-  const startLabel = document.createElement("span");
-  startLabel.textContent = "Day 1 is";
-  return [fieldLabel("Story calendar"), toggle, row(startLabel, start),
-    hint("Scene days count from this date, so moving it shifts every scene's date.")];
+  const toggle = (label, title, checked, disabled, onChange) => {
+    const wrapper = document.createElement("label");
+    wrapper.className = "toggle";
+    wrapper.title = title;
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = checked;
+    checkbox.disabled = disabled;
+    checkbox.addEventListener("change", () => { onChange(checkbox.checked); markDirty(); drawModal(); });
+    wrapper.append(checkbox, ` ${label}`);
+    return wrapper;
+  };
+  const explanation = !board.calendar ? "Story days are numbered by hand. Dates already picked are kept."
+    : board.absoluteDays ? "The earliest scene date is day 1; later days count every calendar day."
+      : "The earliest scene date is day 1; each later date with a scene is the next day.";
+  return [fieldLabel("Story calendar"),
+    toggle("Use calendar", "Pick scene dates instead of numbering days by hand", board.calendar, false,
+      checked => { board.calendar = checked; }),
+    toggle("Absolute days",
+      "Number days by calendar distance from the first scene (Day 1, Day 5) instead of counting only dates that have scenes (Day 1, Day 2)",
+      board.absoluteDays, !board.calendar, checked => { board.absoluteDays = checked; }),
+    hint(explanation)];
 }
 
 function backupSection() {
@@ -3115,10 +3136,15 @@ $("sPov").addEventListener("change", withSelectedScene((s, v) => { s.pov = v; })
 $("sAct").addEventListener("change", withSelectedScene((s, v) => { s.act = v; }));
 $("sLocation").addEventListener("change", withSelectedScene((s, v) => { s.location = v; }));
 $("sChapterBreak").addEventListener("change", withSelectedScene(s => { s.chapterBreak = $("sChapterBreak").checked; }));
-$("sDated").addEventListener("change", withSelectedScene(s => { s.day = $("sDated").checked ? 1 : null; }));
+// Unticking only hides the day and date, so an accidental click loses nothing.
+$("sDated").addEventListener("change", withSelectedScene(s => {
+  s.dayHidden = !$("sDated").checked;
+  if (s.dayHidden) return;
+  if (board.calendar) s.date ??= manuscriptDates()[0] ?? todayIso();
+  else s.day ??= 1;
+}));
 $("sDate").addEventListener("change", e => {
-  const day = dayOfDate(board, e.target.value);
-  if (day !== null) withSelectedScene(s => { s.day = day; })(e);
+  if (epochDays(e.target.value) !== null) withSelectedScene((s, v) => { s.date = v; })(e);
 });
 $("sDay").addEventListener("input", e => {
   const day = Number(e.target.value);

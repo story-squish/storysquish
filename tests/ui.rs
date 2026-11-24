@@ -2471,46 +2471,107 @@ fn starting_a_chapter_marks_the_cards_and_counts_chapters() {
     assert!(harness.query_by_label("Chapters").is_some());
 }
 
+fn checkbox<'h>(harness: &'h Harness<'_, PlannerApp>, label: &'h str) -> egui_kittest::Node<'h> {
+    harness.get_by(|node| {
+        node.role() == egui::accesskit::Role::CheckBox && node.label().as_deref() == Some(label)
+    })
+}
+
+fn calendar_board(scenes: &[(&str, &str)]) -> Board {
+    let mut board = board_with_scenes(&scenes.iter().map(|(title, _)| *title).collect::<Vec<_>>());
+    board.calendar = true;
+    for (scene, (_, date)) in board.scenes.iter_mut().zip(scenes) {
+        scene.date = Some(date.parse().unwrap());
+    }
+    board
+}
+
 #[test]
-fn story_calendar_is_off_until_enabled_in_settings() {
-    let Fixture { mut harness, dir } = launch(board_with_scenes(&["Rain"]));
+fn story_calendar_settings_keep_scene_dates_when_turned_off() {
+    let mut board = board_with_scenes(&["Rain"]);
+    board.scenes[0].date = Some("2026-03-16".parse().unwrap());
+    let Fixture { mut harness, dir } = launch(board);
     open_settings(&mut harness);
     assert!(
         harness
-            .query_by_label("Story days are numbered by hand.")
+            .query_by_label_contains("numbered by hand")
             .is_some()
     );
 
     harness.get_by_label("Use calendar").click();
     harness.run();
-
-    let today = storysquish::calendar::StoryDate::today();
-    assert_eq!(harness.state().board().story_start, Some(today));
+    harness.get_by_label("Absolute days").click();
+    harness.run();
+    let board = harness.state().board();
+    assert!(board.calendar && board.absolute_days);
     flush_save(&mut harness);
-    assert_eq!(saved_board(&dir).story_start, Some(today));
+    assert!(saved_board(&dir).calendar);
 
     harness.get_by_label("Use calendar").click();
     harness.run();
-    assert_eq!(harness.state().board().story_start, None);
+    let board = harness.state().board();
+    assert!(!board.calendar);
+    assert_eq!(board.scenes[0].date, "2026-03-16".parse().ok());
 }
 
 #[test]
-fn picking_a_scene_date_sets_its_story_day() {
-    let mut board = board_with_scenes(&["Rain"]);
-    board.story_start = Some("2026-03-16".parse().unwrap());
-    board.scenes[0].day = Some(3);
+fn earliest_scene_date_is_day_one_and_days_follow_it() {
+    let board = calendar_board(&[("Rain", "2026-03-16"), ("Storm", "2026-03-20")]);
     let Fixture { mut harness, .. } = launch(board);
-    assert!(harness.query_by_label("Day 3 · Wed 18 Mar 2026").is_some());
+    assert!(harness.query_by_label("Day 1 · Mon 16 Mar 2026").is_some());
+    assert!(harness.query_by_label("Day 2 · Fri 20 Mar 2026").is_some());
 
-    harness.get_by_label("Rain").click();
+    harness.get_by_label("Storm").click();
     harness.run();
     harness.get_by_label("Month").click();
     harness.run();
-    harness.get_by_label("Apr").click();
+    harness.get_by_label("Feb").click();
     harness.run();
 
-    assert_eq!(harness.state().board().scenes[0].day, Some(34));
+    assert_eq!(
+        harness.state().board().scenes[1].date,
+        "2026-02-20".parse().ok()
+    );
+    assert!(harness.query_by_label("Day 1 · Fri 20 Feb 2026").is_some());
+    assert!(harness.query_by_label("Day 2 · Mon 16 Mar 2026").is_some());
     harness.get_by_label("Timeline").click();
     harness.run();
-    assert!(harness.query_by_label("DAY 34 · SAT 18 APR 2026").is_some());
+    assert!(harness.query_by_label("DAY 1 · FRI 20 FEB 2026").is_some());
+}
+
+#[test]
+fn unticking_story_date_hides_it_without_losing_it() {
+    let board = calendar_board(&[("Rain", "2026-03-16")]);
+    let Fixture { mut harness, .. } = launch(board);
+    harness.get_by_label("Rain").click();
+    harness.run();
+
+    checkbox(&harness, "STORY DATE").click();
+    harness.run();
+    let scene = &harness.state().board().scenes[0];
+    assert!(scene.day_hidden);
+    assert_eq!(scene.date, "2026-03-16".parse().ok());
+    assert!(harness.query_by_label("Month").is_none());
+
+    checkbox(&harness, "STORY DATE").click();
+    harness.run();
+    assert!(!harness.state().board().scenes[0].day_hidden);
+    assert!(harness.query_by_label("Day 1 · Mon 16 Mar 2026").is_some());
+}
+
+#[test]
+fn unticking_story_day_keeps_the_number() {
+    let mut board = board_with_scenes(&["Rain"]);
+    board.scenes[0].day = Some(7);
+    let Fixture { mut harness, .. } = launch(board);
+    harness.get_by_label("Rain").click();
+    harness.run();
+
+    checkbox(&harness, "STORY DAY").click();
+    harness.run();
+    checkbox(&harness, "STORY DAY").click();
+    harness.run();
+
+    let scene = &harness.state().board().scenes[0];
+    assert_eq!((scene.day, scene.day_hidden), (Some(7), false));
 }

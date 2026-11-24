@@ -114,9 +114,15 @@ pub struct Scene {
     pub act: Option<Act>,
     #[serde(default, with = "empty_string_as_none")]
     pub location: Option<Id>,
-    /// In-story chronology, independent of the scene's place on the board.
+    /// Hand-numbered story day, used while the board has no calendar.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub day: Option<i32>,
+    /// Calendar date, used while the board has a calendar.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date: Option<StoryDate>,
+    /// Takes the scene off the timeline without forgetting its day and date.
+    #[serde(rename = "dayHidden", default, skip_serializing_if = "is_false")]
+    pub day_hidden: bool,
     #[serde(default)]
     pub text: String,
     #[serde(rename = "chapterBreak", default, skip_serializing_if = "is_false")]
@@ -149,6 +155,8 @@ impl Scene {
             act: None,
             location: None,
             day: None,
+            date: None,
+            day_hidden: false,
             text: String::new(),
             chapter_break: false,
         }
@@ -156,6 +164,36 @@ impl Scene {
 
     pub fn word_count(&self) -> usize {
         self.text.split_whitespace().count()
+    }
+
+    pub fn shown_day(&self) -> Option<i32> {
+        self.day.filter(|_| !self.day_hidden)
+    }
+
+    pub fn shown_date(&self) -> Option<StoryDate> {
+        self.date.filter(|_| !self.day_hidden)
+    }
+}
+
+/// Where a scene falls in the story's chronology. Archived scenes on a
+/// calendar keep their date but get no day number, since they are not
+/// part of the story that is counted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct StoryDay {
+    pub number: Option<i32>,
+    pub date: Option<StoryDate>,
+}
+
+impl StoryDay {
+    /// `Day 3`, `Day 3 · Wed 18 Mar 2026` or, for archived scenes on a
+    /// calendar, `Wed 18 Mar 2026`.
+    pub fn label(self) -> String {
+        match (self.number, self.date) {
+            (Some(number), Some(date)) => format!("Day {number} · {}", date.long_label()),
+            (Some(number), None) => format!("Day {number}"),
+            (None, Some(date)) => date.long_label(),
+            (None, None) => String::new(),
+        }
     }
 }
 
@@ -170,6 +208,7 @@ pub struct SceneGaps {
 /// On-disk format matches the JSON exported by the original HTML planner,
 /// so existing exports import unchanged.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "StoredBoard")]
 pub struct Board {
     #[serde(default)]
     pub title: String,
@@ -183,14 +222,60 @@ pub struct Board {
     /// Target manuscript word count. Older apps drop it on save.
     #[serde(rename = "wordGoal", default, skip_serializing_if = "Option::is_none")]
     pub word_goal: Option<usize>,
-    /// The date of story day 1. When set, scene days are shown and picked
-    /// as calendar dates; days stay the stored chronology either way.
-    #[serde(
-        rename = "storyStart",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub story_start: Option<StoryDate>,
+    /// Scenes are placed by date, and day 1 is the earliest manuscript date.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub calendar: bool,
+    /// On a calendar, number days by distance from day 1 rather than
+    /// counting only the dates that have scenes.
+    #[serde(rename = "absoluteDays", default, skip_serializing_if = "is_false")]
+    pub absolute_days: bool,
+}
+
+/// Board as read from disk, before migrating older calendar data.
+#[derive(Deserialize)]
+struct StoredBoard {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    characters: Vec<Character>,
+    scenes: Vec<Scene>,
+    #[serde(default)]
+    locations: Vec<Location>,
+    #[serde(default)]
+    relationships: Vec<Relationship>,
+    #[serde(rename = "wordGoal", default)]
+    word_goal: Option<usize>,
+    #[serde(default)]
+    calendar: bool,
+    #[serde(rename = "absoluteDays", default)]
+    absolute_days: bool,
+    /// The first calendar stored a start date and kept scene days as
+    /// offsets from it; those become per-scene dates.
+    #[serde(rename = "storyStart", default)]
+    story_start: Option<StoryDate>,
+}
+
+impl From<StoredBoard> for Board {
+    fn from(stored: StoredBoard) -> Self {
+        let mut scenes = stored.scenes;
+        if let Some(start) = stored.story_start {
+            for scene in &mut scenes {
+                if scene.date.is_none() {
+                    scene.date = scene.day.and_then(|day| calendar::date_of_day(start, day));
+                }
+            }
+        }
+        Self {
+            title: stored.title,
+            characters: stored.characters,
+            scenes,
+            locations: stored.locations,
+            relationships: stored.relationships,
+            word_goal: stored.word_goal,
+            calendar: stored.calendar || stored.story_start.is_some(),
+            absolute_days: stored.absolute_days,
+        }
+    }
 }
 
 impl Default for Board {
@@ -202,7 +287,8 @@ impl Default for Board {
             locations: Vec::new(),
             relationships: Vec::new(),
             word_goal: None,
-            story_start: None,
+            calendar: false,
+            absolute_days: false,
         }
     }
 }
@@ -408,31 +494,64 @@ impl Board {
     /// Indices of dated, non-archived scenes in story order; scenes on the
     /// same day keep their board order.
     pub fn chronological_indices(&self) -> Vec<usize> {
-        let mut dated: Vec<(i32, usize)> = self
-            .scenes
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| s.status != Status::Archived)
-            .filter_map(|(i, s)| s.day.map(|day| (day, i)))
+        let days = self.story_days();
+        let mut dated: Vec<(StoryDay, usize)> = self
+            .manuscript_scenes()
+            .filter_map(|(i, _)| days[i].map(|day| (day, i)))
             .collect();
         dated.sort_unstable();
         dated.into_iter().map(|(_, i)| i).collect()
     }
 
-    pub fn date_of_day(&self, day: i32) -> Option<StoryDate> {
-        calendar::date_of_day(self.story_start?, day)
-    }
-
-    pub fn day_of_date(&self, date: StoryDate) -> Option<i32> {
-        calendar::day_of_date(self.story_start?, date)
-    }
-
-    /// `Day 3`, or `Day 3 · Wed 18 Mar 2026` when the board uses a calendar.
-    pub fn day_label(&self, day: i32) -> String {
-        match self.date_of_day(day) {
-            Some(date) => format!("Day {day} · {}", date.long_label()),
-            None => format!("Day {day}"),
+    /// Each scene's place in the story's chronology, by board index; `None`
+    /// for scenes without a (shown) day or date.
+    pub fn story_days(&self) -> Vec<Option<StoryDay>> {
+        if !self.calendar {
+            return self
+                .scenes
+                .iter()
+                .map(|s| {
+                    s.shown_day().map(|number| StoryDay {
+                        number: Some(number),
+                        date: None,
+                    })
+                })
+                .collect();
         }
+        let mut manuscript_dates: Vec<StoryDate> = self
+            .manuscript_scenes()
+            .filter_map(|(_, s)| s.shown_date())
+            .collect();
+        manuscript_dates.sort_unstable();
+        manuscript_dates.dedup();
+        let number_of = |date: StoryDate| {
+            let first = *manuscript_dates.first()?;
+            let ordinal = if self.absolute_days {
+                first.days_until(date)
+            } else {
+                i64::try_from(manuscript_dates.binary_search(&date).ok()?).ok()?
+            };
+            i32::try_from(ordinal + 1).ok()
+        };
+        self.scenes
+            .iter()
+            .map(|s| {
+                let date = s.shown_date()?;
+                Some(StoryDay {
+                    number: (s.status != Status::Archived)
+                        .then(|| number_of(date))
+                        .flatten(),
+                    date: Some(date),
+                })
+            })
+            .collect()
+    }
+
+    /// Where a scene newly placed on the calendar starts: day 1, if any.
+    pub fn first_story_date(&self) -> Option<StoryDate> {
+        self.manuscript_scenes()
+            .filter_map(|(_, s)| s.shown_date())
+            .min()
     }
 
     pub fn character(&self, id: &Id) -> Option<&Character> {
@@ -603,10 +722,15 @@ impl Board {
                 .map(|(i, _)| i)
                 .collect()
         };
+        let days = self.story_days();
         SceneGaps {
             pov: indices_where(|s| s.pov.is_none()),
             location: indices_where(|s| s.location.is_none()),
-            day: indices_where(|s| s.day.is_none()),
+            day: self
+                .manuscript_scenes()
+                .filter(|(i, _)| days[*i].is_none())
+                .map(|(i, _)| i)
+                .collect(),
         }
     }
 
@@ -1354,38 +1478,129 @@ mod tests {
         assert!(!board.scenes[1].chapter_break);
     }
 
+    fn date(text: &str) -> StoryDate {
+        text.parse().unwrap()
+    }
+
+    fn day_labels(board: &Board) -> Vec<String> {
+        board
+            .story_days()
+            .into_iter()
+            .map(|day| day.map_or_default(StoryDay::label))
+            .collect()
+    }
+
+    fn calendar_board(dates: &[&str]) -> Board {
+        let mut board = Board {
+            calendar: true,
+            ..Board::default()
+        };
+        for text in dates {
+            scene_with(&mut board, "", |s| s.date = Some(date(text)));
+        }
+        board
+    }
+
     #[test]
-    fn story_start_is_saved_only_when_set() {
+    fn calendar_counts_story_days_from_the_earliest_date() {
+        let board = calendar_board(&["2026-03-20", "2026-03-15", "2026-03-20", "2026-03-16"]);
+
+        assert_eq!(
+            day_labels(&board),
+            [
+                "Day 3 · Fri 20 Mar 2026",
+                "Day 1 · Sun 15 Mar 2026",
+                "Day 3 · Fri 20 Mar 2026",
+                "Day 2 · Mon 16 Mar 2026",
+            ]
+        );
+        assert_eq!(board.chronological_indices(), [1, 3, 0, 2]);
+        assert_eq!(board.first_story_date(), Some(date("2026-03-15")));
+    }
+
+    #[test]
+    fn absolute_days_count_calendar_distance() {
+        let mut board = calendar_board(&["2026-03-20", "2026-03-15", "2026-03-16"]);
+        board.absolute_days = true;
+
+        assert_eq!(
+            day_labels(&board),
+            [
+                "Day 6 · Fri 20 Mar 2026",
+                "Day 1 · Sun 15 Mar 2026",
+                "Day 2 · Mon 16 Mar 2026",
+            ]
+        );
+    }
+
+    #[test]
+    fn archived_and_hidden_scenes_do_not_move_day_one() {
+        let mut board = calendar_board(&["2026-03-15", "2026-03-10", "2026-03-12"]);
+        board.scenes[1].status = Status::Archived;
+        board.scenes[2].day_hidden = true;
+
+        assert_eq!(
+            day_labels(&board),
+            ["Day 1 · Sun 15 Mar 2026", "Tue 10 Mar 2026", ""]
+        );
+        assert_eq!(board.scene_gaps().day, [2]);
+        assert_eq!(board.first_story_date(), Some(date("2026-03-15")));
+    }
+
+    #[test]
+    fn hidden_day_and_date_are_kept_and_saved() {
+        let mut board = calendar_board(&["2026-03-15"]);
+        board.scenes[0].day = Some(4);
+        board.scenes[0].day_hidden = true;
+        assert_eq!(board.story_days(), [None]);
+
+        let json = serde_json::to_string(&board).unwrap();
+        assert!(json.contains(r#""day":4,"date":"2026-03-15","dayHidden":true"#));
+        let loaded = serde_json::from_str::<Board>(&json).unwrap();
+        assert_eq!(loaded, board);
+
+        board.scenes[0].day_hidden = false;
+        board.calendar = false;
+        assert_eq!(day_labels(&board), ["Day 4"]);
+    }
+
+    #[test]
+    fn calendar_settings_are_saved_only_when_set() {
         let mut board = Board::default();
+        let json = serde_json::to_string(&board).unwrap();
+        assert!(!json.contains("calendar") && !json.contains("absoluteDays"));
+
+        board.calendar = true;
+        board.absolute_days = true;
+        let json = serde_json::to_string(&board).unwrap();
+        assert!(json.contains(r#""calendar":true,"absoluteDays":true"#));
+        assert_eq!(serde_json::from_str::<Board>(&json).unwrap(), board);
+    }
+
+    #[test]
+    fn story_start_from_the_first_calendar_becomes_scene_dates() {
+        let json = r#"{"scenes": [
+            {"id": "a", "day": 3},
+            {"id": "b", "day": 0},
+            {"id": "c"}
+        ], "storyStart": "2026-03-16"}"#;
+        let board: Board = serde_json::from_str(json).unwrap();
+
+        assert!(board.calendar);
+        let dates: Vec<_> = board.scenes.iter().map(|s| s.date).collect();
+        assert_eq!(
+            dates,
+            [Some(date("2026-03-18")), Some(date("2026-03-15")), None]
+        );
+        assert_eq!(board.scenes[0].day, Some(3));
         assert!(
             !serde_json::to_string(&board)
                 .unwrap()
                 .contains("storyStart")
         );
 
-        board.story_start = Some("2026-03-16".parse().unwrap());
-        let json = serde_json::to_string(&board).unwrap();
-        assert!(json.contains(r#""storyStart":"2026-03-16""#));
-        assert_eq!(serde_json::from_str::<Board>(&json).unwrap(), board);
-
         let invalid = json.replace("2026-03-16", "2026-02-30");
         assert!(serde_json::from_str::<Board>(&invalid).is_err());
-    }
-
-    #[test]
-    fn calendar_maps_day_one_to_the_story_start() {
-        let mut board = Board::default();
-        assert_eq!(board.date_of_day(1), None);
-        assert_eq!(board.day_label(3), "Day 3");
-
-        let start: StoryDate = "2026-03-16".parse().unwrap();
-        board.story_start = Some(start);
-        assert_eq!(board.date_of_day(1), Some(start));
-        assert_eq!(board.date_of_day(0), "2026-03-15".parse().ok());
-        assert_eq!(board.date_of_day(i32::MAX), None);
-        assert_eq!(board.day_of_date("2026-04-01".parse().unwrap()), Some(17));
-        assert_eq!(board.day_of_date("2026-03-10".parse().unwrap()), Some(-5));
-        assert_eq!(board.day_label(3), "Day 3 · Wed 18 Mar 2026");
     }
 
     #[test]
