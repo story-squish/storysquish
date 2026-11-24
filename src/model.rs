@@ -184,6 +184,45 @@ pub struct StoryDay {
     pub date: Option<StoryDate>,
 }
 
+/// Distinct manuscript dates in order, and how they map to day numbers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CalendarDays {
+    dates: Vec<StoryDate>,
+    absolute: bool,
+}
+
+impl CalendarDays {
+    pub fn first(&self) -> Option<StoryDate> {
+        self.dates.first().copied()
+    }
+
+    pub fn number_of(&self, date: StoryDate) -> Option<i32> {
+        let ordinal = if self.absolute {
+            self.first()?.days_until(date)
+        } else {
+            i64::try_from(self.dates.binary_search(&date).ok()?).ok()?
+        };
+        i32::try_from(ordinal + 1).ok()
+    }
+
+    /// The date that would be day `number`. Counting only dates with
+    /// scenes, a number past the last day lands that many days after it,
+    /// and one before day 1 that many days before it.
+    pub fn date_of(&self, number: i32) -> Option<StoryDate> {
+        let first = self.first()?;
+        let ordinal = i64::from(number) - 1;
+        if self.absolute || ordinal < 0 {
+            return first.plus_days(ordinal);
+        }
+        let index = usize::try_from(ordinal).ok()?;
+        if let Some(date) = self.dates.get(index) {
+            return Some(*date);
+        }
+        let last_index = i64::try_from(self.dates.len()).ok()? - 1;
+        self.dates.last()?.plus_days(ordinal - last_index)
+    }
+}
+
 impl StoryDay {
     /// `Day 3`, `Day 3 · Wed 18 Mar 2026` or, for archived scenes on a
     /// calendar, `Wed 18 Mar 2026`.
@@ -518,28 +557,14 @@ impl Board {
                 })
                 .collect();
         }
-        let mut manuscript_dates: Vec<StoryDate> = self
-            .manuscript_scenes()
-            .filter_map(|(_, s)| s.shown_date())
-            .collect();
-        manuscript_dates.sort_unstable();
-        manuscript_dates.dedup();
-        let number_of = |date: StoryDate| {
-            let first = *manuscript_dates.first()?;
-            let ordinal = if self.absolute_days {
-                first.days_until(date)
-            } else {
-                i64::try_from(manuscript_dates.binary_search(&date).ok()?).ok()?
-            };
-            i32::try_from(ordinal + 1).ok()
-        };
+        let days = self.calendar_days(None);
         self.scenes
             .iter()
             .map(|s| {
                 let date = s.shown_date()?;
                 Some(StoryDay {
                     number: (s.status != Status::Archived)
-                        .then(|| number_of(date))
+                        .then(|| days.number_of(date))
                         .flatten(),
                     date: Some(date),
                 })
@@ -547,11 +572,20 @@ impl Board {
             .collect()
     }
 
-    /// Where a scene newly placed on the calendar starts: day 1, if any.
-    pub fn first_story_date(&self) -> Option<StoryDate> {
-        self.manuscript_scenes()
+    /// Day numbering of the dated manuscript scenes, optionally leaving one
+    /// scene out so it can be renumbered against the others.
+    pub fn calendar_days(&self, excluding: Option<usize>) -> CalendarDays {
+        let mut dates: Vec<StoryDate> = self
+            .manuscript_scenes()
+            .filter(|(i, _)| Some(*i) != excluding)
             .filter_map(|(_, s)| s.shown_date())
-            .min()
+            .collect();
+        dates.sort_unstable();
+        dates.dedup();
+        CalendarDays {
+            dates,
+            absolute: self.absolute_days,
+        }
     }
 
     pub fn character(&self, id: &Id) -> Option<&Character> {
@@ -1515,7 +1549,27 @@ mod tests {
             ]
         );
         assert_eq!(board.chronological_indices(), [1, 3, 0, 2]);
-        assert_eq!(board.first_story_date(), Some(date("2026-03-15")));
+        assert_eq!(board.calendar_days(None).first(), Some(date("2026-03-15")));
+    }
+
+    #[test]
+    fn day_numbers_map_back_to_dates_against_the_other_scenes() {
+        let mut board = calendar_board(&["2026-03-01", "2026-03-05", "2026-03-09"]);
+        let others = board.calendar_days(Some(0));
+        assert_eq!(others.date_of(1), Some(date("2026-03-05")));
+        assert_eq!(others.date_of(2), Some(date("2026-03-09")));
+        assert_eq!(others.date_of(3), Some(date("2026-03-10")));
+        assert_eq!(others.date_of(0), Some(date("2026-03-04")));
+
+        board.scenes[0].date = others.date_of(3);
+        assert_eq!(board.story_days()[0].and_then(|d| d.number), Some(3));
+
+        board.absolute_days = true;
+        let others = board.calendar_days(Some(1));
+        assert_eq!(others.date_of(3), Some(date("2026-03-11")));
+        assert_eq!(others.date_of(-1), Some(date("2026-03-07")));
+        assert_eq!(others.date_of(i32::MAX), None);
+        assert_eq!(Board::default().calendar_days(None).date_of(1), None);
     }
 
     #[test]
@@ -1544,7 +1598,7 @@ mod tests {
             ["Day 1 · Sun 15 Mar 2026", "Tue 10 Mar 2026", ""]
         );
         assert_eq!(board.scene_gaps().day, [2]);
-        assert_eq!(board.first_story_date(), Some(date("2026-03-15")));
+        assert_eq!(board.calendar_days(None).first(), Some(date("2026-03-15")));
     }
 
     #[test]

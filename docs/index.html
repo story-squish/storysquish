@@ -267,7 +267,7 @@
             <input type="checkbox" id="sDated" title="Place this scene on the timeline">
             <input type="number" id="sDay" step="1" aria-label="Story day">
             <input type="date" id="sDate" min="0001-01-01" max="9999-12-31" aria-label="Story date" hidden>
-            <span class="hint" id="sDayNumber" hidden></span>
+            <button class="small" id="sToday" title="Set the scene's date to today" hidden>Today</button>
           </div>
         </div>
       </div>
@@ -650,9 +650,22 @@ function storyDays(b = board) {
   });
 }
 
-// Distinct shown dates of manuscript scenes, earliest first.
-function manuscriptDates(b = board) {
-  return [...new Set(manuscriptScenes(b).map(({scene}) => shownDate(scene)).filter(d => d !== null))].sort();
+// Distinct shown dates of manuscript scenes, earliest first, optionally
+// leaving one scene out so it can be renumbered against the others.
+function manuscriptDates(b = board, excluding = -1) {
+  const dates = manuscriptScenes(b).filter(({index}) => index !== excluding).map(({scene}) => shownDate(scene));
+  return [...new Set(dates.filter(d => d !== null))].sort();
+}
+
+// The date that would be day `number` among `dates`. Counting only dates
+// with scenes, a number past the last day lands that many days after it, and
+// one before day 1 that many days before it. Mirrors CalendarDays::date_of.
+function dateOfDayNumber(dates, number, absolute) {
+  if (!dates.length) return null;
+  const ordinal = number - 1;
+  if (absolute || ordinal < 0) return isoFromEpochDays(epochDays(dates[0]) + ordinal);
+  if (ordinal < dates.length) return dates[ordinal];
+  return isoFromEpochDays(epochDays(dates.at(-1)) + ordinal - (dates.length - 1));
 }
 
 // "Day 3", "Day 3 · Wed 18 Mar 2026" or, for archived scenes on a calendar, "Wed 18 Mar 2026".
@@ -1920,15 +1933,16 @@ function renderSceneInspector() {
   const storyDay = storyDays()[index];
   $("sDayLabel").textContent = board.calendar ? "Story date" : "Story day";
   $("sDated").checked = (board.calendar ? shownDate(scene) : shownDay(scene)) !== null;
-  $("sDay").hidden = board.calendar || shownDay(scene) === null;
-  syncValue($("sDay"), scene.day === null ? "" : String(scene.day));
+  const dayNumber = board.calendar ? storyDay?.number ?? null : shownDay(scene);
+  $("sDay").hidden = dayNumber === null;
+  syncValue($("sDay"), dayNumber === null ? "" : String(dayNumber));
+  $("sDay").title = board.calendar ? "Changing the day moves the scene's date to match" : "";
+  $("sToday").hidden = !board.calendar || shownDate(scene) === null;
   const place = chapters()[index];
   $("sChapterBreak").checked = scene.chapterBreak;
   $("sChapterLabel").textContent = place?.starts ? `Starts a chapter (chapter ${place.number})` : "Starts a chapter";
   $("sDate").hidden = !board.calendar || shownDate(scene) === null;
   syncValue($("sDate"), scene.date ?? "");
-  $("sDayNumber").hidden = !board.calendar || storyDay?.number == null;
-  $("sDayNumber").textContent = storyDay?.number == null ? "" : `Day ${storyDay.number}`;
   $("sWords").textContent = words(wordCount(scene.text));
   $("sWrite").hidden = view === "write";
   $("sEarlier").disabled = index === 0;
@@ -3149,8 +3163,16 @@ $("sDate").addEventListener("change", e => {
 $("sDay").addEventListener("input", e => {
   const day = Number(e.target.value);
   if (e.target.value.trim() === "" || !Number.isInteger(day) || Math.abs(day) >= 2 ** 31) return;
-  withSelectedScene(s => { s.day = day; })(e);
+  withSelectedScene(s => {
+    if (!board.calendar) {
+      s.day = day;
+      return;
+    }
+    const others = manuscriptDates(board, board.scenes.indexOf(s));
+    s.date = dateOfDayNumber(others, day, board.absoluteDays) ?? s.date;
+  })(e);
 });
+$("sToday").addEventListener("click", withSelectedScene(s => { s.date = todayIso(); }));
 $("sWrite").addEventListener("click", () => { view = "write"; render(); });
 $("sClose").addEventListener("click", closeInspector);
 $("sEarlier").addEventListener("click", () => shiftSelection(-1));

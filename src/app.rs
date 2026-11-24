@@ -13,7 +13,9 @@ use eframe::egui::{
 use crate::calendar::{self, StoryDate};
 use crate::github::{self, CloudBoard, Revision};
 use crate::history::History;
-use crate::model::{Act, Board, ChapterPlace, Character, Id, Location, Scene, Status, StoryDay};
+use crate::model::{
+    Act, Board, CalendarDays, ChapterPlace, Character, Id, Location, Scene, Status, StoryDay,
+};
 use crate::settings::{self, Settings, SpellcheckDictionary};
 use crate::spelling::{self, DictionaryInfo, DictionarySource, KnownWords};
 use crate::theme::{ColorScheme, Palette};
@@ -3240,7 +3242,7 @@ impl PlannerApp {
         let locations = self.board.locations.clone();
         let calendar = self.board.calendar.then(|| SceneCalendar {
             story_day: self.board.story_days()[index],
-            first_date: self.board.first_story_date(),
+            other_scenes: self.board.calendar_days(Some(index)),
         });
         let in_write_view = self.view == View::Write;
         let is_last = index + 1 == self.board.scenes.len();
@@ -4599,10 +4601,11 @@ fn inspector_header(ui: &mut Ui, colors: Palette, kind: &str, title: &str) -> bo
 }
 
 /// What the scene inspector needs to show a scene on the board's calendar.
-#[derive(Clone, Copy)]
 struct SceneCalendar {
     story_day: Option<StoryDay>,
-    first_date: Option<StoryDate>,
+    /// Numbering without this scene, so a typed day number maps to the
+    /// date that gives the scene that number.
+    other_scenes: CalendarDays,
 }
 
 fn setting_fields(
@@ -4641,7 +4644,7 @@ fn setting_fields(
             .labelled_by(location_label);
 
         changed |= match calendar {
-            Some(calendar) => story_date_field(&mut cols[1], colors, scene, calendar),
+            Some(calendar) => story_date_field(&mut cols[1], colors, scene, &calendar),
             None => story_day_field(&mut cols[1], colors, scene),
         };
     });
@@ -4689,7 +4692,7 @@ fn story_date_field(
     ui: &mut Ui,
     colors: Palette,
     scene: &mut Scene,
-    calendar: SceneCalendar,
+    calendar: &SceneCalendar,
 ) -> bool {
     let label = field_label(ui, colors, "Story date");
     let mut changed = false;
@@ -4697,13 +4700,35 @@ fn story_date_field(
         if timeline_checkbox(ui, scene, scene.shown_date().is_some(), label) {
             changed = true;
             if !scene.day_hidden && scene.date.is_none() {
-                scene.date = Some(calendar.first_date.unwrap_or_else(StoryDate::today));
+                scene.date = Some(
+                    calendar
+                        .other_scenes
+                        .first()
+                        .unwrap_or_else(StoryDate::today),
+                );
             }
         }
-        if let Some(number) = calendar.story_day.and_then(|day| day.number)
-            && !changed
+        if scene.day_hidden || scene.date.is_none() {
+            return;
+        }
+        if let Some(mut number) = calendar.story_day.and_then(|day| day.number)
+            && ui
+                .add(egui::DragValue::new(&mut number).prefix("Day "))
+                .on_hover_text("Changing the day moves the scene's date to match")
+                .labelled_by(label)
+                .changed()
+            && let Some(date) = calendar.other_scenes.date_of(number)
         {
-            ui.label(RichText::new(format!("Day {number}")).color(colors.muted));
+            scene.date = Some(date);
+            changed = true;
+        }
+        if ui
+            .button("Today")
+            .on_hover_text("Set the scene's date to today")
+            .clicked()
+        {
+            scene.date = Some(StoryDate::today());
+            changed = true;
         }
     });
     if !scene.day_hidden

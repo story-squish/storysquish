@@ -2575,3 +2575,50 @@ fn unticking_story_day_keeps_the_number() {
     let scene = &harness.state().board().scenes[0];
     assert_eq!((scene.day, scene.day_hidden), (Some(7), false));
 }
+
+#[test]
+fn editing_the_day_number_moves_the_scene_date() {
+    let board = calendar_board(&[
+        ("Rain", "2026-03-16"),
+        ("Storm", "2026-03-20"),
+        ("Fog", "2026-03-25"),
+    ]);
+    let Fixture { mut harness, .. } = launch(board);
+    harness.get_by_label("Rain").click();
+    harness.run();
+
+    harness
+        .get_by(|node| {
+            node.role() == egui::accesskit::Role::SpinButton
+                && node.label().as_deref() == Some("STORY DATE")
+                && node.numeric_value() == Some(1.0)
+        })
+        .click();
+    harness.run();
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    harness.event(egui::Event::Text("2".to_owned()));
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+
+    assert_eq!(
+        harness.state().board().scenes[0].date,
+        "2026-03-25".parse().ok()
+    );
+    assert!(harness.query_by_label("Day 1 · Fri 20 Mar 2026").is_some());
+}
+
+#[test]
+fn today_button_dates_the_scene_today() {
+    let board = calendar_board(&[("Rain", "2026-03-16")]);
+    let Fixture { mut harness, .. } = launch(board);
+    harness.get_by_label("Rain").click();
+    harness.run();
+
+    harness.get_by_label("Today").click();
+    harness.run();
+
+    assert_eq!(
+        harness.state().board().scenes[0].date,
+        Some(storysquish::calendar::StoryDate::today())
+    );
+}
