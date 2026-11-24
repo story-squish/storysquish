@@ -2682,8 +2682,51 @@ impl PlannerApp {
             self.scene_count_stats(ui);
             ui.vertical(|ui| self.act_word_stats(ui));
             ui.vertical(|ui| self.pov_word_stats(ui));
+            ui.vertical(|ui| self.appearance_stats(ui));
             ui.vertical(|ui| self.scene_gap_stats(ui));
         });
+    }
+
+    fn appearance_stats(&self, ui: &mut Ui) {
+        const SHOWN: usize = 7;
+        let colors = self.colors;
+        ui.label(RichText::new("Appearances").strong())
+            .on_hover_text(
+                "Scenes where a character is POV or named in the title, summary or prose",
+            );
+        let (mut present, absent): (Vec<_>, Vec<_>) = self
+            .board
+            .character_appearances()
+            .into_iter()
+            .partition(|(_, scenes)| !scenes.is_empty());
+        if present.is_empty() && absent.is_empty() {
+            ui.label(RichText::new("No characters yet.").small());
+            return;
+        }
+        present.sort_by_key(|(_, scenes)| std::cmp::Reverse(scenes.len()));
+        Grid::new("stats_appearances")
+            .num_columns(2)
+            .spacing([12.0, 4.0])
+            .show(ui, |ui| {
+                for (character, scenes) in present.iter().take(SHOWN) {
+                    ui.label(display_name(&character.name));
+                    ui.label(scenes.len().to_string())
+                        .on_hover_text(self.scene_list(scenes));
+                    ui.end_row();
+                }
+                if present.len() > SHOWN {
+                    ui.label(format!("{} more", present.len() - SHOWN));
+                    ui.end_row();
+                }
+                if !absent.is_empty() {
+                    let names: Vec<&str> =
+                        absent.iter().map(|(c, _)| display_name(&c.name)).collect();
+                    ui.label("Never appear");
+                    ui.label(RichText::new(absent.len().to_string()).color(colors.danger))
+                        .on_hover_text(names.join("\n"));
+                    ui.end_row();
+                }
+            });
     }
 
     fn act_word_stats(&self, ui: &mut Ui) {
@@ -2844,6 +2887,12 @@ impl PlannerApp {
     fn character_inspector(&mut self, ui: &mut Ui, id: &Id) {
         let colors = self.colors;
         let pov_count = self.board.pov_scene_count(id);
+        let appearance_count = self
+            .board
+            .character_appearances()
+            .into_iter()
+            .find(|(c, _)| &c.id == id)
+            .map_or(0, |(_, scenes)| scenes.len());
         let character_count = self.board.characters.len();
         let Some(index) = self.board.character_index(id) else {
             self.selected = None;
@@ -2866,6 +2915,15 @@ impl PlannerApp {
                 .small()
                 .color(colors.muted),
         );
+        ui.label(
+            RichText::new(format!(
+                "Appears in {appearance_count} scene{}",
+                self::plural(appearance_count)
+            ))
+            .small()
+            .color(colors.muted),
+        )
+        .on_hover_text("As POV, or named in the title, summary or prose");
 
         let (relationships_changed, relationship_added) = self.relationship_editor(ui, id);
         changed |= relationships_changed;
