@@ -138,6 +138,14 @@ impl Scene {
     }
 }
 
+/// Indices of manuscript (non-archived) scenes missing each detail.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct SceneGaps {
+    pub pov: Vec<usize>,
+    pub location: Vec<usize>,
+    pub day: Vec<usize>,
+}
+
 /// On-disk format matches the JSON exported by the original HTML planner,
 /// so existing exports import unchanged.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -358,11 +366,7 @@ impl Board {
 
     /// Words of prose across every scene that is not archived.
     pub fn manuscript_word_count(&self) -> usize {
-        self.scenes
-            .iter()
-            .filter(|s| s.status != Status::Archived)
-            .map(Scene::word_count)
-            .sum()
+        self.manuscript_scenes().map(|(_, s)| s.word_count()).sum()
     }
 
     /// Indices of dated, non-archived scenes in story order; scenes on the
@@ -418,6 +422,65 @@ impl Board {
                 )
             })
             .collect()
+    }
+
+    fn manuscript_scenes(&self) -> impl Iterator<Item = (usize, &Scene)> {
+        self.scenes
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.status != Status::Archived)
+    }
+
+    /// Manuscript words per act, zero-filled, with scenes lacking an act
+    /// last under `None`.
+    pub fn act_word_counts(&self) -> Vec<(Option<Act>, usize)> {
+        Act::ALL
+            .iter()
+            .copied()
+            .map(Some)
+            .chain([None])
+            .map(|act| {
+                let words = self
+                    .manuscript_scenes()
+                    .filter(|(_, s)| s.act == act)
+                    .map(|(_, s)| s.word_count())
+                    .sum();
+                (act, words)
+            })
+            .collect()
+    }
+
+    /// Manuscript words per POV character, most first; characters without
+    /// a manuscript POV scene are left out.
+    pub fn pov_word_counts(&self) -> Vec<(&Character, usize)> {
+        let mut counts: Vec<(&Character, usize)> = self
+            .characters
+            .iter()
+            .filter_map(|character| {
+                let mut scenes = self
+                    .manuscript_scenes()
+                    .filter(|(_, s)| s.pov.as_ref() == Some(&character.id))
+                    .peekable();
+                scenes.peek()?;
+                Some((character, scenes.map(|(_, s)| s.word_count()).sum()))
+            })
+            .collect();
+        counts.sort_by_key(|&(_, words)| std::cmp::Reverse(words));
+        counts
+    }
+
+    pub fn scene_gaps(&self) -> SceneGaps {
+        let indices_where = |missing: fn(&Scene) -> bool| {
+            self.manuscript_scenes()
+                .filter(|(_, s)| missing(s))
+                .map(|(i, _)| i)
+                .collect()
+        };
+        SceneGaps {
+            pov: indices_where(|s| s.pov.is_none()),
+            location: indices_where(|s| s.location.is_none()),
+            day: indices_where(|s| s.day.is_none()),
+        }
     }
 
     /// Indices of scenes matching the text query and optional
@@ -917,6 +980,86 @@ mod tests {
         assert_eq!(
             board.act_counts(),
             vec![(Act::One, 0), (Act::Two, 0), (Act::Three, 1)]
+        );
+    }
+
+    fn scene_with(board: &mut Board, text: &str, edit: impl FnOnce(&mut Scene)) {
+        let id = board.add_scene();
+        let scene = board.scene_mut(&id).unwrap();
+        text.clone_into(&mut scene.text);
+        edit(scene);
+    }
+
+    #[test]
+    fn act_word_counts_skip_archived_and_bucket_unassigned_last() {
+        let mut board = Board::default();
+        scene_with(&mut board, "one two three", |s| s.act = Some(Act::One));
+        scene_with(&mut board, "four five", |s| s.act = Some(Act::One));
+        scene_with(&mut board, "six", |_| {});
+        scene_with(&mut board, "cut words here", |s| {
+            s.act = Some(Act::Two);
+            s.status = Status::Archived;
+        });
+
+        assert_eq!(
+            board.act_word_counts(),
+            vec![
+                (Some(Act::One), 5),
+                (Some(Act::Two), 0),
+                (Some(Act::Three), 0),
+                (None, 1)
+            ]
+        );
+    }
+
+    #[test]
+    fn pov_word_counts_rank_by_words_and_skip_characters_without_pov_scenes() {
+        let mut board = Board::default();
+        for name in ["Ada", "Bo", "Cy", "Di"] {
+            board.add_character(name);
+        }
+        let id = |board: &Board, n: usize| board.characters[n].id.clone();
+        let (ada, bo, cy, di) = (id(&board, 0), id(&board, 1), id(&board, 2), id(&board, 3));
+        scene_with(&mut board, "a b", |s| s.pov = Some(ada));
+        scene_with(&mut board, "a b c", |s| s.pov = Some(bo.clone()));
+        scene_with(&mut board, "", |s| s.pov = Some(bo));
+        scene_with(&mut board, "", |s| s.pov = Some(cy.clone()));
+        scene_with(&mut board, "archived only", |s| {
+            s.pov = Some(di);
+            s.status = Status::Archived;
+        });
+
+        let names: Vec<(&str, usize)> = board
+            .pov_word_counts()
+            .into_iter()
+            .map(|(c, words)| (c.name.as_str(), words))
+            .collect();
+        assert_eq!(names, vec![("Bo", 3), ("Ada", 2), ("Cy", 0)]);
+    }
+
+    #[test]
+    fn scene_gaps_list_manuscript_scenes_missing_each_detail() {
+        let mut board = Board::default();
+        board.add_character("Ada");
+        board.add_location("Harbor");
+        let ada = board.characters[0].id.clone();
+        let harbor = board.locations[0].id.clone();
+        scene_with(&mut board, "", |s| {
+            s.pov = Some(ada.clone());
+            s.location = Some(harbor.clone());
+            s.day = Some(1);
+        });
+        scene_with(&mut board, "", |s| s.pov = Some(ada));
+        scene_with(&mut board, "", |s| s.day = Some(2));
+        scene_with(&mut board, "", |s| s.status = Status::Archived);
+
+        assert_eq!(
+            board.scene_gaps(),
+            SceneGaps {
+                pov: vec![2],
+                location: vec![1, 2],
+                day: vec![1],
+            }
         );
     }
 

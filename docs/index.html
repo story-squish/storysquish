@@ -116,6 +116,11 @@
   .stats-table{border-collapse:collapse}
   .stats-table td{padding:2px 12px 2px 0}
   .stats-table tr.total td{font-weight:700}
+  .stats-grid{display:flex;flex-wrap:wrap;gap:12px 32px;align-items:flex-start}
+  .stats-grid h3{font-size:13px;margin:0 0 4px}
+  .stats-table td.num{text-align:right}
+  .stats-table td.gap{color:var(--danger);cursor:help}
+  .stats-table td.none{color:var(--muted)}
   #modalHost{position:fixed;inset:0;background:#0006;display:flex;align-items:center;justify-content:center;padding:16px;z-index:10}
   .modal{background:var(--inspector);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:16px;max-width:380px;width:100%;box-shadow:0 10px 30px #0005}
   .modal .message{white-space:pre-wrap;overflow-wrap:anywhere;margin:0 0 12px}
@@ -215,7 +220,12 @@
     <section id="graph" class="view" hidden></section>
     <section id="stats" hidden>
       <h2>Statistics</h2>
-      <table class="stats-table"><tbody id="statsBody"></tbody></table>
+      <div class="stats-grid">
+        <table class="stats-table"><tbody id="statsBody"></tbody></table>
+        <div><h3>Words per act</h3><table class="stats-table"><tbody id="statsActWords"></tbody></table></div>
+        <div><h3>POV share</h3><table class="stats-table"><tbody id="statsPovWords"></tbody></table></div>
+        <div><h3>Missing</h3><table class="stats-table"><tbody id="statsGaps"></tbody></table></div>
+      </div>
     </section>
   </div>
 
@@ -551,8 +561,42 @@ function wordCount(text) {
   return trimmed ? trimmed.split(/\s+/).length : 0;
 }
 
+function manuscriptScenes(b = board) {
+  return b.scenes.map((scene, index) => ({scene, index})).filter(({scene}) => scene.status !== "Archived");
+}
+
+function sceneWords(entries) {
+  return entries.reduce((sum, {scene}) => sum + wordCount(scene.text), 0);
+}
+
 function manuscriptWordCount(b = board) {
-  return b.scenes.filter(s => s.status !== "Archived").reduce((sum, s) => sum + wordCount(s.text), 0);
+  return sceneWords(manuscriptScenes(b));
+}
+
+// Acts in order, then "" for scenes without an act.
+function actWordCounts() {
+  const scenes = manuscriptScenes();
+  return [...ACTS, ""].map(act => [act, sceneWords(scenes.filter(({scene}) => scene.act === act))]);
+}
+
+// Characters with a manuscript POV scene, most words first.
+function povWordCounts() {
+  const scenes = manuscriptScenes();
+  return board.characters
+    .map(character => [character, scenes.filter(({scene}) => scene.pov === character.id)])
+    .filter(([, owned]) => owned.length > 0)
+    .map(([character, owned]) => [character, sceneWords(owned)])
+    .sort((a, b) => b[1] - a[1]);
+}
+
+function sceneGaps() {
+  const scenes = manuscriptScenes();
+  const indicesWhere = missing => scenes.filter(({scene}) => missing(scene)).map(({index}) => index);
+  return {
+    pov: indicesWhere(s => !s.pov),
+    location: indicesWhere(s => !s.location),
+    day: indicesWhere(s => s.day === null),
+  };
 }
 
 // Dated, non-archived scenes in story order; same-day scenes keep board order.
@@ -1769,6 +1813,41 @@ function renderStats() {
     rows.map(([label, count]) => `<tr><td>${esc(label)}</td><td>${count}</td></tr>`).join("") +
     `<tr class="total"><td>Total</td><td>${board.scenes.length}</td></tr>` +
     `<tr><td>Words</td><td>${formatCount(manuscriptWordCount())}</td></tr>`;
+
+  const total = manuscriptWordCount();
+  const shareRow = (label, count) =>
+    `<tr><td>${esc(label)}</td><td class="num">${formatCount(count)}</td><td class="num">${percent(count, total).toFixed(0)}%</td></tr>`;
+
+  $("statsActWords").innerHTML = actWordCounts()
+    .filter(([act, count]) => act || count > 0)
+    .map(([act, count]) => shareRow(act || "No act", count))
+    .join("");
+
+  const POV_SHOWN = 7;
+  const pov = povWordCounts();
+  const rest = pov.slice(POV_SHOWN);
+  $("statsPovWords").innerHTML = pov.length === 0
+    ? `<tr><td class="none">No POV scenes yet.</td></tr>`
+    : pov.slice(0, POV_SHOWN).map(([c, count]) => shareRow(characterDisplayName(c.name), count)).join("") +
+      (rest.length ? shareRow(`${rest.length} more`, rest.reduce((sum, [, count]) => sum + count, 0)) : "");
+
+  const gaps = sceneGaps();
+  $("statsGaps").innerHTML = [["No POV", gaps.pov], ["No location", gaps.location], ["No day", gaps.day]]
+    .map(([label, indices]) => indices.length === 0
+      ? `<tr><td>${label}</td><td class="num none">0</td></tr>`
+      : `<tr><td>${label}</td><td class="num gap" title="${esc(sceneList(indices))}">${indices.length}</td></tr>`)
+    .join("");
+}
+
+function percent(part, whole) {
+  return whole === 0 ? 0 : part / whole * 100;
+}
+
+function sceneList(indices) {
+  const SHOWN = 12;
+  const lines = indices.slice(0, SHOWN).map(i => `${sceneNumber(i)}  ${sceneTitle(board.scenes[i])}`);
+  if (indices.length > SHOWN) lines.push(`…and ${indices.length - SHOWN} more`);
+  return lines.join("\n");
 }
 
 /* ---------- dialogs ---------- */
