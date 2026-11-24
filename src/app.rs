@@ -333,12 +333,12 @@ struct SettingsDialog {
 impl PlannerApp {
     pub fn new(
         cc: &eframe::CreationContext<'_>,
-        board: Board,
+        mut board: Board,
         path: PathBuf,
         settings_path: PathBuf,
         startup_alert: Option<String>,
     ) -> Self {
-        let (settings, settings_alert) = match settings::load(&settings_path) {
+        let (mut settings, settings_alert) = match settings::load(&settings_path) {
             Ok(settings) => (settings, None),
             Err(e) => (
                 Settings::default(),
@@ -358,6 +358,11 @@ impl PlannerApp {
             prefix_check: Some(path.clone()),
             ..BackupState::default()
         };
+        let legacy_word_goal = settings.take_legacy_word_goal();
+        let adopts_legacy_word_goal = legacy_word_goal.is_some() && board.word_goal.is_none();
+        if adopts_legacy_word_goal {
+            board.word_goal = legacy_word_goal;
+        }
         let colors = settings.color_scheme.palette();
         apply_theme(&cc.egui_ctx, colors);
         let mut app = Self {
@@ -399,7 +404,21 @@ impl PlannerApp {
         app.load_spellcheck_dictionary(&cc.egui_ctx);
         app.follow_title_in_file_name();
         app.resume_unpushed_backups();
+        if legacy_word_goal.is_some() {
+            app.finish_word_goal_move(adopts_legacy_word_goal);
+        }
         app
+    }
+
+    /// Drops the goal from settings only once the board holding it is saved.
+    fn finish_word_goal_move(&mut self, board_took_goal: bool) {
+        if board_took_goal {
+            self.save_now();
+            if self.save_state != SaveState::Saved {
+                return;
+            }
+        }
+        self.save_settings_reporting_errors();
     }
 
     #[must_use]
@@ -2843,7 +2862,7 @@ impl PlannerApp {
                 ui.end_row();
                 ui.label("Words");
                 let word_count = self.board.manuscript_word_count();
-                if let Some(goal) = self.settings.word_goal {
+                if let Some(goal) = self.board.word_goal {
                     let pct = percent(word_count, goal).min(999.0);
                     ui.label(format!(
                         "{} / {} ({pct:.0}%)",
@@ -3380,7 +3399,7 @@ impl PlannerApp {
                     self.zen_mode = !self.zen_mode;
                 }
                 let words = scene.word_count();
-                let manuscript_text = if let Some(goal) = self.settings.word_goal {
+                let manuscript_text = if let Some(goal) = self.board.word_goal {
                     format!(
                         "{} / {} goal in manuscript",
                         format_count(total_words),
@@ -3938,7 +3957,7 @@ impl PlannerApp {
         let mut chosen_dictionary = self.settings.spellcheck_dictionary.0.clone();
         let mut chosen_thesaurus = self.settings.thesaurus;
         let mut chosen_goal = self
-            .settings
+            .board
             .word_goal
             .map_or_else(String::new, |g| g.to_string());
         let mut close = false;
@@ -3953,15 +3972,15 @@ impl PlannerApp {
             self.spellcheck_section(ui, &dictionaries, &mut chosen_dictionary);
             self.thesaurus_section(ui, chosen_dictionary.as_deref(), &mut chosen_thesaurus);
 
+            board_file_action = self.board_file_section(ui);
+
             let goal_label = field_label(ui, colors, "Manuscript word target");
             ui.add(
                 TextEdit::singleline(&mut chosen_goal)
-                    .hint_text("e.g. 80000 (optional)")
+                    .hint_text("e.g. 80000, for this novel (optional)")
                     .desired_width(ui.available_width()),
             )
             .labelled_by(goal_label);
-
-            board_file_action = self.board_file_section(ui);
 
             backup_action = self.github_section(ui, focus_github_token);
 
@@ -3993,10 +4012,10 @@ impl PlannerApp {
             self.set_thesaurus(ctx, chosen_thesaurus);
         }
         if let Ok(goal) = parse_word_goal(&chosen_goal)
-            && goal != self.settings.word_goal
+            && goal != self.board.word_goal
         {
-            self.settings.word_goal = goal;
-            self.save_settings_reporting_errors();
+            self.board.word_goal = goal;
+            self.mark_dirty();
         }
         match board_file_action {
             Some(BoardFileAction::Open) => self.open_board_file(),
