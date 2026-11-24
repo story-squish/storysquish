@@ -271,6 +271,9 @@
           </div>
         </div>
       </div>
+      <label class="check-field" id="sDayZeroField" title="Other scenes show how long before or after this one they happen, such as 2 days before or 3 months after.">
+        <input type="checkbox" id="sDayZero"> Day 0 scene
+      </label>
       <label class="check-field" title="A chapter runs until the next scene that starts one. Once any scene does, the first scene opens chapter 1.">
         <input type="checkbox" id="sChapterBreak"> <span id="sChapterLabel">Starts a chapter</span>
       </label>
@@ -451,7 +454,7 @@ function generateId() {
 
 function defaultBoard() {
   return {title: DEFAULT_TITLE, characters: [], scenes: [], locations: [], relationships: [], wordGoal: null,
-    calendar: false, absoluteDays: false};
+    calendar: false, absoluteDays: false, dayZero: null};
 }
 
 function isPlainObject(value) {
@@ -586,11 +589,12 @@ function parseBoard(text) {
     wordGoal: wordGoalField(data.wordGoal, "word goal"),
     calendar: boolField(data.calendar, "calendar") || storyStart !== null,
     absoluteDays: boolField(data.absoluteDays, "absolute days"),
+    dayZero: data.dayZero === null ? null : textField(data.dayZero, "day zero", null),
   };
 }
 
 // The desktop app leaves these out when unset, so do the same.
-const OMITTED_WHEN_NULL = new Set(["day", "date", "wordGoal"]);
+const OMITTED_WHEN_NULL = new Set(["day", "date", "wordGoal", "dayZero"]);
 const OMITTED_WHEN_FALSE = new Set(["dayHidden", "chapterBreak", "calendar", "absoluteDays"]);
 function serializeBoard(b) {
   return JSON.stringify(b, (key, value) => ((OMITTED_WHEN_NULL.has(key) && value === null) || (OMITTED_WHEN_FALSE.has(key) && value === false)
@@ -639,15 +643,66 @@ function shownDate(scene) { return scene.dayHidden ? null : scene.date; }
 // date} or null. On a calendar the earliest manuscript date is day 1, and
 // archived scenes keep their date but get no number. Mirrors Board::story_days.
 function storyDays(b = board) {
-  if (!b.calendar) return b.scenes.map(s => shownDay(s) === null ? null : {number: shownDay(s), date: null});
+  const dayZeroScene = b.dayZero === null ? undefined : b.scenes.find(s => s.id === b.dayZero);
+  if (!b.calendar) {
+    const zero = dayZeroScene ? shownDay(dayZeroScene) : null;
+    return b.scenes.map(s => {
+      const number = shownDay(s);
+      if (number === null) return null;
+      const fromDayZero = zero === null ? null
+        : {before: number < zero, elapsed: {years: 0, months: 0, days: Math.abs(number - zero)}};
+      return {number, date: null, fromDayZero};
+    });
+  }
   const dates = manuscriptDates(b);
+  const zero = dayZeroScene ? shownDate(dayZeroScene) : null;
   return b.scenes.map(s => {
     const date = shownDate(s);
     if (date === null) return null;
-    if (s.status === "Archived") return {number: null, date};
+    const fromDayZero = zero === null ? null : {before: date < zero, elapsed: elapsedBetween(zero, date)};
+    if (s.status === "Archived") return {number: null, date, fromDayZero};
     const ordinal = b.absoluteDays ? epochDays(date) - epochDays(dates[0]) : dates.indexOf(date);
-    return {number: ordinal + 1, date};
+    return {number: ordinal + 1, date, fromDayZero};
   });
+}
+
+function monthIndex(iso) { return Number(iso.slice(0, 4)) * 12 + Number(iso.slice(5, 7)) - 1; }
+
+// Keeps the day of the month where it can, else the month's last day.
+// Mirrors StoryDate::plus_months.
+function plusMonths(iso, months) {
+  const index = monthIndex(iso) + months;
+  const year = Math.floor(index / 12);
+  if (year < 1 || year > 9999) return null;
+  const pad = n => String(n).padStart(2, "0");
+  const yearMonth = `${String(year).padStart(4, "0")}-${pad(index - year * 12 + 1)}`;
+  for (let day = Number(iso.slice(8, 10)); day >= 28; day--) {
+    if (epochDays(`${yearMonth}-${pad(day)}`) !== null) return `${yearMonth}-${pad(day)}`;
+  }
+  return `${yearMonth}-${iso.slice(8, 10)}`;
+}
+
+// Whole years and months, then leftover days, stepping months from `from`
+// so 31 Mar back to 28 Feb is one month. Mirrors StoryDate::elapsed_until.
+function elapsedBetween(from, to) {
+  const direction = to < from ? -1 : 1;
+  const overshoots = months => {
+    const stepped = plusMonths(from, direction * months);
+    return stepped === null || (direction > 0 ? stepped > to : stepped < to);
+  };
+  let months = Math.abs(monthIndex(to) - monthIndex(from));
+  if (months > 0 && overshoots(months)) months -= 1;
+  const stepped = plusMonths(from, direction * months);
+  const days = stepped === null ? 0 : Math.abs(epochDays(to) - epochDays(stepped));
+  return {years: Math.floor(months / 12), months: months % 12, days};
+}
+
+// "day 0", "2 days before", "3 months 4 days after" or "1 year 2 months
+// before"; days are dropped once there are years. Mirrors DayZeroOffset::label.
+function dayZeroOffsetLabel({before, elapsed: {years, months, days}}) {
+  const units = years > 0 ? [[years, "year"], [months, "month"]] : [[months, "month"], [days, "day"]];
+  const amounts = units.filter(([count]) => count > 0).map(([count, unit]) => plural(count, unit));
+  return amounts.length ? `${amounts.join(" ")} ${before ? "before" : "after"}` : "day 0";
 }
 
 // Distinct shown dates of manuscript scenes, earliest first, optionally
@@ -668,10 +723,15 @@ function dateOfDayNumber(dates, number, absolute) {
   return isoFromEpochDays(epochDays(dates.at(-1)) + ordinal - (dates.length - 1));
 }
 
-// "Day 3", "Day 3 · Wed 18 Mar 2026" or, for archived scenes on a calendar, "Wed 18 Mar 2026".
-function storyDayLabel({number, date}) {
-  if (date === null) return `Day ${number}`;
-  return number === null ? longDateLabel(date) : `Day ${number} · ${longDateLabel(date)}`;
+// "Day 3", "Day 3 · Wed 18 Mar 2026" or, for archived scenes on a calendar,
+// "Wed 18 Mar 2026", with the distance from day 0 before the date when the
+// board has one: "Day 3 · 2 days before · Wed 18 Mar 2026".
+function storyDayLabel({number, date, fromDayZero}) {
+  return [
+    number === null ? null : `Day ${number}`,
+    fromDayZero === null ? null : dayZeroOffsetLabel(fromDayZero),
+    date === null ? null : longDateLabel(date),
+  ].filter(part => part !== null).join(" · ");
 }
 
 function sceneIndex(id) { return board.scenes.findIndex(s => s.id === id); }
@@ -1525,6 +1585,7 @@ function deleteCharacter(id) {
 function confirmDeleteScene(id) {
   confirmDialog("Delete this scene?", () => {
     board.scenes = board.scenes.filter(s => s.id !== id);
+    if (board.dayZero === id) board.dayZero = null;
     if (isSelected("scene", id)) selected = null;
     saveNow();
   });
@@ -1938,6 +1999,8 @@ function renderSceneInspector() {
   syncValue($("sDay"), dayNumber === null ? "" : String(dayNumber));
   $("sDay").title = board.calendar ? "Changing the day moves the scene's date to match" : "";
   $("sToday").hidden = !board.calendar || shownDate(scene) === null;
+  $("sDayZeroField").hidden = !$("sDated").checked;
+  $("sDayZero").checked = board.dayZero === scene.id;
   const place = chapters()[index];
   $("sChapterBreak").checked = scene.chapterBreak;
   $("sChapterLabel").textContent = place?.starts ? `Starts a chapter (chapter ${place.number})` : "Starts a chapter";
@@ -3150,6 +3213,7 @@ $("sPov").addEventListener("change", withSelectedScene((s, v) => { s.pov = v; })
 $("sAct").addEventListener("change", withSelectedScene((s, v) => { s.act = v; }));
 $("sLocation").addEventListener("change", withSelectedScene((s, v) => { s.location = v; }));
 $("sChapterBreak").addEventListener("change", withSelectedScene(s => { s.chapterBreak = $("sChapterBreak").checked; }));
+$("sDayZero").addEventListener("change", withSelectedScene(s => { board.dayZero = $("sDayZero").checked ? s.id : null; }));
 // Unticking only hides the day and date, so an accidental click loses nothing.
 $("sDated").addEventListener("change", withSelectedScene(s => {
   s.dayHidden = !$("sDated").checked;

@@ -92,6 +92,10 @@ sudo apt-get install libxcb-render0-dev libxcb-shape0-dev \
   editable and moves its date to match, and **Today** dates it today. Cards,
   the timeline and the outline show both day and date. Without the calendar, days are numbered by
   hand, and unticking a scene's day only hides it
+- Optional **Day 0 scene** (scene inspector): other scenes add how long before
+  or after it they happen, such as `Day 3 · 2 days before`, `3 months after`
+  or `1 year 2 months before`, counted by calendar on a calendar board and in
+  days otherwise. An archived scene can serve as an off-page day 0
 - **Relationships** view: a graph of directed, labelled relationships between
   characters (added in the character inspector)
 - Characters with role, gender, goal and notes; locations with notes

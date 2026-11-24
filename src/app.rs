@@ -3244,6 +3244,8 @@ impl PlannerApp {
             story_day: self.board.story_days()[index],
             other_scenes: self.board.calendar_days(Some(index)),
         });
+        let uses_calendar = self.board.calendar;
+        let mut is_day_zero = self.board.day_zero.as_ref() == Some(&id);
         let in_write_view = self.view == View::Write;
         let is_last = index + 1 == self.board.scenes.len();
         let chapter = self.board.chapters()[index];
@@ -3284,29 +3286,18 @@ impl PlannerApp {
 
         changed |= classification_fields(ui, colors, scene, &characters);
         changed |= setting_fields(ui, colors, scene, &locations, calendar);
+        let day_zero_toggled = day_zero_field(ui, scene, uses_calendar, &mut is_day_zero);
         changed |= chapter_break_field(ui, scene, chapter);
 
         ui.add_space(8.0);
         let write = word_count_row(ui, colors, scene, !in_write_view);
+        if day_zero_toggled {
+            self.board.day_zero = is_day_zero.then(|| id.clone());
+            changed = true;
+        }
 
         ui.add_space(10.0);
-        let mut shift = None;
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(index > 0, egui::Button::new("Move earlier"))
-                .on_hover_text(ui.ctx().format_shortcut(&MOVE_SCENE_EARLIER))
-                .clicked()
-            {
-                shift = Some(-1);
-            }
-            if ui
-                .add_enabled(!is_last, egui::Button::new("Move later"))
-                .on_hover_text(ui.ctx().format_shortcut(&MOVE_SCENE_LATER))
-                .clicked()
-            {
-                shift = Some(1);
-            }
-        });
+        let shift = scene_move_buttons(ui, index > 0, !is_last);
 
         ui.add_space(6.0);
         let mut duplicate = false;
@@ -4745,6 +4736,47 @@ fn write_heading(index: usize, chapter: Option<ChapterPlace>, scene: &Scene) -> 
         Some(chapter) => format!("Chapter {} · {scene_heading}", chapter.number),
         None => scene_heading,
     }
+}
+
+fn scene_move_buttons(ui: &mut Ui, can_move_earlier: bool, can_move_later: bool) -> Option<isize> {
+    let mut shift = None;
+    ui.horizontal(|ui| {
+        if ui
+            .add_enabled(can_move_earlier, egui::Button::new("Move earlier"))
+            .on_hover_text(ui.ctx().format_shortcut(&MOVE_SCENE_EARLIER))
+            .clicked()
+        {
+            shift = Some(-1);
+        }
+        if ui
+            .add_enabled(can_move_later, egui::Button::new("Move later"))
+            .on_hover_text(ui.ctx().format_shortcut(&MOVE_SCENE_LATER))
+            .clicked()
+        {
+            shift = Some(1);
+        }
+    });
+    shift
+}
+
+/// Offered only while the scene is on the timeline, since day 0 needs a
+/// day or date to count from.
+fn day_zero_field(ui: &mut Ui, scene: &Scene, uses_calendar: bool, is_day_zero: &mut bool) -> bool {
+    let on_timeline = if uses_calendar {
+        scene.shown_date().is_some()
+    } else {
+        scene.shown_day().is_some()
+    };
+    if !on_timeline {
+        return false;
+    }
+    ui.add_space(4.0);
+    ui.checkbox(is_day_zero, "Day 0 scene")
+        .on_hover_text(
+            "Other scenes show how long before or after this one they happen, \
+             such as 2 days before or 3 months after.",
+        )
+        .changed()
 }
 
 fn chapter_break_field(ui: &mut Ui, scene: &mut Scene, chapter: Option<ChapterPlace>) -> bool {

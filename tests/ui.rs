@@ -2622,3 +2622,55 @@ fn today_button_dates_the_scene_today() {
         Some(storysquish::calendar::StoryDate::today())
     );
 }
+
+#[test]
+fn day_zero_scene_labels_the_others_by_distance_from_it() {
+    let board = calendar_board(&[
+        ("Rain", "2026-03-14"),
+        ("Storm", "2026-03-16"),
+        ("Thaw", "2026-06-16"),
+    ]);
+    let Fixture { mut harness, .. } = launch(board);
+    harness.get_by_label("Storm").click();
+    harness.run();
+    checkbox(&harness, "Day 0 scene").click();
+    harness.run();
+
+    let board = harness.state().board();
+    assert_eq!(board.day_zero, Some(board.scenes[1].id.clone()));
+    assert!(
+        harness
+            .query_by_label("Day 1 · 2 days before · Sat 14 Mar 2026")
+            .is_some()
+    );
+    assert!(
+        harness
+            .query_by_label("Day 2 · day 0 · Mon 16 Mar 2026")
+            .is_some()
+    );
+    assert!(
+        harness
+            .query_by_label("Day 3 · 3 months after · Tue 16 Jun 2026")
+            .is_some()
+    );
+
+    checkbox(&harness, "Day 0 scene").click();
+    harness.run();
+    assert_eq!(harness.state().board().day_zero, None);
+    assert!(harness.query_by_label("Day 1 · Sat 14 Mar 2026").is_some());
+}
+
+#[test]
+fn day_zero_is_offered_only_for_scenes_on_the_timeline() {
+    let board = board_with_scenes(&["Rain"]);
+    let Fixture { mut harness, .. } = launch(board);
+    harness.get_by_label("Rain").click();
+    harness.run();
+    assert!(harness.query_by_label("Day 0 scene").is_none());
+
+    checkbox(&harness, "STORY DAY").click();
+    harness.run();
+    checkbox(&harness, "Day 0 scene").click();
+    harness.run();
+    assert!(harness.query_by_label("Day 1 · day 0").is_some());
+}

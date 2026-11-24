@@ -3,7 +3,7 @@ use std::fmt;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::calendar::{self, StoryDate};
+use crate::calendar::{self, Elapsed, StoryDate};
 
 pub const DEFAULT_TITLE: &str = "Untitled Novel";
 
@@ -182,6 +182,58 @@ impl Scene {
 pub struct StoryDay {
     pub number: Option<i32>,
     pub date: Option<StoryDate>,
+    pub from_day_zero: Option<DayZeroOffset>,
+}
+
+/// How long before or after the board's day 0 scene a scene happens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DayZeroOffset {
+    pub before: bool,
+    pub elapsed: Elapsed,
+}
+
+impl DayZeroOffset {
+    fn between_days(day_zero: i32, day: i32) -> Self {
+        Self {
+            before: day < day_zero,
+            elapsed: Elapsed {
+                days: (i64::from(day) - i64::from(day_zero)).abs(),
+                ..Elapsed::default()
+            },
+        }
+    }
+
+    fn between_dates(day_zero: StoryDate, date: StoryDate) -> Self {
+        Self {
+            before: date < day_zero,
+            elapsed: day_zero.elapsed_until(date),
+        }
+    }
+
+    /// `day 0`, `2 days before`, `3 months 4 days after` or
+    /// `1 year 2 months before`; days are dropped once there are years.
+    pub fn label(self) -> String {
+        let Elapsed {
+            years,
+            months,
+            days,
+        } = self.elapsed;
+        let units = if years > 0 {
+            [(years, "year"), (months, "month")]
+        } else {
+            [(months, "month"), (days, "day")]
+        };
+        let amounts: Vec<String> = units
+            .into_iter()
+            .filter(|(count, _)| *count > 0)
+            .map(|(count, unit)| format!("{count} {unit}{}", if count == 1 { "" } else { "s" }))
+            .collect();
+        if amounts.is_empty() {
+            return "day 0".to_owned();
+        }
+        let direction = if self.before { "before" } else { "after" };
+        format!("{} {direction}", amounts.join(" "))
+    }
 }
 
 /// Distinct manuscript dates in order, and how they map to day numbers.
@@ -225,14 +277,17 @@ impl CalendarDays {
 
 impl StoryDay {
     /// `Day 3`, `Day 3 · Wed 18 Mar 2026` or, for archived scenes on a
-    /// calendar, `Wed 18 Mar 2026`.
+    /// calendar, `Wed 18 Mar 2026`, with the distance from day 0 before the
+    /// date when the board has one: `Day 3 · 2 days before · Wed 18 Mar 2026`.
     pub fn label(self) -> String {
-        match (self.number, self.date) {
-            (Some(number), Some(date)) => format!("Day {number} · {}", date.long_label()),
-            (Some(number), None) => format!("Day {number}"),
-            (None, Some(date)) => date.long_label(),
-            (None, None) => String::new(),
-        }
+        let number = self.number.map(|number| format!("Day {number}"));
+        let offset = self.from_day_zero.map(DayZeroOffset::label);
+        let date = self.date.map(StoryDate::long_label);
+        [number, offset, date]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" · ")
     }
 }
 
@@ -268,6 +323,9 @@ pub struct Board {
     /// counting only the dates that have scenes.
     #[serde(rename = "absoluteDays", default, skip_serializing_if = "is_false")]
     pub absolute_days: bool,
+    /// Scene the others are labeled against, as so long before or after it.
+    #[serde(rename = "dayZero", default, skip_serializing_if = "Option::is_none")]
+    pub day_zero: Option<Id>,
 }
 
 /// Board as read from disk, before migrating older calendar data.
@@ -288,6 +346,8 @@ struct StoredBoard {
     calendar: bool,
     #[serde(rename = "absoluteDays", default)]
     absolute_days: bool,
+    #[serde(rename = "dayZero", default)]
+    day_zero: Option<Id>,
     /// The first calendar stored a start date and kept scene days as
     /// offsets from it; those become per-scene dates.
     #[serde(rename = "storyStart", default)]
@@ -313,6 +373,7 @@ impl From<StoredBoard> for Board {
             word_goal: stored.word_goal,
             calendar: stored.calendar || stored.story_start.is_some(),
             absolute_days: stored.absolute_days,
+            day_zero: stored.day_zero,
         }
     }
 }
@@ -328,6 +389,7 @@ impl Default for Board {
             word_goal: None,
             calendar: false,
             absolute_days: false,
+            day_zero: None,
         }
     }
 }
@@ -364,6 +426,14 @@ impl Board {
 
     pub fn delete_scene(&mut self, id: &Id) {
         self.scenes.retain(|s| &s.id != id);
+        if self.day_zero.as_ref() == Some(id) {
+            self.day_zero = None;
+        }
+    }
+
+    fn day_zero_scene(&self) -> Option<&Scene> {
+        let id = self.day_zero.as_ref()?;
+        self.scenes.iter().find(|s| &s.id == id)
     }
 
     /// Inserts a copy with a fresh id right after the original.
@@ -546,6 +616,7 @@ impl Board {
     /// for scenes without a (shown) day or date.
     pub fn story_days(&self) -> Vec<Option<StoryDay>> {
         if !self.calendar {
+            let day_zero = self.day_zero_scene().and_then(Scene::shown_day);
             return self
                 .scenes
                 .iter()
@@ -553,11 +624,14 @@ impl Board {
                     s.shown_day().map(|number| StoryDay {
                         number: Some(number),
                         date: None,
+                        from_day_zero: day_zero
+                            .map(|zero| DayZeroOffset::between_days(zero, number)),
                     })
                 })
                 .collect();
         }
         let days = self.calendar_days(None);
+        let day_zero = self.day_zero_scene().and_then(Scene::shown_date);
         self.scenes
             .iter()
             .map(|s| {
@@ -567,6 +641,7 @@ impl Board {
                         .then(|| days.number_of(date))
                         .flatten(),
                     date: Some(date),
+                    from_day_zero: day_zero.map(|zero| DayZeroOffset::between_dates(zero, date)),
                 })
             })
             .collect()
@@ -1533,6 +1608,90 @@ mod tests {
             scene_with(&mut board, "", |s| s.date = Some(date(text)));
         }
         board
+    }
+
+    #[test]
+    fn calendar_labels_count_from_the_day_zero_scene() {
+        let mut board = calendar_board(&[
+            "2026-03-16",
+            "2026-03-14",
+            "2025-12-16",
+            "2025-03-16",
+            "2026-06-20",
+            "2026-03-16",
+        ]);
+        board.day_zero = Some(board.scenes[0].id.clone());
+        assert_eq!(
+            day_labels(&board),
+            [
+                "Day 4 · day 0 · Mon 16 Mar 2026",
+                "Day 3 · 2 days before · Sat 14 Mar 2026",
+                "Day 2 · 3 months before · Tue 16 Dec 2025",
+                "Day 1 · 1 year before · Sun 16 Mar 2025",
+                "Day 5 · 3 months 4 days after · Sat 20 Jun 2026",
+                "Day 4 · day 0 · Mon 16 Mar 2026",
+            ]
+        );
+    }
+
+    #[test]
+    fn hand_numbered_days_count_from_the_day_zero_scene() {
+        let mut board = Board::default();
+        for day in [7, 5, 8, 7] {
+            scene_with(&mut board, "", |s| s.day = Some(day));
+        }
+        scene_with(&mut board, "", |_| {});
+        board.day_zero = Some(board.scenes[0].id.clone());
+        assert_eq!(
+            day_labels(&board),
+            [
+                "Day 7 · day 0",
+                "Day 5 · 2 days before",
+                "Day 8 · 1 day after",
+                "Day 7 · day 0",
+                "",
+            ]
+        );
+    }
+
+    #[test]
+    fn archived_day_zero_still_anchors_but_hidden_one_does_not() {
+        let mut board = calendar_board(&["2026-03-10", "2026-03-16"]);
+        board.scenes[0].status = Status::Archived;
+        board.day_zero = Some(board.scenes[0].id.clone());
+        assert_eq!(
+            day_labels(&board),
+            [
+                "day 0 · Tue 10 Mar 2026",
+                "Day 1 · 6 days after · Mon 16 Mar 2026"
+            ]
+        );
+
+        board.scenes[0].day_hidden = true;
+        assert_eq!(day_labels(&board), ["", "Day 1 · Mon 16 Mar 2026"]);
+    }
+
+    #[test]
+    fn deleting_the_day_zero_scene_clears_it() {
+        let mut board = calendar_board(&["2026-03-10", "2026-03-16"]);
+        let id = board.scenes[0].id.clone();
+        board.day_zero = Some(id.clone());
+        board.delete_scene(&board.scenes[1].id.clone());
+        assert_eq!(board.day_zero, Some(id.clone()));
+        board.delete_scene(&id);
+        assert_eq!(board.day_zero, None);
+    }
+
+    #[test]
+    fn day_zero_round_trips_and_is_omitted_when_unset() {
+        let mut board = calendar_board(&["2026-03-10"]);
+        let json = serde_json::to_string(&board).unwrap();
+        assert!(!json.contains("dayZero"));
+
+        board.day_zero = Some(board.scenes[0].id.clone());
+        let json = serde_json::to_string(&board).unwrap();
+        assert!(json.contains("dayZero"));
+        assert_eq!(serde_json::from_str::<Board>(&json).unwrap(), board);
     }
 
     #[test]

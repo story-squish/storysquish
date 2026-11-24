@@ -15,6 +15,15 @@ const WEEKDAY_NAMES: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun
 
 const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
 
+/// Distance between two dates in whole years and months, then the days
+/// left over.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Elapsed {
+    pub years: i64,
+    pub months: i64,
+    pub days: i64,
+}
+
 /// A proleptic Gregorian date, stored in board files as `YYYY-MM-DD`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StoryDate {
@@ -73,6 +82,47 @@ impl StoryDate {
 
     pub fn days_until(self, other: Self) -> i64 {
         other.days_since_epoch() - self.days_since_epoch()
+    }
+
+    /// Keeps the day of the month where it can, like `with_year_month_day`.
+    pub fn plus_months(self, months: i64) -> Option<Self> {
+        let month_index = self.month_index().checked_add(months)?;
+        let year = i32::try_from(month_index.div_euclid(12))
+            .ok()
+            .filter(|year| YEARS.contains(year))?;
+        let month = u8::try_from(month_index.rem_euclid(12) + 1).ok()?;
+        Some(Self::with_year_month_day(year, month, self.day))
+    }
+
+    /// How far `other` lies from `self`, stepping months from `self`, so
+    /// 31 Mar back to 28 Feb is exactly one month.
+    pub fn elapsed_until(self, other: Self) -> Elapsed {
+        let direction = if other < self { -1 } else { 1 };
+        let overshoots = |months: i64| {
+            self.plus_months(direction * months).is_none_or(|stepped| {
+                if direction > 0 {
+                    stepped > other
+                } else {
+                    stepped < other
+                }
+            })
+        };
+        let mut months = (other.month_index() - self.month_index()).abs();
+        if months > 0 && overshoots(months) {
+            months -= 1;
+        }
+        let days = self
+            .plus_months(direction * months)
+            .map_or(0, |stepped| stepped.days_until(other).abs());
+        Elapsed {
+            years: months / 12,
+            months: months % 12,
+            days,
+        }
+    }
+
+    fn month_index(self) -> i64 {
+        i64::from(self.year) * 12 + i64::from(self.month) - 1
     }
 
     /// For display, e.g. `Mon 16 Mar 2026`.
@@ -262,6 +312,58 @@ mod tests {
         assert_eq!(date("2026-03-16").long_label(), "Mon 16 Mar 2026");
         assert_eq!(date("1970-01-01").long_label(), "Thu 1 Jan 1970");
         assert_eq!(date("1600-02-29").long_label(), "Tue 29 Feb 1600");
+    }
+
+    fn elapsed(years: i64, months: i64, days: i64) -> Elapsed {
+        Elapsed {
+            years,
+            months,
+            days,
+        }
+    }
+
+    #[test]
+    fn elapsed_counts_years_and_months_before_days() {
+        let start = date("2026-03-16");
+        assert_eq!(start.elapsed_until(start), elapsed(0, 0, 0));
+        assert_eq!(start.elapsed_until(date("2026-03-18")), elapsed(0, 0, 2));
+        assert_eq!(start.elapsed_until(date("2026-03-14")), elapsed(0, 0, 2));
+        assert_eq!(start.elapsed_until(date("2026-06-16")), elapsed(0, 3, 0));
+        assert_eq!(start.elapsed_until(date("2025-12-16")), elapsed(0, 3, 0));
+        assert_eq!(start.elapsed_until(date("2026-06-15")), elapsed(0, 2, 30));
+        assert_eq!(start.elapsed_until(date("2025-03-16")), elapsed(1, 0, 0));
+        assert_eq!(start.elapsed_until(date("2028-05-20")), elapsed(2, 2, 4));
+    }
+
+    #[test]
+    fn elapsed_steps_months_from_the_start_and_clamps_month_ends() {
+        assert_eq!(
+            date("2026-03-31").elapsed_until(date("2026-02-28")),
+            elapsed(0, 1, 0)
+        );
+        assert_eq!(
+            date("2026-01-31").elapsed_until(date("2026-02-28")),
+            elapsed(0, 1, 0)
+        );
+        assert_eq!(
+            date("2026-01-31").elapsed_until(date("2026-03-01")),
+            elapsed(0, 1, 1)
+        );
+        assert_eq!(
+            date("2028-02-29").elapsed_until(date("2029-02-28")),
+            elapsed(1, 0, 0)
+        );
+    }
+
+    #[test]
+    fn plus_months_stays_within_supported_years() {
+        assert_eq!(date("2026-11-30").plus_months(3), Some(date("2027-02-28")));
+        assert_eq!(
+            date("2026-01-15").plus_months(-13),
+            Some(date("2024-12-15"))
+        );
+        assert_eq!(date("0001-01-01").plus_months(-1), None);
+        assert_eq!(date("9999-12-01").plus_months(1), None);
     }
 
     #[test]
