@@ -129,9 +129,8 @@
   .modal .message{white-space:pre-wrap;overflow-wrap:anywhere;margin:0 0 12px}
   .swatch{display:inline-flex;border:1px solid var(--line);flex:none}
   .swatch span{width:10px;height:14px}
-  .scheme-list{display:flex;flex-direction:column;gap:2px;max-height:50vh;overflow:auto}
-  .scheme{display:flex;align-items:center;gap:8px;text-align:left;border-color:transparent;background:transparent}
-  .scheme.selected{background:var(--act);border-color:var(--accent)}
+  .scheme-picker{display:flex;align-items:center;gap:8px}
+  .scheme-picker select{flex:1;min-width:0}
   @media (max-width:760px){
     main{flex-direction:column;overflow:auto}
     #sidebar,#inspector{width:auto;border:0;overflow:visible}
@@ -2230,33 +2229,41 @@ function settingsDialog() {
     draw(box) {
       const heading = document.createElement("h2");
       heading.textContent = "Settings";
-      const label = document.createElement("div");
+      const label = document.createElement("label");
       label.className = "field-label";
+      label.htmlFor = "schemeSelect";
       label.textContent = "Color scheme";
-      const list = document.createElement("div");
-      list.className = "scheme-list";
-      list.setAttribute("role", "listbox");
-      list.setAttribute("aria-label", "Color scheme");
-      for (const scheme of COLOR_SCHEMES) {
-        const chosen = scheme.key === settings.colorScheme;
-        const option = button("", `scheme${chosen ? " selected" : ""}`, () => {
-          setColorScheme(scheme.key);
-          drawModal();
-          box.ownerDocument.querySelector(".scheme.selected")?.focus();
-        });
-        option.setAttribute("role", "option");
-        option.setAttribute("aria-selected", String(chosen));
-        option.innerHTML = `<span class="swatch">${[scheme.header, scheme.board, scheme.card, scheme.accent]
-          .map(fill => `<span style="background:${fill}"></span>`).join("")}</span>${esc(scheme.name)}`;
-        list.append(option);
-      }
+      const picker = document.createElement("div");
+      picker.className = "scheme-picker";
+      const swatch = schemeSwatch(schemeByKey(settings.colorScheme));
+      const select = document.createElement("select");
+      select.id = "schemeSelect";
+      for (const scheme of COLOR_SCHEMES) select.add(new Option(scheme.name, scheme.key));
+      select.value = settings.colorScheme;
+      select.addEventListener("change", () => {
+        setColorScheme(select.value);
+        drawModal();
+        document.getElementById("schemeSelect")?.focus();
+      });
+      picker.append(swatch, select);
       const status = hint(settingsSaveError ?? "Saved in this browser's storage.");
       if (settingsSaveError) status.style.color = "var(--danger)";
-      box.append(heading, label, list, status, ...boardFileSection(), ...wordGoalSection(), ...storyCalendarSection(), ...backupSection(), ...githubSection(),
+      box.append(heading, label, picker, status, ...boardFileSection(), ...wordGoalSection(), ...storyCalendarSection(), ...backupSection(), ...githubSection(),
         button("Close", "", closeModal));
       box.style.maxWidth = "420px";
     },
   });
+}
+
+function schemeSwatch(scheme) {
+  const swatch = document.createElement("span");
+  swatch.className = "swatch";
+  for (const fill of [scheme.header, scheme.board, scheme.card, scheme.accent]) {
+    const stripe = document.createElement("span");
+    stripe.style.background = fill;
+    swatch.append(stripe);
+  }
+  return swatch;
 }
 
 function hint(text) {
