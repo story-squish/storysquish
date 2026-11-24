@@ -131,10 +131,6 @@ pub fn date_of_day(story_start: StoryDate, day: i32) -> Option<StoryDate> {
     story_start.plus_days(i64::from(day) - 1)
 }
 
-pub fn day_of_date(story_start: StoryDate, date: StoryDate) -> Option<i32> {
-    i32::try_from(story_start.days_until(date) + 1).ok()
-}
-
 pub fn days_in_month(year: i32, month: u8) -> u8 {
     match month {
         2 if is_leap_year(year) => 29,

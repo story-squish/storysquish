@@ -9,6 +9,7 @@ pub fn to_markdown(board: &Board) -> String {
     let _ = writeln!(out, "# {}\n", novel_title(board));
 
     let chapters = board.chapters();
+    let story_days = board.story_days();
     let scene_level = if chapters.iter().any(Option::is_some) {
         "###"
     } else {
@@ -41,8 +42,8 @@ pub fn to_markdown(board: &Board) -> String {
         if let Some(location) = scene.location.as_ref().and_then(|id| board.location(id)) {
             facts.push(format!("Location: {}", location.name.trim()));
         }
-        if let Some(day) = scene.day {
-            facts.push(board.day_label(day));
+        if let Some(day) = story_days[index] {
+            facts.push(day.label());
         }
         let _ = writeln!(out, "_{}_\n", facts.join(" · "));
 
