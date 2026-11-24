@@ -2,10 +2,24 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use storysquish::app::PlannerApp;
 use storysquish::model::Board;
+use storysquish::settings::SpellcheckDictionary;
 use storysquish::theme::ColorScheme;
 use tempfile::TempDir;
 
 const WINDOW: egui::Vec2 = egui::vec2(1200.0, 800.0);
+
+/// Pins the Auto dictionary to US English, so tests never depend on the
+/// keyboard layout of the machine running them.
+fn new_app(
+    cc: &eframe::CreationContext<'_>,
+    board: Board,
+    path: std::path::PathBuf,
+    settings_path: std::path::PathBuf,
+    startup_alert: Option<String>,
+) -> PlannerApp {
+    PlannerApp::new(cc, board, path, settings_path, startup_alert)
+        .with_input_language(|| "en_US".to_owned())
+}
 
 struct Fixture {
     harness: Harness<'static, PlannerApp>,
@@ -26,7 +40,7 @@ fn launch_with_settings(board: Board, settings_json: Option<&str>) -> Fixture {
     }
     let mut harness = Harness::builder()
         .with_size(WINDOW)
-        .build_eframe(move |cc| PlannerApp::new(cc, board, path, settings_path, None));
+        .build_eframe(move |cc| new_app(cc, board, path, settings_path, None));
     harness.run();
     Fixture { harness, dir }
 }
@@ -322,7 +336,7 @@ fn a_board_file_named_after_its_title_follows_a_new_title() {
     let settings_path = dir.path().join("settings.json");
     let mut harness = Harness::builder()
         .with_size(WINDOW)
-        .build_eframe(move |cc| PlannerApp::new(cc, board, path, settings_path, None));
+        .build_eframe(move |cc| new_app(cc, board, path, settings_path, None));
     harness.run();
     assert_eq!(harness.state().board_path(), dir.path().join("Dune.json"));
 
@@ -358,7 +372,7 @@ fn a_board_file_named_by_hand_keeps_its_name() {
     let settings_path = dir.path().join("settings.json");
     let mut harness = Harness::builder()
         .with_size(WINDOW)
-        .build_eframe(move |cc| PlannerApp::new(cc, board, path, settings_path, None));
+        .build_eframe(move |cc| new_app(cc, board, path, settings_path, None));
     harness.run();
 
     harness.get_all_by_value("Dune").next().unwrap().focus();
@@ -528,9 +542,7 @@ fn saved_color_scheme_is_restored_on_launch() {
     let board_path = dir.path().join("board.json");
     let harness = Harness::builder()
         .with_size(WINDOW)
-        .build_eframe(move |cc| {
-            PlannerApp::new(cc, Board::default(), board_path, settings_path, None)
-        });
+        .build_eframe(move |cc| new_app(cc, Board::default(), board_path, settings_path, None));
 
     assert_eq!(harness.state().color_scheme(), ColorScheme::Ember);
 }
@@ -892,7 +904,7 @@ fn launch_connected(board: Board) -> (Harness<'static, PlannerApp>, TempDir) {
     let board_path = dir.path().join("board.json");
     let mut harness = Harness::builder()
         .with_size(WINDOW)
-        .build_eframe(move |cc| PlannerApp::new(cc, board, board_path, settings_path, None));
+        .build_eframe(move |cc| new_app(cc, board, board_path, settings_path, None));
     harness.run();
     (harness, dir)
 }
@@ -963,7 +975,7 @@ fn new_from_an_opened_backup_starts_outside_the_backups_directory() {
     let settings_path = dir.path().join("settings.json");
     let mut harness = Harness::builder()
         .with_size(WINDOW)
-        .build_eframe(move |cc| PlannerApp::new(cc, board, backup, settings_path, None));
+        .build_eframe(move |cc| new_app(cc, board, backup, settings_path, None));
     harness.run();
 
     harness.get_by_label("New").click();
@@ -1031,7 +1043,7 @@ fn open_local_switches_back_to_the_previous_board() {
     let mut harness = Harness::builder()
         .with_size(WINDOW)
         .build_eframe(move |cc| {
-            PlannerApp::new(
+            new_app(
                 cc,
                 board_with_scenes(&["Arrakis"]),
                 open_path,
@@ -1102,7 +1114,7 @@ fn open_local_offers_boards_linked_to_a_repo_with_a_github_connection() {
     let mut harness = Harness::builder()
         .with_size(WINDOW)
         .build_eframe(move |cc| {
-            PlannerApp::new(
+            new_app(
                 cc,
                 board_with_scenes(&["Arrakis"]),
                 open_path,
@@ -1334,8 +1346,7 @@ fn reopening_from_cloud_keeps_edits_made_just_before_switching_away() {
     let mut harness = Harness::builder()
         .with_size(WINDOW)
         .build_eframe(move |cc| {
-            PlannerApp::new(cc, novel, open_path, settings_path, None)
-                .with_github_api_base(&api_base)
+            new_app(cc, novel, open_path, settings_path, None).with_github_api_base(&api_base)
         });
     harness.run();
 
@@ -1498,8 +1509,7 @@ fn launch_with_fake_github(
     let mut harness = Harness::builder()
         .with_size(WINDOW)
         .build_eframe(move |cc| {
-            PlannerApp::new(cc, board, board_path, settings_path, None)
-                .with_github_api_base(&api_base)
+            new_app(cc, board, board_path, settings_path, None).with_github_api_base(&api_base)
         });
     harness.run();
     (harness, dir)
@@ -1515,7 +1525,7 @@ fn launch_first_time_with_fake_github() -> (Harness<'static, PlannerApp>, TempDi
     let mut harness = Harness::builder()
         .with_size(WINDOW)
         .build_eframe(move |cc| {
-            PlannerApp::new(cc, Board::default(), board_path, settings_path, None)
+            new_app(cc, Board::default(), board_path, settings_path, None)
                 .with_github_api_base(&api_base)
                 .offering_repo_on_first_change()
         });
@@ -1835,8 +1845,7 @@ fn launch_auto_backup(
     let mut harness = Harness::builder()
         .with_size(WINDOW)
         .build_eframe(move |cc| {
-            PlannerApp::new(cc, dune, board_path, settings_path, None)
-                .with_github_api_base(&api_base)
+            new_app(cc, dune, board_path, settings_path, None).with_github_api_base(&api_base)
         });
     harness.run();
     (harness, dir)
@@ -2059,7 +2068,10 @@ fn choosing_a_dictionary_in_settings_saves_and_loads_it() {
     harness.run();
 
     let saved = storysquish::settings::load(&settings_path).unwrap();
-    assert_eq!(saved.spellcheck_dictionary.0.as_deref(), Some("en_GB"));
+    assert_eq!(
+        saved.spellcheck_dictionary,
+        SpellcheckDictionary::Fixed("en_GB".to_owned())
+    );
     wait_for_spellcheck(&mut harness);
 
     spellcheck_picker(&harness);
@@ -2068,7 +2080,7 @@ fn choosing_a_dictionary_in_settings_saves_and_loads_it() {
     harness.run();
 
     let saved = storysquish::settings::load(&settings_path).unwrap();
-    assert_eq!(saved.spellcheck_dictionary.0, None);
+    assert_eq!(saved.spellcheck_dictionary, SpellcheckDictionary::Off);
     assert!(!harness.state().spellcheck_ready());
 }
 
@@ -2120,7 +2132,7 @@ fn choosing_a_downloadable_dictionary_downloads_and_uses_it() {
     let mut harness = Harness::builder()
         .with_size(WINDOW)
         .build_eframe(move |cc| {
-            PlannerApp::new(cc, board, board_path, app_settings_path, None)
+            new_app(cc, board, board_path, app_settings_path, None)
                 .with_dictionary_download_base(&base)
         });
     harness.run();
@@ -2140,7 +2152,10 @@ fn choosing_a_downloadable_dictionary_downloads_and_uses_it() {
     wait_for_spellcheck(&mut harness);
 
     let saved = storysquish::settings::load(&settings_path).unwrap();
-    assert_eq!(saved.spellcheck_dictionary.0.as_deref(), Some("de_DE"));
+    assert_eq!(
+        saved.spellcheck_dictionary,
+        SpellcheckDictionary::Fixed("de_DE".to_owned())
+    );
     let dictionaries = dir.path().join("config/storysquish/dictionaries");
     assert!(dictionaries.join("de_DE.aff").is_file());
     assert!(dictionaries.join("de_DE.dic").is_file());
@@ -2172,7 +2187,7 @@ fn enabling_the_thesaurus_downloads_it_and_offers_synonyms() {
     let mut harness = Harness::builder()
         .with_size(WINDOW)
         .build_eframe(move |cc| {
-            PlannerApp::new(cc, board, board_path, app_settings_path, None)
+            new_app(cc, board, board_path, app_settings_path, None)
                 .with_thesaurus_download_base(&base)
         });
     harness.run();
@@ -2212,6 +2227,59 @@ fn enabling_the_thesaurus_downloads_it_and_offers_synonyms() {
     labelled_text_input(&harness, "SCENE 01  Rain").click_secondary();
     harness.run();
     assert!(harness.query_by_label("world").is_some());
+}
+
+#[test]
+fn auto_spellcheck_follows_the_keyboard_layout() {
+    let layout_dictionary = std::sync::Arc::new(std::sync::Mutex::new("en_US".to_owned()));
+    let detected = std::sync::Arc::clone(&layout_dictionary);
+    let dir = tempfile::tempdir().unwrap();
+    let board = board_with_scenes(&["Rain"]);
+    let board_path = dir.path().join("board.json");
+    let settings_path = dir.path().join("config/storysquish/settings.json");
+    let mut harness = Harness::builder()
+        .with_size(WINDOW)
+        .build_eframe(move |cc| {
+            PlannerApp::new(cc, board, board_path, settings_path, None)
+                .with_input_language(move || detected.lock().unwrap().clone())
+        });
+    harness.run();
+    wait_for_spellcheck(&mut harness);
+    open_prose(&mut harness, "colour");
+    labelled_text_input(&harness, "SCENE 01  Rain").click_secondary();
+    harness.run();
+    assert!(
+        harness
+            .query_by_label("Add “colour” to dictionary")
+            .is_some()
+    );
+
+    *layout_dictionary.lock().unwrap() = "en_GB".to_owned();
+    harness.get_by_label("Settings").click();
+    harness.run();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while harness
+        .query_by(|node| node.value().as_deref() == Some("Auto (English (UK))"))
+        .is_none()
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "layout change never seen"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        harness.step();
+    }
+    wait_for_spellcheck(&mut harness);
+    harness.get_by_label("Close").click();
+    harness.run();
+
+    labelled_text_input(&harness, "SCENE 01  Rain").click_secondary();
+    harness.run();
+    assert!(
+        harness
+            .query_by_label("Add “colour” to dictionary")
+            .is_none()
+    );
 }
 
 #[test]

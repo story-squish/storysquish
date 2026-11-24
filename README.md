@@ -120,12 +120,15 @@ sudo apt-get install libxcb-render0-dev libxcb-shape0-dev \
 - Ten color schemes, light and dark
 - Spellcheck in prose, summaries and notes, with suggestions on right-click.
   English (US) and English (UK) are built in; German, Spanish, French and
-  Russian download on first use from Settings. Any Hunspell dictionary
-  installed on the computer is offered too. Character and location names
-  always count as correct.
+  Russian download on first use. Any Hunspell dictionary installed on the
+  computer is offered too. Character and location names always count as
+  correct. The default, Auto, follows the keyboard layout on macOS (switch
+  to a Russian layout and Russian is checked) and the system language
+  elsewhere.
 - Optional thesaurus: right-click a word for synonyms in the spellcheck
   language (English, German, Spanish, French or Russian, from LibreOffice's
-  dictionaries; downloaded once when turned on in Settings)
+  dictionaries; downloaded once per language, and following the keyboard
+  layout under Auto)
 
 ## Keyboard shortcuts
 
@@ -351,6 +354,7 @@ drive the app headlessly with `egui_kittest`.
 | [`github`](src/github.rs)                | GitHub backup client, token file, background requests |
 | [`outline`](src/outline.rs)              | Markdown outline and manuscript export           |
 | [`spelling`](src/spelling.rs)            | Dictionaries, word splitting, spellchecker       |
+| [`keyboard`](src/keyboard.rs)            | Keyboard layout and locale to dictionary         |
 | [`thesaurus`](src/thesaurus.rs)          | MyThes thesaurus download, parsing and lookup    |
 | [`theme`](src/theme.rs)                  | Color schemes and palettes                       |
 | [`migration`](src/migration.rs)          | Move data from pre-rename directories            |

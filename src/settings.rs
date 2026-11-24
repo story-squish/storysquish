@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::spelling::DEFAULT_DICTIONARY;
 use crate::theme::ColorScheme;
 use crate::{APP_NAME, storage};
 
@@ -48,14 +47,36 @@ pub struct Settings {
     pub thesaurus: bool,
 }
 
-/// `None`, saved as `null`, turns spellchecking off.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct SpellcheckDictionary(pub Option<String>);
+/// Saved as `null` (off), `"auto"` (follow the keyboard layout) or a
+/// dictionary id.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(from = "Option<String>", into = "Option<String>")]
+pub enum SpellcheckDictionary {
+    Off,
+    #[default]
+    Auto,
+    Fixed(String),
+}
 
-impl Default for SpellcheckDictionary {
-    fn default() -> Self {
-        Self(Some(DEFAULT_DICTIONARY.to_owned()))
+const AUTO_DICTIONARY: &str = "auto";
+
+impl From<Option<String>> for SpellcheckDictionary {
+    fn from(saved: Option<String>) -> Self {
+        match saved {
+            None => Self::Off,
+            Some(id) if id == AUTO_DICTIONARY => Self::Auto,
+            Some(id) => Self::Fixed(id),
+        }
+    }
+}
+
+impl From<SpellcheckDictionary> for Option<String> {
+    fn from(dictionary: SpellcheckDictionary) -> Self {
+        match dictionary {
+            SpellcheckDictionary::Off => None,
+            SpellcheckDictionary::Auto => Some(AUTO_DICTIONARY.to_owned()),
+            SpellcheckDictionary::Fixed(id) => Some(id),
+        }
     }
 }
 
@@ -332,25 +353,38 @@ mod tests {
     }
 
     #[test]
-    fn spellcheck_defaults_on_and_off_is_remembered() {
+    fn spellcheck_defaults_to_auto_and_every_choice_is_remembered() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
         assert_eq!(
-            Settings::default().spellcheck_dictionary.0.as_deref(),
-            Some(DEFAULT_DICTIONARY)
+            Settings::default().spellcheck_dictionary,
+            SpellcheckDictionary::Auto
         );
-        let settings = Settings {
-            spellcheck_dictionary: SpellcheckDictionary(None),
-            spelling_words: BTreeSet::from(["grimdark".to_owned()]),
-            ..Settings::default()
-        };
-        save(&path, &settings).unwrap();
-        let saved = fs::read_to_string(&path).unwrap();
-        assert!(
-            saved.contains(r#""spellcheck-dictionary": null"#),
-            "{saved}"
-        );
-        assert_eq!(load(&path).unwrap(), settings);
+        let cases = [
+            (
+                SpellcheckDictionary::Off,
+                r#""spellcheck-dictionary": null"#,
+            ),
+            (
+                SpellcheckDictionary::Auto,
+                r#""spellcheck-dictionary": "auto""#,
+            ),
+            (
+                SpellcheckDictionary::Fixed("en_GB".to_owned()),
+                r#""spellcheck-dictionary": "en_GB""#,
+            ),
+        ];
+        for (dictionary, json) in cases {
+            let settings = Settings {
+                spellcheck_dictionary: dictionary,
+                spelling_words: BTreeSet::from(["grimdark".to_owned()]),
+                ..Settings::default()
+            };
+            save(&path, &settings).unwrap();
+            let saved = fs::read_to_string(&path).unwrap();
+            assert!(saved.contains(json), "{saved}");
+            assert_eq!(load(&path).unwrap(), settings);
+        }
     }
 
     #[test]

@@ -1,3 +1,4 @@
+mod input_language;
 mod spellcheck;
 
 use std::collections::HashSet;
@@ -324,6 +325,7 @@ pub struct PlannerApp {
     backup: BackupState,
     colors: Palette,
     spellcheck: spellcheck::Spellcheck,
+    input_language: input_language::InputLanguage,
 }
 
 #[derive(Debug, Default)]
@@ -403,6 +405,7 @@ impl PlannerApp {
             backup,
             colors,
             spellcheck: spellcheck::Spellcheck::default(),
+            input_language: input_language::InputLanguage::default(),
         };
         app.load_spellcheck_dictionary(&cc.egui_ctx);
         app.follow_title_in_file_name();
@@ -450,6 +453,16 @@ impl PlannerApp {
         self
     }
 
+    /// Replaces keyboard layout detection for the Auto dictionary.
+    #[must_use]
+    pub fn with_input_language(
+        mut self,
+        detect: impl Fn() -> String + Send + Sync + 'static,
+    ) -> Self {
+        self.input_language = input_language::InputLanguage::new(std::sync::Arc::new(detect));
+        self
+    }
+
     pub fn spellcheck_ready(&self) -> bool {
         self.spellcheck.is_ready()
     }
@@ -458,9 +471,21 @@ impl PlannerApp {
         self.spellcheck.thesaurus_ready()
     }
 
+    fn resolve_dictionary<'a>(&'a self, choice: &'a SpellcheckDictionary) -> Option<&'a str> {
+        match choice {
+            SpellcheckDictionary::Off => None,
+            SpellcheckDictionary::Auto => self.input_language.dictionary(),
+            SpellcheckDictionary::Fixed(id) => Some(id),
+        }
+    }
+
     fn load_spellcheck_dictionary(&mut self, ctx: &egui::Context) {
+        let choice = &self.settings.spellcheck_dictionary;
+        if *choice == SpellcheckDictionary::Auto && self.input_language.dictionary().is_none() {
+            return;
+        }
         let dirs = dictionary_dirs(&self.settings_path);
-        let dictionary = self.settings.spellcheck_dictionary.0.clone();
+        let dictionary = self.resolve_dictionary(choice).map(str::to_owned);
         self.spellcheck.load(ctx, dictionary.as_deref(), &dirs);
         self.spellcheck.load_thesaurus(
             ctx,
@@ -476,8 +501,16 @@ impl PlannerApp {
         self.load_spellcheck_dictionary(ctx);
     }
 
-    fn set_spellcheck_dictionary(&mut self, ctx: &egui::Context, dictionary: Option<String>) {
-        self.settings.spellcheck_dictionary = SpellcheckDictionary(dictionary);
+    fn follow_input_language(&mut self, ctx: &egui::Context) {
+        if self.settings.spellcheck_dictionary == SpellcheckDictionary::Auto
+            && self.input_language.poll(ctx)
+        {
+            self.load_spellcheck_dictionary(ctx);
+        }
+    }
+
+    fn set_spellcheck_dictionary(&mut self, ctx: &egui::Context, dictionary: SpellcheckDictionary) {
+        self.settings.spellcheck_dictionary = dictionary;
         self.save_settings_reporting_errors();
         self.load_spellcheck_dictionary(ctx);
     }
@@ -3831,32 +3864,53 @@ impl PlannerApp {
         &self,
         ui: &mut Ui,
         dictionaries: &[DictionaryInfo],
-        chosen: &mut Option<String>,
+        chosen: &mut SpellcheckDictionary,
     ) {
         let colors = self.colors;
         let label = field_label(ui, colors, "Spellcheck");
-        let selected_text = match chosen.as_deref() {
-            None => "Off".to_owned(),
-            Some(id) => dictionaries
+        let name_of = |id: &str| {
+            dictionaries
                 .iter()
                 .find(|info| info.id == id)
-                .map_or_else(|| id.to_owned(), |info| info.name.clone()),
+                .map_or_else(|| id.to_owned(), |info| info.name.clone())
+        };
+        let auto_name = self.input_language.dictionary().map(name_of);
+        let selected_text = match (&*chosen, &auto_name) {
+            (SpellcheckDictionary::Off, _) => "Off".to_owned(),
+            (SpellcheckDictionary::Auto, None) => "Auto".to_owned(),
+            (SpellcheckDictionary::Auto, Some(name)) => format!("Auto ({name})"),
+            (SpellcheckDictionary::Fixed(id), _) => name_of(id),
         };
         ComboBox::from_id_salt("spellcheck_dictionary")
             .selected_text(selected_text)
             .width(ui.available_width())
             .show_ui(ui, |ui| {
-                ui.selectable_value(chosen, None, "Off");
+                ui.selectable_value(chosen, SpellcheckDictionary::Off, "Off");
+                ui.selectable_value(chosen, SpellcheckDictionary::Auto, "Auto");
                 for info in dictionaries {
                     let label = match info.source {
                         DictionarySource::Downloadable => format!("{} (download)", info.name),
                         _ => info.name.clone(),
                     };
-                    ui.selectable_value(chosen, Some(info.id.clone()), label);
+                    ui.selectable_value(
+                        chosen,
+                        SpellcheckDictionary::Fixed(info.id.clone()),
+                        label,
+                    );
                 }
             })
             .response
             .labelled_by(label);
+        if *chosen == SpellcheckDictionary::Auto {
+            ui.label(
+                RichText::new(
+                    "Auto follows the keyboard layout (on macOS) or the system language, \
+                     downloading a dictionary the first time its language is used.",
+                )
+                .small()
+                .color(colors.muted),
+            );
+        }
         let (note, color) = match &self.spellcheck.status {
             spellcheck::Status::Loading(_) => ("Loading dictionary…".to_owned(), colors.muted),
             spellcheck::Status::Downloading { name, .. } => {
@@ -3962,7 +4016,7 @@ impl PlannerApp {
             .clone();
         let colors = self.colors;
         let mut chosen = self.settings.color_scheme;
-        let mut chosen_dictionary = self.settings.spellcheck_dictionary.0.clone();
+        let mut chosen_dictionary = self.settings.spellcheck_dictionary.clone();
         let mut chosen_thesaurus = self.settings.thesaurus;
         let mut chosen_goal = self
             .board
@@ -3979,7 +4033,11 @@ impl PlannerApp {
             color_scheme_picker(ui, colors, &mut chosen);
 
             self.spellcheck_section(ui, &dictionaries, &mut chosen_dictionary);
-            self.thesaurus_section(ui, chosen_dictionary.as_deref(), &mut chosen_thesaurus);
+            self.thesaurus_section(
+                ui,
+                self.resolve_dictionary(&chosen_dictionary),
+                &mut chosen_thesaurus,
+            );
 
             board_file_action = self.board_file_section(ui);
 
@@ -4016,7 +4074,7 @@ impl PlannerApp {
         if chosen != self.settings.color_scheme {
             self.set_color_scheme(ctx, chosen);
         }
-        if chosen_dictionary != self.settings.spellcheck_dictionary.0 {
+        if chosen_dictionary != self.settings.spellcheck_dictionary {
             self.set_spellcheck_dictionary(ctx, chosen_dictionary);
         }
         if chosen_thesaurus != self.settings.thesaurus {
@@ -4248,6 +4306,7 @@ impl eframe::App for PlannerApp {
             dialog.dictionaries = None;
         }
         self.spellcheck.receive_thesaurus();
+        self.follow_input_language(ctx);
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {

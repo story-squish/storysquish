@@ -60,8 +60,11 @@ pub(super) struct Spellcheck {
     menu: Option<WordMenu>,
     word_to_add: Option<String>,
     download_base: Option<String>,
+    dictionary: Option<String>,
+    spare_speller: Option<(String, Box<Speller>)>,
     pub thesaurus: ThesaurusStatus,
     thesaurus_source: Option<&'static ThesaurusSource>,
+    spare_thesaurus: Option<(&'static ThesaurusSource, Box<Thesaurus>)>,
     thesaurus_download_base: Option<String>,
 }
 
@@ -76,13 +79,34 @@ impl Spellcheck {
 
     /// Downloads and parses off the UI thread so switching dictionaries never
     /// stalls typing. A downloaded dictionary is saved into the first of `dirs`.
+    /// The previous dictionary is kept aside, so switching back and forth
+    /// between two keyboard layouts parses each only once.
     pub fn load(&mut self, ctx: &egui::Context, dictionary: Option<&str>, dirs: &[PathBuf]) {
+        if dictionary.is_some()
+            && dictionary == self.dictionary.as_deref()
+            && !matches!(self.status, Status::Failed(_))
+        {
+            return;
+        }
         self.by_field.clear();
         self.menu = None;
+        let previous = std::mem::take(&mut self.status);
+        let previous_id = std::mem::replace(&mut self.dictionary, dictionary.map(str::to_owned));
+        let spare = match (previous, previous_id) {
+            (Status::Ready(speller), Some(id)) => self.spare_speller.replace((id, speller)),
+            _ => None,
+        }
+        .or_else(|| {
+            self.spare_speller
+                .take_if(|(id, _)| Some(id.as_str()) == dictionary)
+        });
         let Some(dictionary) = dictionary else {
-            self.status = Status::Off;
             return;
         };
+        if let Some((_, speller)) = spare.filter(|(id, _)| id == dictionary) {
+            self.status = Status::Ready(speller);
+            return;
+        }
         let Some(info) = spelling::available_dictionaries(dirs)
             .into_iter()
             .find(|info| info.id == dictionary)
@@ -163,12 +187,26 @@ impl Spellcheck {
         if same_source && !matches!(self.thesaurus, ThesaurusStatus::Failed(_)) {
             return;
         }
-        self.thesaurus_source = source;
+        let previous = std::mem::take(&mut self.thesaurus);
+        let previous_source = std::mem::replace(&mut self.thesaurus_source, source);
+        let spare = match (previous, previous_source) {
+            (ThesaurusStatus::Ready(thesaurus), Some(previous_source)) => {
+                self.spare_thesaurus.replace((previous_source, thesaurus))
+            }
+            _ => None,
+        }
+        .or_else(|| {
+            self.spare_thesaurus
+                .take_if(|(spare, _)| Some(spare.name) == source.map(|s| s.name))
+        });
         self.menu = None;
         let Some(source) = source else {
-            self.thesaurus = ThesaurusStatus::Off;
             return;
         };
+        if let Some((_, thesaurus)) = spare.filter(|(spare, _)| spare.name == source.name) {
+            self.thesaurus = ThesaurusStatus::Ready(thesaurus);
+            return;
+        }
         let Some(dir) = dir.map(Path::to_owned) else {
             self.thesaurus =
                 ThesaurusStatus::Failed("No folder to download the thesaurus into.".to_owned());
