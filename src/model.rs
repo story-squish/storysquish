@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -469,6 +470,52 @@ impl Board {
         counts
     }
 
+    /// Manuscript scenes each character appears in, in board order: as POV,
+    /// or by a name part no other character shares, written as a whole word
+    /// in the title, summary or prose.
+    pub fn character_appearances(&self) -> Vec<(&Character, Vec<usize>)> {
+        let name_parts: Vec<HashSet<String>> = self
+            .characters
+            .iter()
+            .map(|c| distinctive_name_parts(&c.name))
+            .collect();
+        let mut owners: HashMap<&str, usize> = HashMap::new();
+        for part in name_parts.iter().flatten() {
+            *owners.entry(part).or_default() += 1;
+        }
+        let scene_words: Vec<(usize, &Scene, HashSet<&str>)> = self
+            .manuscript_scenes()
+            .map(|(i, s)| {
+                let words = [&s.title, &s.summary, &s.text]
+                    .into_iter()
+                    .flat_map(|field| words_of(field))
+                    .collect();
+                (i, s, words)
+            })
+            .collect();
+
+        self.characters
+            .iter()
+            .zip(&name_parts)
+            .map(|(character, parts)| {
+                let unique: Vec<&str> = parts
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|part| owners[part] == 1)
+                    .collect();
+                let scenes = scene_words
+                    .iter()
+                    .filter(|(_, scene, words)| {
+                        scene.pov.as_ref() == Some(&character.id)
+                            || unique.iter().any(|part| words.contains(part))
+                    })
+                    .map(|&(i, _, _)| i)
+                    .collect();
+                (character, scenes)
+            })
+            .collect()
+    }
+
     pub fn scene_gaps(&self) -> SceneGaps {
         let indices_where = |missing: fn(&Scene) -> bool| {
             self.manuscript_scenes()
@@ -574,6 +621,50 @@ const fn act_str(act: Act) -> &'static str {
         Act::Two => "Act II",
         Act::Three => "Act III",
     }
+}
+
+const HONORIFICS: [&str; 22] = [
+    "mr",
+    "mrs",
+    "ms",
+    "miss",
+    "dr",
+    "sir",
+    "dame",
+    "lady",
+    "lord",
+    "captain",
+    "professor",
+    "king",
+    "queen",
+    "prince",
+    "princess",
+    "aunt",
+    "uncle",
+    "saint",
+    "st",
+    "the",
+    "of",
+    "von",
+];
+
+fn words_of(text: &str) -> impl Iterator<Item = &str> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+}
+
+/// Name parts worth searching for, capitalized because prose capitalizes
+/// names and a lowercase match ("will", "hope") is usually not the name.
+fn distinctive_name_parts(name: &str) -> HashSet<String> {
+    words_of(name)
+        .filter(|part| part.chars().count() >= 2)
+        .filter(|part| !HONORIFICS.contains(&part.to_lowercase().as_str()))
+        .filter_map(|part| {
+            let mut chars = part.chars();
+            let first = chars.next()?;
+            Some(first.to_uppercase().chain(chars).collect())
+        })
+        .collect()
 }
 
 fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
@@ -1060,6 +1151,52 @@ mod tests {
                 location: vec![1, 2],
                 day: vec![1],
             }
+        );
+    }
+
+    fn appearance_names(board: &Board) -> Vec<(&str, Vec<usize>)> {
+        board
+            .character_appearances()
+            .into_iter()
+            .map(|(c, scenes)| (c.name.as_str(), scenes))
+            .collect()
+    }
+
+    #[test]
+    fn appearances_match_whole_capitalized_name_parts_and_pov() {
+        let mut board = Board::default();
+        board.add_character("Captain Will Ahab");
+        board.add_character("ada");
+        let ada = board.characters[1].id.clone();
+        scene_with(&mut board, "Ahab's leg ached.", |_| {});
+        scene_with(&mut board, "You will see. Captain or not.", |_| {});
+        scene_with(&mut board, "", |s| s.pov = Some(ada));
+        scene_with(&mut board, "Adamant, Ada left.", |_| {});
+        scene_with(&mut board, "", |s| s.summary = "Will meets Ada".to_owned());
+        scene_with(&mut board, "Ahab again", |s| s.status = Status::Archived);
+
+        assert_eq!(
+            appearance_names(&board),
+            vec![("Captain Will Ahab", vec![0, 4]), ("ada", vec![2, 3, 4])]
+        );
+    }
+
+    #[test]
+    fn shared_name_parts_do_not_count_as_appearances() {
+        let mut board = Board::default();
+        board.add_character("Jane Bennet");
+        board.add_character("Elizabeth Bennet");
+        board.add_character("Bennet");
+        scene_with(&mut board, "The Bennet house", |_| {});
+        scene_with(&mut board, "Elizabeth laughed", |_| {});
+
+        assert_eq!(
+            appearance_names(&board),
+            vec![
+                ("Jane Bennet", vec![]),
+                ("Elizabeth Bennet", vec![1]),
+                ("Bennet", vec![])
+            ]
         );
     }
 

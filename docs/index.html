@@ -224,6 +224,7 @@
         <table class="stats-table"><tbody id="statsBody"></tbody></table>
         <div><h3>Words per act</h3><table class="stats-table"><tbody id="statsActWords"></tbody></table></div>
         <div><h3>POV share</h3><table class="stats-table"><tbody id="statsPovWords"></tbody></table></div>
+        <div><h3 title="Scenes where a character is POV or named in the title, summary or prose">Appearances</h3><table class="stats-table"><tbody id="statsAppearances"></tbody></table></div>
         <div><h3>Missing</h3><table class="stats-table"><tbody id="statsGaps"></tbody></table></div>
       </div>
     </section>
@@ -296,6 +297,7 @@
       <label class="field-label" for="cNotes">Notes</label>
       <textarea id="cNotes" rows="6" placeholder="Appearance, voice, backstory, arc."></textarea>
       <div class="hint" id="cPovCount"></div>
+      <div class="hint" id="cAppearCount" title="As POV, or named in the title, summary or prose"></div>
       <label class="field-label" for="relTarget">Relationships</label>
       <div id="relList"></div>
       <div class="rel-row" id="relAdd">
@@ -587,6 +589,41 @@ function povWordCounts() {
     .filter(([, owned]) => owned.length > 0)
     .map(([character, owned]) => [character, sceneWords(owned)])
     .sort((a, b) => b[1] - a[1]);
+}
+
+const HONORIFICS = new Set([
+  "mr", "mrs", "ms", "miss", "dr", "sir", "dame", "lady", "lord", "captain", "professor", "king",
+  "queen", "prince", "princess", "aunt", "uncle", "saint", "st", "the", "of", "von",
+]);
+
+function wordsOf(text) {
+  return text.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+}
+
+// Capitalized because prose capitalizes names and a lowercase match
+// ("will", "hope") is usually not the name.
+function distinctiveNameParts(name) {
+  return new Set(wordsOf(name)
+    .filter(part => Array.from(part).length >= 2 && !HONORIFICS.has(part.toLowerCase()))
+    .map(part => part[0].toUpperCase() + part.slice(1)));
+}
+
+// Manuscript scenes each character appears in, in board order: as POV, or by
+// a name part no other character shares, written as a whole word in the
+// title, summary or prose.
+function characterAppearances() {
+  const nameParts = board.characters.map(c => distinctiveNameParts(c.name));
+  const owners = new Map();
+  for (const part of nameParts.flatMap(parts => [...parts])) owners.set(part, (owners.get(part) ?? 0) + 1);
+  const sceneWords = manuscriptScenes().map(({scene, index}) =>
+    ({scene, index, words: new Set([scene.title, scene.summary, scene.text].flatMap(wordsOf))}));
+  return board.characters.map((character, i) => {
+    const unique = [...nameParts[i]].filter(part => owners.get(part) === 1);
+    const scenes = sceneWords
+      .filter(({scene, words}) => scene.pov === character.id || unique.some(part => words.has(part)))
+      .map(({index}) => index);
+    return [character, scenes];
+  });
 }
 
 function sceneGaps() {
@@ -1752,6 +1789,8 @@ function renderCharacterInspector() {
   syncValue($("cGoal"), character.goal);
   syncValue($("cNotes"), character.notes);
   $("cPovCount").textContent = `POV in ${plural(povSceneCount(character.id), "scene")}`;
+  const appearances = characterAppearances().find(([c]) => c.id === character.id)?.[1] ?? [];
+  $("cAppearCount").textContent = `Appears in ${plural(appearances.length, "scene")}`;
   $("cUp").disabled = index === 0;
   $("cDown").disabled = index === board.characters.length - 1;
   renderRelationshipEditor(character);
@@ -1832,6 +1871,17 @@ function renderStats() {
       (rest.length ? shareRow(`${rest.length} more`, rest.reduce((sum, [, count]) => sum + count, 0)) : "");
 
   const gaps = sceneGaps();
+  const APPEAR_SHOWN = 7;
+  const appearances = characterAppearances();
+  const present = appearances.filter(([, scenes]) => scenes.length > 0).sort((a, b) => b[1].length - a[1].length);
+  const absent = appearances.filter(([, scenes]) => scenes.length === 0);
+  $("statsAppearances").innerHTML = appearances.length === 0
+    ? `<tr><td class="none">No characters yet.</td></tr>`
+    : present.slice(0, APPEAR_SHOWN).map(([c, scenes]) =>
+        `<tr><td>${esc(characterDisplayName(c.name))}</td><td class="num" title="${esc(sceneList(scenes))}">${scenes.length}</td></tr>`).join("") +
+      (present.length > APPEAR_SHOWN ? `<tr><td>${present.length - APPEAR_SHOWN} more</td></tr>` : "") +
+      (absent.length ? `<tr><td>Never appear</td><td class="num gap" title="${esc(absent.map(([c]) => characterDisplayName(c.name)).join("\n"))}">${absent.length}</td></tr>` : "");
+
   $("statsGaps").innerHTML = [["No POV", gaps.pov], ["No location", gaps.location], ["No day", gaps.day]]
     .map(([label, indices]) => indices.length === 0
       ? `<tr><td>${label}</td><td class="num none">0</td></tr>`

@@ -118,6 +118,25 @@ fn stats_panel_shows_act_words_pov_share_and_gaps() {
 }
 
 #[test]
+fn appearances_count_named_scenes_and_flag_absent_characters() {
+    let mut board = board_with_scenes(&["Opening", "Later"]);
+    board.add_character("Ada");
+    board.add_character("Bo");
+    board.scenes[0].text = "Ada opens the door.".to_owned();
+    board.scenes[1].summary = "Ada leaves".to_owned();
+    let Fixture { mut harness, .. } = launch(board);
+
+    harness.get_by_label("Ada").click();
+    harness.run();
+    assert!(harness.query_by_label("Appears in 2 scenes").is_some());
+
+    harness.get_by_label("Stats").click();
+    harness.run();
+    assert!(harness.query_by_label("Appearances").is_some());
+    assert!(harness.query_by_label("Never appear").is_some());
+}
+
+#[test]
 fn cards_wrap_within_window_width() {
     let titles = many_scene_titles(12);
     let titles: Vec<&str> = titles.iter().map(String::as_str).collect();
