@@ -36,6 +36,20 @@ ordinary files you can see, copy and back up.
 
 ## Install
 
+### Homebrew (macOS)
+
+```sh
+brew tap meslab/tap
+brew trust --cask meslab/tap/storysquish
+brew install --cask storysquish
+```
+
+Homebrew only loads casks from non-official taps once they are trusted.
+`brew trust` trusts just this cask rather than the whole tap. Upgrade with
+`brew upgrade --cask storysquish`.
+
+### Release downloads
+
 Each [release](https://github.com/story-squish/storysquish/releases) has:
 
 - macOS: `StorySquish-<tag>-macos-universal.pkg`, which installs
