@@ -1,0 +1,19 @@
+{
+  "name": "StorySquish",
+  "short_name": "StorySquish",
+  "description": "A scene board for planning and drafting novels.",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#c9b79c",
+  "theme_color": "#3a2c1e",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ],
+  "file_handlers": [
+    { "action": "./", "accept": { "application/json": [".json"] } }
+  ],
+  "launch_handler": { "client_mode": "focus-existing" }
+}
