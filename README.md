@@ -36,7 +36,9 @@ ordinary files you can see, copy and back up.
 
 ## Install
 
-### Homebrew (macOS)
+### Homebrew
+
+On macOS, install the app as a cask:
 
 ```sh
 brew tap meslab/tap
@@ -44,9 +46,18 @@ brew trust --cask meslab/tap/storysquish
 brew install --cask storysquish
 ```
 
-Homebrew only loads casks from non-official taps once they are trusted.
-`brew trust` trusts just this cask rather than the whole tap. Upgrade with
-`brew upgrade --cask storysquish`.
+On Linux, install the formula, which builds from source:
+
+```sh
+brew tap meslab/tap
+brew trust --formula meslab/tap/storysquish
+brew install --formula storysquish
+```
+
+Homebrew only loads packages from non-official taps once they are trusted.
+`brew trust` trusts just this cask or formula rather than the whole tap.
+Upgrade with `brew upgrade --cask storysquish` or
+`brew upgrade --formula storysquish`.
 
 ### Release downloads
 
@@ -59,7 +70,7 @@ Each [release](https://github.com/story-squish/storysquish/releases) has:
 - Windows: `StorySquish-<tag>-windows-x86_64.zip` with a standalone
   `StorySquish.exe` (no Visual C++ runtime needed). Unzip it anywhere and run
   it; SmartScreen may ask you to confirm the first time.
-- Linux: build from source (below).
+- Linux: install with Homebrew (above) or build from source (below).
 
 ## Build from source
 
