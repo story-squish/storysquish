@@ -91,6 +91,8 @@
   textarea{resize:vertical}
   .hint{font-size:12px;color:var(--muted)}
   .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px}
+  .add-form{display:flex;gap:6px}
+  .add-form input{flex:1;min-width:0}
   .cols{display:grid;grid-template-columns:1fr 1fr;gap:8px}
   .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(248px,1fr));gap:16px;align-items:start}
   .card{background:var(--card);border:1px solid var(--line);border-radius:4px;padding:12px;box-shadow:0 3px 6px #0001;cursor:pointer;min-height:90px;user-select:none}
@@ -190,13 +192,19 @@
     <div class="section">
       <h2>Characters</h2>
       <div id="charList"></div>
-      <input id="newChar" placeholder="New character name" aria-label="New character name">
-      <div class="hint">Type a name + Enter to add.</div>
+      <form class="add-form" id="newCharForm">
+        <input id="newChar" placeholder="New character name" aria-label="New character name" enterkeyhint="done" autocomplete="off">
+        <button type="submit">Add</button>
+      </form>
+      <div class="hint">Type a name + Enter or Add.</div>
     </div>
     <div class="section">
       <h2>Locations</h2>
       <div id="locList"></div>
-      <input id="newLoc" placeholder="New location name" aria-label="New location name">
+      <form class="add-form" id="newLocForm">
+        <input id="newLoc" placeholder="New location name" aria-label="New location name" enterkeyhint="done" autocomplete="off">
+        <button type="submit">Add</button>
+      </form>
     </div>
   </aside>
 
@@ -3145,14 +3153,17 @@ $("locList").addEventListener("click", e => {
   const card = e.target.closest(".char");
   if (card) { selected = {kind: "location", id: card.dataset.id}; render(); }
 });
-$("newLoc").addEventListener("keydown", e => {
-  if (e.key !== "Enter") return;
-  e.preventDefault();
-  if (addLocationToBoard(e.target.value)) {
-    e.target.value = "";
-    saveNow();
-  }
-});
+function submitNewItem(formId, inputId, addToBoard) {
+  $(formId).addEventListener("submit", e => {
+    e.preventDefault();
+    const input = $(inputId);
+    if (addToBoard(input.value)) {
+      input.value = "";
+      saveNow();
+    }
+  });
+}
+submitNewItem("newLocForm", "newLoc", addLocationToBoard);
 
 $("tabs").addEventListener("click", e => {
   const tab = e.target.closest(".tab");
@@ -3190,14 +3201,7 @@ graphHost.addEventListener("keydown", e => {
 });
 window.addEventListener("resize", () => { if (view === "graph") renderGraph(); });
 
-$("newChar").addEventListener("keydown", e => {
-  if (e.key !== "Enter") return;
-  e.preventDefault();
-  if (addCharacterToBoard(e.target.value)) {
-    e.target.value = "";
-    saveNow();
-  }
-});
+submitNewItem("newCharForm", "newChar", addCharacterToBoard);
 
 const boardHost = $("board");
 boardHost.addEventListener("click", e => {
