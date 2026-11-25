@@ -4,6 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Untitled Novel — StorySquish</title>
+<meta name="theme-color" content="#3a2c1e">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <style>
   :root{
     --board:#c9b79c;--header:#3a2c1e;--header-text:#f4ead6;--ink:#2b2118;--muted:#7a6a52;--card:#fdfaf2;
@@ -3383,6 +3387,7 @@ restoreLinkedFile().catch(() => {});
 addPrefixToLinkedRepo();
 const startupAlert = boardLoad.alert ?? settingsLoad.alert;
 if (startupAlert) alertDialog(startupAlert);
+navigator.serviceWorker?.register("sw.js").catch(() => {});
 </script>
 </body>
 </html>

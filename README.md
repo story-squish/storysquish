@@ -352,6 +352,11 @@ a "Reconnect file" button appears until clicked. Without a linked file, a
 "Back up" button appears when the board has not been exported for a week;
 export regularly, or move to the desktop app.
 
+The page installs as an app (Chrome and Edge: the install icon in the address
+bar; Safari: **Share → Add to Dock / Add to Home Screen**), opens in its own
+window and loads offline. Installing does not move the board: it shares
+`localStorage` with the page, so clearing the site's data still removes it.
+
 ## Development
 
 ```sh
