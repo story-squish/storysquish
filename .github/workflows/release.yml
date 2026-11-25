@@ -17,7 +17,26 @@ env:
   TAG: ${{ github.event.release.tag_name || inputs.tag }}
 
 jobs:
+  verify-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.cargo.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+      - name: Check Cargo.toml version matches tag
+        id: cargo
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::Cargo.toml version $version does not match tag $TAG"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
   macos:
+    needs: verify-version
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
@@ -43,7 +62,6 @@ jobs:
 
       - name: Build installer package
         run: |
-          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
           pkgbuild --analyze --root dist component.plist
           # A relocatable bundle makes Installer "upgrade" any StorySquish.app it
           # finds elsewhere on disk instead of installing into /Applications.
@@ -53,7 +71,7 @@ jobs:
             --component-plist component.plist \
             --install-location /Applications \
             --identifier io.github.storysquish \
-            --version "$version" \
+            --version "${{ needs.verify-version.outputs.version }}" \
             "StorySquish-${TAG}-macos-universal.pkg"
 
       - name: Attach package to release
@@ -62,6 +80,7 @@ jobs:
         run: gh release upload "$TAG" "StorySquish-${TAG}-macos-universal.pkg" --clobber
 
   windows:
+    needs: verify-version
     runs-on: windows-latest
     defaults:
       run:
