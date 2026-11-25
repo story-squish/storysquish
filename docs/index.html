@@ -1421,14 +1421,30 @@ async function openLinkedFile() {
   }
   try {
     if (await handle.requestPermission({mode: "readwrite"}) !== "granted") return;
-    const file = await handle.getFile();
-    const loaded = parseBoard(await file.text());
-    if (saveState.kind === "pending") saveNow();
-    linkedFile = {handle, name: handle.name, connected: true, lastModified: file.lastModified};
-    writeFileMeta({lastModified: file.lastModified, unsynced: false});
-    selected = null;
-    replaceBoard(loaded, "imported");
-    await rememberHandle(handle);
+    await linkBoardFile(handle, {connected: true});
+  } catch (e) {
+    alertDialog(`Could not open ${handle.name}: ${e.message}`);
+  }
+}
+
+async function linkBoardFile(handle, {connected}) {
+  const file = await handle.getFile();
+  const loaded = parseBoard(await file.text());
+  if (saveState.kind === "pending") saveNow();
+  linkedFile = {handle, name: handle.name, connected, lastModified: file.lastModified};
+  writeFileMeta({lastModified: file.lastModified, unsynced: false});
+  selected = null;
+  replaceBoard(loaded, "imported");
+  await rememberHandle(handle);
+}
+
+// A file opened from the OS may come with read access only, and asking for
+// write access needs a click, so it links disconnected and offers Reconnect.
+async function openLaunchedFile(handle) {
+  await linkedFileRestored;
+  try {
+    const writable = await handle.queryPermission({mode: "readwrite"}) === "granted";
+    await linkBoardFile(handle, {connected: writable});
   } catch (e) {
     alertDialog(`Could not open ${handle.name}: ${e.message}`);
   }
@@ -3383,7 +3399,11 @@ document.addEventListener("visibilitychange", () => {
 
 applyTheme(schemeByKey(settings.colorScheme));
 render();
-restoreLinkedFile().catch(() => {});
+const linkedFileRestored = restoreLinkedFile().catch(() => {});
+window.launchQueue?.setConsumer(({files}) => {
+  const [handle] = files.filter(entry => entry.kind === "file");
+  if (handle) openLaunchedFile(handle);
+});
 addPrefixToLinkedRepo();
 const startupAlert = boardLoad.alert ?? settingsLoad.alert;
 if (startupAlert) alertDialog(startupAlert);

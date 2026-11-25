@@ -356,6 +356,9 @@ The page installs as an app (Chrome and Edge: the install icon in the address
 bar; Safari: **Share → Add to Dock / Add to Home Screen**), opens in its own
 window and loads offline. Installing does not move the board: it shares
 `localStorage` with the page, so clearing the site's data still removes it.
+Installed from Chrome or Edge, it also appears under **Open with** for `.json`
+files; opening a board that way links it like **Open file…**, with a
+"Reconnect file" click if the browser granted read access only.
 
 ## Development
 
