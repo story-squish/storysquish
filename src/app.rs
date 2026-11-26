@@ -85,6 +85,18 @@ enum SceneCardClick {
     OpenInEditor,
 }
 
+impl SceneCardClick {
+    fn from_response(response: &egui::Response) -> Option<Self> {
+        if response.double_clicked() {
+            Some(Self::OpenInEditor)
+        } else if response.clicked() {
+            Some(Self::Select)
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Selection {
     Scene(Id),
@@ -3541,8 +3553,8 @@ impl PlannerApp {
                                 .color(colors.muted),
                         );
                     }
-                    if self.timeline_row(ui, index) {
-                        clicked = Some(index);
+                    if let Some(click) = self.timeline_row(ui, index) {
+                        clicked = Some((index, click));
                     }
                 }
                 if !undated.is_empty() {
@@ -3554,19 +3566,21 @@ impl PlannerApp {
                             .color(colors.muted),
                     );
                     for &index in &undated {
-                        if self.timeline_row(ui, index) {
-                            clicked = Some(index);
+                        if let Some(click) = self.timeline_row(ui, index) {
+                            clicked = Some((index, click));
                         }
                     }
                 }
             });
-        if let Some(index) = clicked {
+        if let Some((index, click)) = clicked {
             self.selected = Some(Selection::Scene(self.board.scenes[index].id.clone()));
+            if click == SceneCardClick::OpenInEditor {
+                self.view = View::Write;
+            }
         }
     }
 
-    /// Returns `true` when the row was clicked.
-    fn timeline_row(&self, ui: &mut Ui, index: usize) -> bool {
+    fn timeline_row(&self, ui: &mut Ui, index: usize) -> Option<SceneCardClick> {
         let colors = self.colors;
         let scene = &self.board.scenes[index];
         let is_selected = self.selected == Some(Selection::Scene(scene.id.clone()));
@@ -3598,7 +3612,7 @@ impl PlannerApp {
         if row.response.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
-        row.response.clicked()
+        SceneCardClick::from_response(&row.response)
     }
 
     fn relationships_view(&mut self, ui: &mut Ui) {
@@ -3815,13 +3829,7 @@ impl PlannerApp {
         if allow_reorder && response.drag_started() {
             egui::DragAndDrop::set_payload(ui.ctx(), DraggedScene(index));
         }
-        let clicked = if response.double_clicked() {
-            Some(SceneCardClick::OpenInEditor)
-        } else if response.clicked() {
-            Some(SceneCardClick::Select)
-        } else {
-            None
-        };
+        let clicked = SceneCardClick::from_response(&response);
         let mut moved = None;
         if allow_reorder
             && let Some(from) = response.dnd_hover_payload::<DraggedScene>()

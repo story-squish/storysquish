@@ -800,6 +800,47 @@ fn timeline_lists_dated_scenes_in_story_order() {
 }
 
 #[test]
+fn single_click_on_timeline_row_selects_without_leaving_timeline() {
+    let mut board = board_with_scenes(&["Rain", "Sun"]);
+    board.scenes[1].day = Some(1);
+    let Fixture { mut harness, .. } = launch(board);
+    harness.get_by_label("Timeline").click();
+    harness.run();
+
+    harness.get_by_label("Sun").click();
+    harness.run();
+
+    assert!(harness.query_by_label("Write prose").is_some());
+    assert!(harness.query_by_label("UNDATED").is_some());
+    assert!(harness.query_by_label("SCENE 02  Sun").is_none());
+}
+
+#[test]
+fn double_click_on_timeline_row_opens_it_in_write_view() {
+    let dir = tempfile::tempdir().unwrap();
+    let board_path = dir.path().join("board.json");
+    let settings_path = dir.path().join("settings.json");
+    let mut board = board_with_scenes(&["Rain", "Sun"]);
+    board.scenes[1].day = Some(1);
+    // The default 0.25 s frame step puts two clicks beyond egui's double-click window.
+    let mut harness = Harness::builder()
+        .with_size(WINDOW)
+        .with_step_dt(1.0 / 60.0)
+        .build_eframe(move |cc| new_app(cc, board, board_path, settings_path, None));
+    harness.run();
+    harness.get_by_label("Timeline").click();
+    harness.run();
+    wait_out_double_click_window(&mut harness);
+
+    let row = harness.get_by_label("Sun").rect().center();
+    click_at(&harness, row);
+    click_at(&harness, row);
+    harness.run();
+
+    assert!(harness.query_by_label("SCENE 02  Sun").is_some());
+}
+
+#[test]
 fn board_changed_elsewhere_is_reloaded_and_undoable() {
     let Fixture { mut harness, dir } = launch(board_with_scenes(&["Mine"]));
     let path = dir.path().join("board.json");
@@ -2051,6 +2092,14 @@ fn right_click_on_misspelling_replaces_it_with_a_suggestion() {
     harness.run();
 
     assert_eq!(harness.state().board().scenes[0].text, "The world");
+}
+
+/// Clicks on accessibility nodes count as pointer clicks, so a pointer click
+/// right after one would otherwise register as its double click.
+fn wait_out_double_click_window(harness: &mut Harness<'_, PlannerApp>) {
+    for _ in 0..30 {
+        harness.step();
+    }
 }
 
 fn click_at(harness: &Harness<'_, PlannerApp>, pos: egui::Pos2) {
