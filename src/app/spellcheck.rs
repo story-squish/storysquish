@@ -4,7 +4,10 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
-use eframe::egui::{self, Color32, Painter, Pos2, Response, Stroke, Ui, text::CCursor};
+use eframe::egui::{
+    self, Color32, Painter, Pos2, Rect, Response, Stroke, Ui, containers::SetOpenCommand,
+    text::CCursor,
+};
 
 use crate::spelling::{self, DictionarySource, KnownWords, Speller};
 use crate::thesaurus::{self, Meaning, Thesaurus, ThesaurusSource};
@@ -47,6 +50,7 @@ enum Suggestions {
 
 struct WordMenu {
     field: egui::Id,
+    anchor: Pos2,
     chars: Range<usize>,
     word: String,
     suggestions: Suggestions,
@@ -257,9 +261,10 @@ impl Spellcheck {
         self.word_to_add.take()
     }
 
-    /// Underlines misspellings in an edited field and, on right-click,
-    /// offers corrections for a misspelled word or synonyms for any other.
-    /// A replacement marks the returned response as changed.
+    /// Underlines misspellings in an edited field. A click on an underlined
+    /// word offers corrections; a right-click offers corrections for a
+    /// misspelled word or synonyms for any other. A replacement marks the
+    /// returned response as changed.
     pub fn check_field(
         &mut self,
         ui: &Ui,
@@ -270,17 +275,31 @@ impl Spellcheck {
         let field = output.response.response.id;
         self.underline_misspellings(ui, &output, field, text, color);
 
-        if output.response.response.secondary_clicked() {
-            let clicked_at = ui.input(|input| input.pointer.interact_pos());
-            self.menu = clicked_at.and_then(|clicked_at| {
-                let under: usize = output
-                    .galley
-                    .cursor_from_pos(clicked_at - output.galley_pos)
-                    .index
-                    .into();
-                self.word_menu(field, text, under)
+        let pointer = ui.input(|input| input.pointer.interact_pos());
+        let set_open = if output.response.response.secondary_clicked() {
+            self.menu = pointer.and_then(|pointer| {
+                let under = char_under(&output, pointer);
+                let menu = self.word_menu(field, text, under)?;
+                Some(WordMenu {
+                    anchor: pointer,
+                    ..menu
+                })
             });
-        }
+            Some(true)
+        } else if output.response.response.clicked() {
+            self.menu = pointer.and_then(|pointer| {
+                let under = char_under(&output, pointer);
+                let menu = self.correction_menu(field, text, under)?;
+                let word = word_rect(&output, &menu.chars);
+                word.contains(pointer).then_some(WordMenu {
+                    anchor: word.left_bottom(),
+                    ..menu
+                })
+            });
+            Some(self.menu.is_some())
+        } else {
+            None
+        };
 
         let mut response = output.response.response;
         let Some(menu) = self.menu.as_ref().filter(|menu| menu.field == field) else {
@@ -288,18 +307,21 @@ impl Spellcheck {
         };
         let mut replacement = None;
         let mut add_word = false;
-        response.context_menu(|ui| match &menu.suggestions {
-            Suggestions::Corrections(suggestions) => {
-                replacement = corrections_menu(ui, suggestions);
-                ui.separator();
-                add_word = ui
-                    .button(format!("Add “{}” to dictionary", menu.word))
-                    .clicked();
-            }
-            Suggestions::Synonyms(meanings) => {
-                replacement = synonyms_menu(ui, &menu.word, meanings);
-            }
-        });
+        egui::Popup::menu(&response)
+            .open_memory(set_open.map(SetOpenCommand::Bool))
+            .at_position(menu.anchor)
+            .show(|ui| match &menu.suggestions {
+                Suggestions::Corrections(suggestions) => {
+                    replacement = corrections_menu(ui, suggestions);
+                    ui.separator();
+                    add_word = ui
+                        .button(format!("Add “{}” to dictionary", menu.word))
+                        .clicked();
+                }
+                Suggestions::Synonyms(meanings) => {
+                    replacement = synonyms_menu(ui, &menu.word, meanings);
+                }
+            });
         if let Some(replacement) = replacement
             && spelling::replace_word(text, menu.chars.clone(), &menu.word, &replacement)
         {
@@ -366,33 +388,74 @@ impl Spellcheck {
         }
     }
 
-    /// `under` is the character index right-clicked; a word ending exactly
-    /// there counts, so clicking just past a word still picks it.
+    /// `under` is the character index clicked; a word ending exactly there
+    /// counts, so clicking just past a word still picks it.
     fn word_menu(&self, field: egui::Id, text: &str, under: usize) -> Option<WordMenu> {
-        let touches = |chars: &Range<usize>| chars.start <= under && under <= chars.end;
-        if let Status::Ready(speller) = &self.status
-            && let Some((text_hash, misspellings)) = self.by_field.get(&field)
-            && *text_hash == hash_of(text)
-            && let Some((chars, word)) = misspellings.iter().find(|(chars, _)| touches(chars))
-        {
-            return Some(WordMenu {
-                field,
-                chars: chars.clone(),
-                word: word.clone(),
-                suggestions: Suggestions::Corrections(speller.suggestions(word)),
-            });
+        self.correction_menu(field, text, under)
+            .or_else(|| self.synonym_menu(field, text, under))
+    }
+
+    fn correction_menu(&self, field: egui::Id, text: &str, under: usize) -> Option<WordMenu> {
+        let Status::Ready(speller) = &self.status else {
+            return None;
+        };
+        let (text_hash, misspellings) = self.by_field.get(&field)?;
+        if *text_hash != hash_of(text) {
+            return None;
         }
+        let (chars, word) = misspellings
+            .iter()
+            .find(|(chars, _)| touches(chars, under))?;
+        Some(WordMenu {
+            field,
+            anchor: Pos2::ZERO,
+            chars: chars.clone(),
+            word: word.clone(),
+            suggestions: Suggestions::Corrections(speller.suggestions(word)),
+        })
+    }
+
+    fn synonym_menu(&self, field: egui::Id, text: &str, under: usize) -> Option<WordMenu> {
         let ThesaurusStatus::Ready(thesaurus) = &self.thesaurus else {
             return None;
         };
-        let (chars, word) = spelling::words(text).find(|(chars, _)| touches(chars))?;
+        let (chars, word) = spelling::words(text).find(|(chars, _)| touches(chars, under))?;
         Some(WordMenu {
             field,
+            anchor: Pos2::ZERO,
             chars,
             word: word.to_owned(),
             suggestions: Suggestions::Synonyms(thesaurus.meanings(word)),
         })
     }
+}
+
+fn touches(chars: &Range<usize>, under: usize) -> bool {
+    chars.start <= under && under <= chars.end
+}
+
+fn char_under(output: &egui::text_edit::TextEditOutput, pointer: Pos2) -> usize {
+    output
+        .galley
+        .cursor_from_pos(pointer - output.galley_pos)
+        .index
+        .into()
+}
+
+/// A word wrapped across rows spans from its start to the end of the
+/// last row it touches.
+fn word_rect(output: &egui::text_edit::TextEditOutput, chars: &Range<usize>) -> Rect {
+    let start = output.galley.pos_from_cursor(CCursor::new(chars.start));
+    let end = output.galley.pos_from_cursor(CCursor::new(chars.end));
+    let rect = if (start.min.y - end.min.y).abs() > 1.0 {
+        Rect::from_min_max(
+            egui::pos2(output.galley.rect.min.x, start.min.y),
+            egui::pos2(output.galley.rect.max.x, end.max.y),
+        )
+    } else {
+        start.union(end)
+    };
+    rect.translate(output.galley_pos.to_vec2())
 }
 
 fn corrections_menu(ui: &mut Ui, suggestions: &[String]) -> Option<String> {

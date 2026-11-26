@@ -2021,6 +2021,45 @@ fn right_click_on_misspelling_replaces_it_with_a_suggestion() {
     assert_eq!(harness.state().board().scenes[0].text, "The world");
 }
 
+fn click_at(harness: &Harness<'_, PlannerApp>, pos: egui::Pos2) {
+    harness.hover_at(pos);
+    for pressed in [true, false] {
+        harness.event(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+}
+
+#[test]
+fn click_on_misspelling_replaces_it_with_a_suggestion() {
+    let Fixture { mut harness, .. } = launch(board_with_scenes(&["Rain"]));
+    wait_for_spellcheck(&mut harness);
+    open_prose(&mut harness, "wrold");
+
+    let field = labelled_text_input(&harness, "SCENE 01  Rain").rect();
+    click_at(&harness, field.min + egui::vec2(12.0, 8.0));
+    harness.run();
+    harness.get_by_label("world").click();
+    harness.run();
+
+    assert_eq!(harness.state().board().scenes[0].text, "world");
+}
+
+#[test]
+fn click_beside_misspelling_only_moves_the_cursor() {
+    let Fixture { mut harness, .. } = launch(board_with_scenes(&["Rain"]));
+    wait_for_spellcheck(&mut harness);
+    open_prose(&mut harness, "The wrold");
+
+    labelled_text_input(&harness, "SCENE 01  Rain").click();
+    harness.run();
+
+    assert!(harness.query_by_label("world").is_none());
+}
+
 #[test]
 fn added_words_and_character_names_are_not_misspellings() {
     let mut board = board_with_scenes(&["Rain"]);
