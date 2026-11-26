@@ -592,6 +592,38 @@ fn write_view_edits_prose_of_selected_scene() {
 }
 
 #[test]
+fn single_click_on_scene_card_selects_without_leaving_board() {
+    let Fixture { mut harness, .. } = launch(board_with_scenes(&["Rain", "Sun"]));
+
+    harness.get_by_label("Sun").click();
+    harness.run();
+
+    assert!(harness.query_by_label("Write prose").is_some());
+    assert!(harness.query_by_label("SCENE 02  Sun").is_none());
+}
+
+#[test]
+fn double_click_on_scene_card_opens_it_in_write_view() {
+    let dir = tempfile::tempdir().unwrap();
+    let board_path = dir.path().join("board.json");
+    let settings_path = dir.path().join("settings.json");
+    let board = board_with_scenes(&["Rain", "Sun"]);
+    // The default 0.25 s frame step puts two clicks beyond egui's double-click window.
+    let mut harness = Harness::builder()
+        .with_size(WINDOW)
+        .with_step_dt(1.0 / 60.0)
+        .build_eframe(move |cc| new_app(cc, board, board_path, settings_path, None));
+    harness.run();
+
+    let card = harness.get_by_label("Sun").rect().center();
+    click_at(&harness, card);
+    click_at(&harness, card);
+    harness.run();
+
+    assert!(harness.query_by_label("SCENE 02  Sun").is_some());
+}
+
+#[test]
 fn deleting_location_from_inspector_clears_it_from_scenes() {
     let mut board = board_with_scenes(&["Rain"]);
     board.add_location("Harbor");

@@ -79,6 +79,12 @@ enum SaveState {
     Failed(String),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SceneCardClick {
+    Select,
+    OpenInEditor,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Selection {
     Scene(Id),
@@ -3747,8 +3753,8 @@ impl PlannerApp {
                                 dragging,
                                 allow_reorder,
                             );
-                            if card_clicked {
-                                clicked = Some(self.board.scenes[index].id.clone());
+                            if let Some(click) = card_clicked {
+                                clicked = Some((self.board.scenes[index].id.clone(), click));
                             }
                             if let Some(pair) = card_moved {
                                 moved = Some(pair);
@@ -3758,8 +3764,11 @@ impl PlannerApp {
                 }
             });
 
-        if let Some(id) = clicked {
+        if let Some((id, click)) = clicked {
             self.selected = Some(Selection::Scene(id));
+            if click == SceneCardClick::OpenInEditor {
+                self.view = View::Write;
+            }
         }
         if let Some((from, to)) = moved {
             self.board.move_scene(from, to);
@@ -3775,7 +3784,7 @@ impl PlannerApp {
         story_day: Option<StoryDay>,
         dragging: Option<usize>,
         allow_reorder: bool,
-    ) -> (bool, Option<(usize, usize)>) {
+    ) -> (Option<SceneCardClick>, Option<(usize, usize)>) {
         let colors = self.colors;
         let scene = &self.board.scenes[index];
         let is_selected = self.selected == Some(Selection::Scene(scene.id.clone()));
@@ -3806,7 +3815,13 @@ impl PlannerApp {
         if allow_reorder && response.drag_started() {
             egui::DragAndDrop::set_payload(ui.ctx(), DraggedScene(index));
         }
-        let clicked = response.clicked();
+        let clicked = if response.double_clicked() {
+            Some(SceneCardClick::OpenInEditor)
+        } else if response.clicked() {
+            Some(SceneCardClick::Select)
+        } else {
+            None
+        };
         let mut moved = None;
         if allow_reorder
             && let Some(from) = response.dnd_hover_payload::<DraggedScene>()
