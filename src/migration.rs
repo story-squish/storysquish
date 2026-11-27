@@ -15,6 +15,37 @@ pub fn migrate_legacy_dirs() -> Result<()> {
     migrate_dirs_named_by(storage::data_dir)
 }
 
+/// Moves boards out of the data dir into Documents and repoints settings
+/// at them. The settings step runs on every
+/// launch until it finds nothing to change, so a crash between the move and
+/// the settings save heals itself.
+pub fn migrate_boards_to_documents(settings_path: &Path) -> Result<()> {
+    let Some(boards_dir) = storage::documents_boards_dir() else {
+        return Ok(());
+    };
+    move_boards_and_repoint_settings(&storage::data_dir(APP_NAME)?, &boards_dir, settings_path)
+}
+
+fn move_boards_and_repoint_settings(
+    data_dir: &Path,
+    boards_dir: &Path,
+    settings_path: &Path,
+) -> Result<()> {
+    move_dir_unless_target_exists(data_dir, boards_dir)?;
+    if data_dir.try_exists()? {
+        return Ok(());
+    }
+    // Unreadable settings are reported by the app itself; rewriting them
+    // here would replace the writer's file with defaults.
+    let Ok(mut settings) = settings::load(settings_path) else {
+        return Ok(());
+    };
+    if settings.relocate_boards(data_dir, boards_dir) {
+        settings::save(settings_path, &settings)?;
+    }
+    Ok(())
+}
+
 fn migrate_dirs_named_by(dir_for_app: impl Fn(&str) -> Result<PathBuf>) -> Result<()> {
     let current = dir_for_app(APP_NAME)?;
     for legacy_name in LEGACY_APP_NAMES {
@@ -41,6 +72,70 @@ mod tests {
     fn write_marker(dir: &Path, contents: &str) {
         fs::create_dir_all(dir).unwrap();
         fs::write(dir.join("board.json"), contents).unwrap();
+    }
+
+    #[test]
+    fn moves_boards_to_documents_and_repoints_settings() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data/storysquish");
+        let documents = root.path().join("Documents/StorySquish");
+        let settings_path = root.path().join("config/settings.json");
+        write_marker(&data, "mine");
+        fs::create_dir_all(data.join("board-backups")).unwrap();
+        let mut saved = settings::Settings::default();
+        saved.set_repo(&data.join("board.json"), Some("me/novel".into()));
+        settings::save(&settings_path, &saved).unwrap();
+
+        move_boards_and_repoint_settings(&data, &documents, &settings_path).unwrap();
+
+        assert!(!data.exists());
+        assert_eq!(
+            fs::read_to_string(documents.join("board.json")).unwrap(),
+            "mine"
+        );
+        assert!(documents.join("board-backups").is_dir());
+        let settings = settings::load(&settings_path).unwrap();
+        assert_eq!(
+            settings.repo(&documents.join("board.json")),
+            Some("me/novel")
+        );
+        assert_eq!(settings.repo(&data.join("board.json")), None);
+    }
+
+    #[test]
+    fn repoints_settings_left_behind_by_an_interrupted_move() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data/storysquish");
+        let documents = root.path().join("Documents/StorySquish");
+        let settings_path = root.path().join("settings.json");
+        write_marker(&documents, "mine");
+        let mut saved = settings::Settings::default();
+        saved.board_path = Some(data.join("board.json"));
+        settings::save(&settings_path, &saved).unwrap();
+
+        move_boards_and_repoint_settings(&data, &documents, &settings_path).unwrap();
+
+        let settings = settings::load(&settings_path).unwrap();
+        assert_eq!(settings.board_path, Some(documents.join("board.json")));
+    }
+
+    #[test]
+    fn keeps_boards_in_data_dir_when_documents_folder_exists() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data/storysquish");
+        let documents = root.path().join("Documents/StorySquish");
+        let settings_path = root.path().join("settings.json");
+        write_marker(&data, "old");
+        write_marker(&documents, "other");
+        let mut saved = settings::Settings::default();
+        saved.board_path = Some(data.join("board.json"));
+        settings::save(&settings_path, &saved).unwrap();
+
+        move_boards_and_repoint_settings(&data, &documents, &settings_path).unwrap();
+
+        assert_eq!(fs::read_to_string(data.join("board.json")).unwrap(), "old");
+        let settings = settings::load(&settings_path).unwrap();
+        assert_eq!(settings.board_path, Some(data.join("board.json")));
     }
 
     #[test]

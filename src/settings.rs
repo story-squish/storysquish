@@ -143,6 +143,39 @@ impl Settings {
         }
     }
 
+    /// Points every remembered board inside `from` at the same place inside
+    /// `to`. Returns whether this changed anything, so callers save only then.
+    pub fn relocate_boards(&mut self, from: &Path, to: &Path) -> bool {
+        let (from, to) = (board_key(from), board_key(to));
+        let relocated = |board: &Path| Some(to.join(board.strip_prefix(&from).ok()?));
+        let mut changed = false;
+        let mut relocate = |board: &mut PathBuf| {
+            if let Some(moved) = relocated(board) {
+                *board = moved;
+                changed = true;
+            }
+        };
+        if let Some(board) = &mut self.board_path {
+            relocate(board);
+        }
+        self.recent_boards.iter_mut().for_each(&mut relocate);
+        self.repos = std::mem::take(&mut self.repos)
+            .into_iter()
+            .map(|(mut board, repo)| {
+                relocate(&mut board);
+                (board, repo)
+            })
+            .collect();
+        self.unpushed = std::mem::take(&mut self.unpushed)
+            .into_iter()
+            .map(|mut board| {
+                relocate(&mut board);
+                board
+            })
+            .collect();
+        changed
+    }
+
     pub fn is_unpushed(&self, board: &Path) -> bool {
         self.unpushed.contains(&board_key(board))
     }
@@ -206,6 +239,34 @@ pub fn save(path: &Path, settings: &Settings) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relocate_boards_moves_every_path_inside_the_old_dir() {
+        let old = Path::new("/data/storysquish");
+        let new = Path::new("/docs/StorySquish");
+        let outside = Path::new("/dropbox/novel.json");
+        let mut settings = Settings {
+            board_path: Some(old.join("board.json")),
+            ..Settings::default()
+        };
+        settings.remember_recent_board(&old.join("sequel.json"));
+        settings.remember_recent_board(outside);
+        settings.set_repo(&old.join("board.json"), Some("me/novel".into()));
+        settings.set_repo(outside, Some("me/other".into()));
+        settings.set_unpushed(&old.join("sequel.json"), true);
+
+        assert!(settings.relocate_boards(old, new));
+
+        assert_eq!(settings.board_path, Some(new.join("board.json")));
+        assert_eq!(
+            settings.recent_boards().collect::<Vec<_>>(),
+            [outside, &new.join("sequel.json")]
+        );
+        assert_eq!(settings.repo(&new.join("board.json")), Some("me/novel"));
+        assert_eq!(settings.repo(outside), Some("me/other"));
+        assert!(settings.is_unpushed(&new.join("sequel.json")));
+        assert!(!settings.relocate_boards(old, new));
+    }
 
     #[test]
     fn missing_file_yields_defaults() {

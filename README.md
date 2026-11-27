@@ -178,7 +178,7 @@ has focus, so they keep their usual meaning while typing.
 
 | What     | Location                                                        |
 | -------- | --------------------------------------------------------------- |
-| Board    | The path given on the command line, else the one chosen in Settings, else `board.json` in the platform data dir (below) |
+| Board    | The path given on the command line, else the one chosen in Settings, else `StorySquish/board.json` in your Documents folder (the platform data dir below if there is no Documents folder). Boards saved in the data dir by earlier releases move to Documents on first launch, unless `StorySquish` already exists there |
 | Backups  | `<board>-backups/` next to the board file, e.g. `board-backups/` |
 | Settings | `$XDG_CONFIG_HOME/storysquish/settings.json`, falling back to `~/.config/storysquish/settings.json` on every platform |
 | GitHub token | `github-token` next to `settings.json`, readable only by you |

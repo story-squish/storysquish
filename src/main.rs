@@ -6,10 +6,15 @@ use anyhow::{Context, Result};
 use storysquish::{APP_NAME, app::PlannerApp, migration, model::Board, settings, storage};
 
 fn main() -> Result<()> {
+    let settings_path = settings::default_settings_path()?;
     let migration_alert = migration::migrate_legacy_dirs()
         .err()
-        .map(|err| format!("Could not carry over data from before the rename: {err:#}"));
-    let settings_path = settings::default_settings_path()?;
+        .map(|err| format!("Could not carry over data from before the rename: {err:#}"))
+        .or_else(|| {
+            migration::migrate_boards_to_documents(&settings_path)
+                .err()
+                .map(|err| format!("Could not move your boards to Documents: {err:#}"))
+        });
     let path = match std::env::args_os().nth(1) {
         Some(arg) => PathBuf::from(arg),
         None => {

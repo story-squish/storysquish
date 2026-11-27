@@ -8,8 +8,28 @@ use anyhow::{Context, Result, bail};
 use crate::APP_NAME;
 use crate::model::{Board, DEFAULT_TITLE};
 
+const BOARD_FILE_NAME: &str = "board.json";
+const DOCUMENTS_FOLDER_NAME: &str = "StorySquish";
+
 pub fn default_board_path() -> Result<PathBuf> {
-    Ok(data_dir(APP_NAME)?.join("board.json"))
+    default_board_path_in(&data_dir(APP_NAME)?, documents_boards_dir().as_deref())
+}
+
+/// `StorySquish` in the user's Documents folder, where boards live unless
+/// the writer picks another place.
+pub fn documents_boards_dir() -> Option<PathBuf> {
+    let dirs = directories::UserDirs::new()?;
+    Some(dirs.document_dir()?.join(DOCUMENTS_FOLDER_NAME))
+}
+
+/// A board still in the data dir, because moving it to Documents failed,
+/// stays the default so it never looks lost.
+fn default_board_path_in(data_dir: &Path, boards_dir: Option<&Path>) -> Result<PathBuf> {
+    let legacy = data_dir.join(BOARD_FILE_NAME);
+    if legacy.try_exists()? {
+        return Ok(legacy);
+    }
+    Ok(boards_dir.map_or(legacy, |dir| dir.join(BOARD_FILE_NAME)))
 }
 
 pub fn data_dir(app_name: &str) -> Result<PathBuf> {
@@ -337,6 +357,31 @@ pub fn rename_board(from: &Path, to: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_board_lives_in_documents() {
+        let data = tempfile::tempdir().unwrap();
+        let documents = tempfile::tempdir().unwrap();
+        let path = default_board_path_in(data.path(), Some(documents.path())).unwrap();
+        assert_eq!(path, documents.path().join("board.json"));
+    }
+
+    #[test]
+    fn existing_board_in_data_dir_stays_the_default() {
+        let data = tempfile::tempdir().unwrap();
+        let documents = tempfile::tempdir().unwrap();
+        let legacy = data.path().join("board.json");
+        fs::write(&legacy, "{}").unwrap();
+        let path = default_board_path_in(data.path(), Some(documents.path())).unwrap();
+        assert_eq!(path, legacy);
+    }
+
+    #[test]
+    fn default_board_falls_back_to_data_dir_without_documents() {
+        let data = tempfile::tempdir().unwrap();
+        let path = default_board_path_in(data.path(), None).unwrap();
+        assert_eq!(path, data.path().join("board.json"));
+    }
 
     #[test]
     fn missing_file_yields_default_board() {
