@@ -246,6 +246,11 @@ impl Spellcheck {
         };
     }
 
+    pub fn is_loading(&self) -> bool {
+        matches!(self.status, Status::Loading(_) | Status::Downloading { .. })
+            || matches!(self.thesaurus, ThesaurusStatus::Loading { .. })
+    }
+
     pub fn thesaurus_ready(&self) -> bool {
         matches!(self.thesaurus, ThesaurusStatus::Ready(_))
     }

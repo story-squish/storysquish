@@ -489,6 +489,10 @@ impl PlannerApp {
         self.spellcheck.thesaurus_ready()
     }
 
+    pub fn spellcheck_loading(&self) -> bool {
+        self.spellcheck.is_loading()
+    }
+
     fn resolve_dictionary<'a>(&'a self, choice: &'a SpellcheckDictionary) -> Option<&'a str> {
         match choice {
             SpellcheckDictionary::Off => None,

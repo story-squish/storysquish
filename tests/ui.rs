@@ -41,7 +41,7 @@ fn launch_with_settings(board: Board, settings_json: Option<&str>) -> Fixture {
     let mut harness = Harness::builder()
         .with_size(WINDOW)
         .build_eframe(move |cc| new_app(cc, board, path, settings_path, None));
-    harness.run();
+    finish_startup(&mut harness);
     Fixture { harness, dir }
 }
 
@@ -337,7 +337,7 @@ fn a_board_file_named_after_its_title_follows_a_new_title() {
     let mut harness = Harness::builder()
         .with_size(WINDOW)
         .build_eframe(move |cc| new_app(cc, board, path, settings_path, None));
-    harness.run();
+    finish_startup(&mut harness);
     assert_eq!(harness.state().board_path(), dir.path().join("Dune.json"));
 
     harness.get_all_by_value("Dune").next().unwrap().focus();
@@ -373,7 +373,7 @@ fn a_board_file_named_by_hand_keeps_its_name() {
     let mut harness = Harness::builder()
         .with_size(WINDOW)
         .build_eframe(move |cc| new_app(cc, board, path, settings_path, None));
-    harness.run();
+    finish_startup(&mut harness);
 
     harness.get_all_by_value("Dune").next().unwrap().focus();
     harness.run();
@@ -613,7 +613,7 @@ fn double_click_on_scene_card_opens_it_in_write_view() {
         .with_size(WINDOW)
         .with_step_dt(1.0 / 60.0)
         .build_eframe(move |cc| new_app(cc, board, board_path, settings_path, None));
-    harness.run();
+    finish_startup(&mut harness);
 
     let card = harness.get_by_label("Sun").rect().center();
     click_at(&harness, card);
@@ -827,7 +827,7 @@ fn double_click_on_timeline_row_opens_it_in_write_view() {
         .with_size(WINDOW)
         .with_step_dt(1.0 / 60.0)
         .build_eframe(move |cc| new_app(cc, board, board_path, settings_path, None));
-    harness.run();
+    finish_startup(&mut harness);
     harness.get_by_label("Timeline").click();
     harness.run();
     wait_out_double_click_window(&mut harness);
@@ -978,7 +978,7 @@ fn launch_connected(board: Board) -> (Harness<'static, PlannerApp>, TempDir) {
     let mut harness = Harness::builder()
         .with_size(WINDOW)
         .build_eframe(move |cc| new_app(cc, board, board_path, settings_path, None));
-    harness.run();
+    finish_startup(&mut harness);
     (harness, dir)
 }
 
@@ -1049,7 +1049,7 @@ fn new_from_an_opened_backup_starts_outside_the_backups_directory() {
     let mut harness = Harness::builder()
         .with_size(WINDOW)
         .build_eframe(move |cc| new_app(cc, board, backup, settings_path, None));
-    harness.run();
+    finish_startup(&mut harness);
 
     harness.get_by_label("New").click();
     harness.run();
@@ -1124,7 +1124,7 @@ fn open_local_switches_back_to_the_previous_board() {
                 None,
             )
         });
-    harness.run();
+    finish_startup(&mut harness);
 
     harness.get_by_label("Open").click();
     harness.run();
@@ -1196,7 +1196,7 @@ fn open_local_offers_boards_linked_to_a_repo_with_a_github_connection() {
             )
             .with_github_api_base(&format!("http://{}", unused_local_address()))
         });
-    harness.run();
+    finish_startup(&mut harness);
 
     harness.get_by_label("Open").click();
     harness.run();
@@ -1421,7 +1421,7 @@ fn reopening_from_cloud_keeps_edits_made_just_before_switching_away() {
         .build_eframe(move |cc| {
             new_app(cc, novel, open_path, settings_path, None).with_github_api_base(&api_base)
         });
-    harness.run();
+    finish_startup(&mut harness);
 
     harness.get_by_label("Ada").click();
     harness.run();
@@ -1584,7 +1584,7 @@ fn launch_with_fake_github(
         .build_eframe(move |cc| {
             new_app(cc, board, board_path, settings_path, None).with_github_api_base(&api_base)
         });
-    harness.run();
+    finish_startup(&mut harness);
     (harness, dir)
 }
 
@@ -1602,7 +1602,7 @@ fn launch_first_time_with_fake_github() -> (Harness<'static, PlannerApp>, TempDi
                 .with_github_api_base(&api_base)
                 .offering_repo_on_first_change()
         });
-    harness.run();
+    finish_startup(&mut harness);
     (harness, dir)
 }
 
@@ -1920,7 +1920,7 @@ fn launch_auto_backup(
         .build_eframe(move |cc| {
             new_app(cc, dune, board_path, settings_path, None).with_github_api_base(&api_base)
         });
-    harness.run();
+    finish_startup(&mut harness);
     (harness, dir)
 }
 
@@ -2037,6 +2037,16 @@ fn closing_on_a_network_that_never_answers_gives_up_and_flags_the_board() {
     assert!(started.elapsed() < std::time::Duration::from_secs(15));
     assert!(saved_unpushed(&dir, "Dune.json"));
     drop(silent);
+}
+
+/// The dictionary loads on a background thread that repaints when done; a
+/// repaint landing mid-test makes `Harness::run` exceed its step limit.
+fn finish_startup(harness: &mut Harness<'_, PlannerApp>) {
+    wait_until(
+        harness,
+        |app| !app.spellcheck_loading(),
+        "spellcheck never finished loading",
+    );
 }
 
 fn wait_for_spellcheck(harness: &mut Harness<'_, PlannerApp>) {
@@ -2255,7 +2265,7 @@ fn choosing_a_downloadable_dictionary_downloads_and_uses_it() {
             new_app(cc, board, board_path, app_settings_path, None)
                 .with_dictionary_download_base(&base)
         });
-    harness.run();
+    finish_startup(&mut harness);
     wait_for_spellcheck(&mut harness);
 
     harness.get_by_label("Settings").click();
@@ -2310,7 +2320,7 @@ fn enabling_the_thesaurus_downloads_it_and_offers_synonyms() {
             new_app(cc, board, board_path, app_settings_path, None)
                 .with_thesaurus_download_base(&base)
         });
-    harness.run();
+    finish_startup(&mut harness);
     wait_for_spellcheck(&mut harness);
     assert!(!harness.state().thesaurus_ready());
 
@@ -2363,7 +2373,7 @@ fn auto_spellcheck_follows_the_keyboard_layout() {
             PlannerApp::new(cc, board, board_path, settings_path, None)
                 .with_input_language(move || detected.lock().unwrap().clone())
         });
-    harness.run();
+    finish_startup(&mut harness);
     wait_for_spellcheck(&mut harness);
     open_prose(&mut harness, "colour");
     labelled_text_input(&harness, "SCENE 01  Rain").click_secondary();
