@@ -147,6 +147,16 @@ sudo apt-get install libxcb-render0-dev libxcb-shape0-dev \
   in from other devices (see [Files](#files))
 - Optional backup to a private GitHub repository, with every version
   restorable (see [GitHub backup](#github-backup))
+- **Import → Scenes from CSV…** adds scenes from a spreadsheet or beat sheet after the
+  existing ones, as one undo step. The first row names the columns: `Title`,
+  `Summary`, `Status`, `Act`, `POV`, `Location`, `Day`, `Date` (`YYYY-MM-DD`)
+  and `Text`, in any order, with common synonyms such as `Scene`, `Beat` or
+  `Setting`. Comma, semicolon and tab separators all work. POV and location
+  names match existing characters and locations ignoring case, and are created
+  when new. Other columns are skipped and listed afterwards; a bad value
+  (unknown status or act, a date that isn't `YYYY-MM-DD`) refuses the whole
+  file and names its row. On a calendar board use `Date`, since `Day` is only
+  the hand-numbered day
 - Import/export the board as JSON; export an outline or the manuscript as
   Markdown (archived scenes are left out; outline scenes keep their board
   numbers)
@@ -392,6 +402,7 @@ drive the app headlessly with `egui_kittest`.
 | ---------------------------------------- | ------------------------------------------------ |
 | [`model`](src/model.rs)                  | Board, scenes, characters, locations, items, relationships; JSON schema |
 | [`app`](src/app.rs)                      | egui UI, shortcuts, dialogs                      |
+| [`csv_import`](src/csv_import.rs)        | Scenes from a CSV beat sheet or spreadsheet      |
 | [`continuity`](src/continuity.rs)        | Cross-scene checks: arrivals, deaths, items, same-day time and travel |
 | [`history`](src/history.rs)              | Snapshot-based undo/redo                         |
 | [`storage`](src/storage.rs)              | Board load/save, atomic writes, backups, export names |
