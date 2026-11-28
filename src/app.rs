@@ -12,10 +12,12 @@ use eframe::egui::{
 };
 
 use crate::calendar::{self, StoryDate};
+use crate::continuity;
 use crate::github::{self, CloudBoard, Revision};
 use crate::history::History;
 use crate::model::{
     Act, Board, CalendarDays, ChapterPlace, Character, Id, Location, Scene, Status, StoryDay,
+    TimeOfDay,
 };
 use crate::settings::{self, Settings, SpellcheckDictionary};
 use crate::spelling::{self, DictionaryInfo, DictionarySource, KnownWords};
@@ -102,6 +104,7 @@ enum Selection {
     Scene(Id),
     Character(Id),
     Location(Id),
+    Item(Id),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -317,6 +320,7 @@ pub struct PlannerApp {
     view: View,
     new_character: String,
     new_location: String,
+    new_item: String,
     new_relationship_target: Option<Id>,
     new_relationship_label: String,
     disk_modified: Option<SystemTime>,
@@ -398,6 +402,7 @@ impl PlannerApp {
             view: View::default(),
             new_character: String::new(),
             new_location: String::new(),
+            new_item: String::new(),
             new_relationship_target: None,
             new_relationship_label: String::new(),
             last_disk_check: Instant::now(),
@@ -892,7 +897,7 @@ impl PlannerApp {
             Some(Selection::Scene(id)) => self.board.shift_scene(id, offset),
             Some(Selection::Character(id)) => self.board.shift_character(id, offset),
             Some(Selection::Location(id)) => self.board.shift_location(id, offset),
-            None => false,
+            Some(Selection::Item(_)) | None => false,
         };
         if moved {
             self.save_now();
@@ -2751,7 +2756,43 @@ impl PlannerApp {
         }
     }
 
-    fn stats_panel(&self, ui: &mut Ui) {
+    fn items_panel(&mut self, ui: &mut Ui) {
+        let colors = self.colors;
+        ui.heading("Items");
+        ui.add_space(4.0);
+        if self.board.items.is_empty() {
+            ui.label(RichText::new("No items yet.").small().color(colors.muted));
+        }
+        let mut clicked = None;
+        for item in &self.board.items {
+            let is_selected = self.selected == Some(Selection::Item(item.id.clone()));
+            if ui
+                .selectable_label(is_selected, display_name(&item.name))
+                .on_hover_text("Tracked by name in scene titles, summaries and prose")
+                .clicked()
+            {
+                clicked = Some(item.id.clone());
+            }
+        }
+        if let Some(id) = clicked {
+            self.selected = Some(Selection::Item(id));
+        }
+        ui.add_space(4.0);
+        let input = ui.add(
+            TextEdit::singleline(&mut self.new_item)
+                .hint_text("New tracked item")
+                .desired_width(f32::INFINITY),
+        );
+        if input.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+            if self.board.add_item(&self.new_item) {
+                self.new_item.clear();
+                self.save_now();
+            }
+            input.request_focus();
+        }
+    }
+
+    fn stats_panel(&mut self, ui: &mut Ui) {
         ui.heading("Statistics");
         ui.add_space(4.0);
         ui.horizontal_top(|ui| {
@@ -2761,7 +2802,46 @@ impl PlannerApp {
             ui.vertical(|ui| self.pov_word_stats(ui));
             ui.vertical(|ui| self.appearance_stats(ui));
             ui.vertical(|ui| self.scene_gap_stats(ui));
+            ui.vertical(|ui| self.continuity_stats(ui));
         });
+    }
+
+    fn continuity_stats(&mut self, ui: &mut Ui) {
+        const SHOWN: usize = 6;
+        let colors = self.colors;
+        ui.label(RichText::new("Continuity").strong())
+            .on_hover_text(
+                "Scenes that disagree with a character's arrival or death, an item's \
+                 resolution, or the same day's time and travel. Flashbacks are left out.",
+            );
+        let issues = continuity::issues(&self.board);
+        if issues.is_empty() {
+            ui.label(
+                RichText::new("Nothing to flag.")
+                    .small()
+                    .color(colors.muted),
+            );
+            return;
+        }
+        let mut open = None;
+        for issue in issues.iter().take(SHOWN) {
+            let index = issue.scene();
+            let scene = &self.board.scenes[index];
+            let label = format!("{}  {}", scene_number(index), issue.message(&self.board));
+            if ui.link(label).on_hover_text(scene_title(scene)).clicked() {
+                open = Some(scene.id.clone());
+            }
+        }
+        if issues.len() > SHOWN {
+            ui.label(
+                RichText::new(format!("{} more", issues.len() - SHOWN))
+                    .small()
+                    .color(colors.muted),
+            );
+        }
+        if let Some(id) = open {
+            self.selected = Some(Selection::Scene(id));
+        }
     }
 
     fn appearance_stats(&self, ui: &mut Ui) {
@@ -2963,6 +3043,7 @@ impl PlannerApp {
             Some(Selection::Scene(id)) => self.scene_inspector(ui, id),
             Some(Selection::Character(id)) => self.character_inspector(ui, &id),
             Some(Selection::Location(id)) => self.location_inspector(ui, &id),
+            Some(Selection::Item(id)) => self.item_inspector(ui, &id),
             None => {}
         }
     }
@@ -2977,6 +3058,7 @@ impl PlannerApp {
             .find(|(c, _)| &c.id == id)
             .map_or(0, |(_, scenes)| scenes.len());
         let character_count = self.board.characters.len();
+        let scenes = scene_references(&self.board);
         let Some(index) = self.board.character_index(id) else {
             self.selected = None;
             return;
@@ -3007,6 +3089,10 @@ impl PlannerApp {
             .color(colors.muted),
         )
         .on_hover_text("As POV, or named in the title, summary or prose");
+
+        changed |=
+            scene_reference_field(ui, colors, "Arrival scene", &mut character.arrival, &scenes);
+        changed |= scene_reference_field(ui, colors, "Death scene", &mut character.death, &scenes);
 
         let (relationships_changed, relationship_added) = self.relationship_editor(ui, id);
         changed |= relationships_changed;
@@ -3226,6 +3312,19 @@ impl PlannerApp {
             .labelled_by(name_label)
             .changed();
 
+        let region_label = field_label(ui, colors, "Region");
+        changed |= ui
+            .add(
+                TextEdit::singleline(&mut location.region)
+                    .hint_text("city, country, planet…")
+                    .desired_width(f32::INFINITY),
+            )
+            .on_hover_text(
+                "Scenes on one day in places from different regions are flagged as a jump",
+            )
+            .labelled_by(region_label)
+            .changed();
+
         let notes_label = field_label(ui, colors, "Notes");
         let notes = TextEdit::multiline(&mut location.notes)
             .hint_text("Look, sound, smell, history, who goes there.")
@@ -3287,6 +3386,93 @@ impl PlannerApp {
         }
     }
 
+    fn item_inspector(&mut self, ui: &mut Ui, id: &Id) {
+        let colors = self.colors;
+        let scenes = scene_references(&self.board);
+        let Some(index) = self.board.item_index(id) else {
+            self.selected = None;
+            return;
+        };
+        let Some(item) = self.board.item_mut(id) else {
+            self.selected = None;
+            return;
+        };
+        let mut changed = false;
+        let mut close = false;
+
+        close |= inspector_header(ui, colors, "ITEM", display_name(&item.name));
+
+        let name_label = field_label(ui, colors, "Name");
+        changed |= ui
+            .add(TextEdit::singleline(&mut item.name).desired_width(f32::INFINITY))
+            .on_hover_text("Matched as a whole word in scene titles, summaries and prose")
+            .labelled_by(name_label)
+            .changed();
+
+        let notes_label = field_label(ui, colors, "Notes");
+        let notes = TextEdit::multiline(&mut item.notes)
+            .hint_text("What it is, who wants it, what it costs.")
+            .desired_rows(6)
+            .desired_width(f32::INFINITY)
+            .show(ui);
+        changed |= self
+            .spellcheck
+            .check_field(ui, notes, &mut item.notes, colors.danger)
+            .labelled_by(notes_label)
+            .changed();
+
+        changed |=
+            scene_reference_field(ui, colors, "Resolved in scene", &mut item.resolved, &scenes);
+        ui.label(
+            RichText::new("Unresolved items that drop out before the end are flagged.")
+                .small()
+                .color(colors.muted),
+        );
+
+        ui.add_space(10.0);
+        let mut shift = None;
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(index > 0, egui::Button::new("Move up"))
+                .clicked()
+            {
+                shift = Some(-1);
+            }
+            if ui
+                .add_enabled(
+                    index + 1 < self.board.items.len(),
+                    egui::Button::new("Move down"),
+                )
+                .clicked()
+            {
+                shift = Some(1);
+            }
+        });
+
+        ui.add_space(6.0);
+        let delete = ui
+            .add(
+                egui::Button::new(RichText::new("Delete item").color(Color32::WHITE))
+                    .fill(colors.danger),
+            )
+            .clicked();
+
+        if changed {
+            self.mark_dirty();
+        }
+        if let Some(offset) = shift {
+            self.board.shift_item(id, offset);
+            self.save_now();
+        }
+        if delete {
+            self.board.delete_item(id);
+            self.selected = None;
+            self.save_now();
+        } else if close {
+            self.selected = None;
+        }
+    }
+
     fn scene_inspector(&mut self, ui: &mut Ui, id: Id) {
         let colors = self.colors;
         let Some(index) = self.board.scene_index(&id) else {
@@ -3341,6 +3527,7 @@ impl PlannerApp {
 
         changed |= classification_fields(ui, colors, scene, &characters);
         changed |= setting_fields(ui, colors, scene, &locations, calendar);
+        changed |= timing_fields(ui, colors, scene);
         let day_zero_toggled = day_zero_field(ui, scene, uses_calendar, &mut is_day_zero);
         changed |= chapter_break_field(ui, scene, chapter);
 
@@ -4368,6 +4555,8 @@ impl eframe::App for PlannerApp {
                         self.characters_panel(ui);
                         ui.add_space(10.0);
                         self.locations_panel(ui);
+                        ui.add_space(10.0);
+                        self.items_panel(ui);
                     });
                 });
 
@@ -4725,6 +4914,81 @@ fn setting_fields(
             None => story_day_field(&mut cols[1], colors, scene),
         };
     });
+    changed
+}
+
+fn timing_fields(ui: &mut Ui, colors: Palette, scene: &mut Scene) -> bool {
+    let mut changed = false;
+    ui.columns(2, |cols| {
+        let time_label = field_label(&mut cols[0], colors, "Time of day");
+        ComboBox::from_id_salt("time_of_day")
+            .selected_text(
+                scene
+                    .time
+                    .map_or_else(|| "— none —".to_owned(), |time| time.to_string()),
+            )
+            .width(cols[0].available_width())
+            .show_ui(&mut cols[0], |ui| {
+                changed |= ui
+                    .selectable_value(&mut scene.time, None, "— none —")
+                    .changed();
+                for time in TimeOfDay::ALL {
+                    changed |= ui
+                        .selectable_value(&mut scene.time, Some(time), time.to_string())
+                        .changed();
+                }
+            })
+            .response
+            .labelled_by(time_label);
+
+        changed |= cols[1]
+            .checkbox(&mut scene.flashback, "Flashback")
+            .on_hover_text("Told out of story order, so continuity checks leave it alone")
+            .changed();
+    });
+    changed
+}
+
+fn scene_references(board: &Board) -> Vec<(Id, String)> {
+    board
+        .scenes
+        .iter()
+        .enumerate()
+        .map(|(index, scene)| {
+            (
+                scene.id.clone(),
+                format!("{} · {}", scene_number(index), scene_title(scene)),
+            )
+        })
+        .collect()
+}
+
+fn scene_reference_field(
+    ui: &mut Ui,
+    colors: Palette,
+    label: &str,
+    value: &mut Option<Id>,
+    scenes: &[(Id, String)],
+) -> bool {
+    let label_id = field_label(ui, colors, label);
+    let selected = value
+        .as_ref()
+        .and_then(|id| scenes.iter().find(|(scene, _)| scene == id))
+        .map_or("— none —", |(_, name)| name.as_str());
+    let mut changed = false;
+    ComboBox::from_id_salt(label)
+        .selected_text(selected)
+        .width(ui.available_width())
+        .show_ui(ui, |ui| {
+            changed |= ui.selectable_value(value, None, "— none —").changed();
+            for (id, name) in scenes {
+                changed |= ui
+                    .selectable_value(value, Some(id.clone()), name.as_str())
+                    .changed();
+            }
+        })
+        .response
+        .labelled_by(label_id);
     changed
 }
 

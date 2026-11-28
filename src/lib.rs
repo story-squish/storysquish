@@ -1,5 +1,6 @@
 pub mod app;
 pub mod calendar;
+pub mod continuity;
 pub mod github;
 pub mod history;
 pub mod keyboard;

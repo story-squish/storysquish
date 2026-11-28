@@ -46,6 +46,9 @@ Import rather than by code sharing.
   truth for board-file compatibility, so check here before changing storage.
 - [`src/app.rs`](src/app.rs) — egui UI, shortcuts, dialogs. The app is driven
   here; most behavior changes touch this and `model`.
+- [`src/continuity.rs`](src/continuity.rs) — the continuity checker behind the
+  statistics panel's Continuity column; pure functions over a `Board`, so test
+  new checks in the module rather than through the UI.
 - [`src/history.rs`](src/history.rs) — snapshot-based undo/redo.
 - [`src/storage.rs`](src/storage.rs) — load/save, atomic writes (temp file +
   rename), backups, export/outline names. Writes must stay crash-safe; never
