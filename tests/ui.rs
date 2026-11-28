@@ -2925,3 +2925,61 @@ fn tracked_item_opens_in_the_inspector_and_deletes() {
     let saved = std::fs::read_to_string(dir.path().join("board.json")).unwrap();
     assert!(!saved.contains("the locket"));
 }
+
+#[test]
+fn csv_import_appends_scenes_reports_what_it_made_and_undoes_in_one_step() {
+    let Fixture { mut harness, dir } = launch(board_with_scenes(&["Existing"]));
+
+    harness.state_mut().import_scenes_from_csv(
+        "Title,Summary,POV,Color\nOpening,Ada waits,Ada,red\nStorm,Wind,Ada,blue\n",
+    );
+    harness.run();
+
+    assert_eq!(scene_titles(&harness), ["Existing", "Opening", "Storm"]);
+    assert_eq!(harness.state().board().characters.len(), 1);
+    assert!(
+        harness
+            .query_by_label(
+                "Added 2 scenes from the CSV. Created 1 new character. Ignored columns: Color."
+            )
+            .is_some()
+    );
+    let saved = std::fs::read_to_string(dir.path().join("board.json")).unwrap();
+    assert!(saved.contains("Opening"));
+
+    harness.get_by_label("OK").click();
+    harness.run();
+    harness.get_by_label("Undo").click();
+    harness.run();
+    assert_eq!(scene_titles(&harness), ["Existing"]);
+    assert_eq!(harness.state().board().characters, []);
+}
+
+#[test]
+fn a_bad_csv_is_refused_with_its_row_and_leaves_the_board_alone() {
+    let Fixture { mut harness, .. } = launch(board_with_scenes(&["Existing"]));
+
+    harness
+        .state_mut()
+        .import_scenes_from_csv("title,status\nA,Draft\nB,Drafty\n");
+    harness.run();
+
+    assert!(
+        harness
+            .query_by_label_contains("row 3, Status: unknown status")
+            .is_some()
+    );
+    assert_eq!(scene_titles(&harness), ["Existing"]);
+}
+
+#[test]
+fn import_menu_offers_the_board_and_scenes_from_csv() {
+    let Fixture { mut harness, .. } = launch(Board::default());
+
+    harness.get_by_label("Import").click();
+    harness.run();
+
+    assert!(harness.query_by_label("Board (JSON)…").is_some());
+    assert!(harness.query_by_label("Scenes from CSV…").is_some());
+    assert!(harness.query_by_label("Settings").is_some());
+}

@@ -49,6 +49,8 @@ Import rather than by code sharing.
 - [`src/continuity.rs`](src/continuity.rs) — the continuity checker behind the
   statistics panel's Continuity column; pure functions over a `Board`, so test
   new checks in the module rather than through the UI.
+- [`src/csv_import.rs`](src/csv_import.rs) — appends scenes from a CSV; validates
+  every row before touching the board, so a bad file changes nothing.
 - [`src/history.rs`](src/history.rs) — snapshot-based undo/redo.
 - [`src/storage.rs`](src/storage.rs) — load/save, atomic writes (temp file +
   rename), backups, export/outline names. Writes must stay crash-safe; never

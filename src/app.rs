@@ -13,6 +13,7 @@ use eframe::egui::{
 
 use crate::calendar::{self, StoryDate};
 use crate::continuity;
+use crate::csv_import;
 use crate::github::{self, CloudBoard, Revision};
 use crate::history::History;
 use crate::model::{
@@ -941,6 +942,52 @@ impl PlannerApp {
             .pick_file()
         {
             self.replace_board_from(&path);
+        }
+    }
+
+    fn import_menu(&mut self, ui: &mut Ui) {
+        if ui
+            .button("Board (JSON)…")
+            .on_hover_text("Replace this board with an exported one")
+            .clicked()
+        {
+            self.import();
+        }
+        if ui
+            .button("Scenes from CSV…")
+            .on_hover_text("Add scenes from a spreadsheet after the existing ones")
+            .clicked()
+        {
+            self.import_csv();
+        }
+    }
+
+    fn import_csv(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("CSV", &["csv", "tsv", "txt"])
+            .pick_file()
+        else {
+            return;
+        };
+        match std::fs::read_to_string(&path) {
+            Ok(csv) => self.import_scenes_from_csv(&csv),
+            Err(e) => self.alert = Some(format!("Could not read {}: {e}", path.display())),
+        }
+    }
+
+    /// Adds the CSV's rows as scenes after the existing ones. One undo step
+    /// removes them again, so no backup copy is taken.
+    pub fn import_scenes_from_csv(&mut self, csv: &str) {
+        self.flush_pending_edits();
+        match csv_import::append_scenes(&mut self.board, csv) {
+            Ok(summary) => {
+                self.save_now();
+                if self.save_state == SaveState::Saved {
+                    self.save_state = SaveState::Imported;
+                }
+                self.alert = Some(csv_import_message(&summary));
+            }
+            Err(e) => self.alert = Some(format!("Could not import the CSV: {e:#}")),
         }
     }
 
@@ -2484,9 +2531,7 @@ impl PlannerApp {
                 {
                     self.new_board_file();
                 }
-                if ui.button("Import").clicked() {
-                    self.import();
-                }
+                ui.menu_button("Import", |ui| self.import_menu(ui));
                 self.open_button(ui);
                 ui.menu_button("Export", |ui| self.export_menu(ui));
                 let (text, color) = match &self.save_state {
@@ -5254,6 +5299,32 @@ fn scene_details(board: &Board, scene: &Scene) -> String {
         parts.push(display_name(&location.name).to_owned());
     }
     parts.join(" · ")
+}
+
+fn csv_import_message(summary: &csv_import::Summary) -> String {
+    let created: Vec<String> = [
+        (summary.new_characters, "character"),
+        (summary.new_locations, "location"),
+    ]
+    .into_iter()
+    .filter(|(count, _)| *count > 0)
+    .map(|(count, kind)| format!("{count} new {kind}{}", plural(count)))
+    .collect();
+    let mut sentences = vec![format!(
+        "Added {} scene{} from the CSV.",
+        summary.scenes,
+        plural(summary.scenes)
+    )];
+    if !created.is_empty() {
+        sentences.push(format!("Created {}.", created.join(" and ")));
+    }
+    if !summary.ignored_columns.is_empty() {
+        sentences.push(format!(
+            "Ignored columns: {}.",
+            summary.ignored_columns.join(", ")
+        ));
+    }
+    sentences.join(" ")
 }
 
 fn scene_title(scene: &Scene) -> &str {
