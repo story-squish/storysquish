@@ -57,6 +57,36 @@ impl fmt::Display for Act {
     }
 }
 
+/// Rough time of day, ordered from morning to night, so scenes on the same
+/// day can be checked for running backwards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TimeOfDay {
+    Dawn,
+    Morning,
+    Midday,
+    Afternoon,
+    Evening,
+    Night,
+}
+
+impl TimeOfDay {
+    pub const ALL: [Self; 6] = [
+        Self::Dawn,
+        Self::Morning,
+        Self::Midday,
+        Self::Afternoon,
+        Self::Evening,
+        Self::Night,
+    ];
+}
+
+impl fmt::Display for TimeOfDay {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self, f)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Id(String);
@@ -79,6 +109,21 @@ pub struct Character {
     pub goal: String,
     #[serde(default)]
     pub notes: String,
+    /// Scene where the character first appears on the page; mentions before
+    /// it are flagged as continuity slips.
+    #[serde(
+        rename = "arrivalScene",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub arrival: Option<Id>,
+    /// Scene where the character dies; mentions after it are flagged.
+    #[serde(
+        rename = "deathScene",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub death: Option<Id>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,6 +132,27 @@ pub struct Location {
     pub name: String,
     #[serde(default)]
     pub notes: String,
+    /// Coarse area such as a city or planet, used to tell a same-day jump
+    /// between distant places from a walk across town.
+    #[serde(default)]
+    pub region: String,
+}
+
+/// A thing the plot turns on, tracked by name across the prose.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Item {
+    pub id: Id,
+    pub name: String,
+    #[serde(default)]
+    pub notes: String,
+    /// Scene where the item leaves the story on purpose, so it is not
+    /// flagged for dropping out.
+    #[serde(
+        rename = "resolvedScene",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub resolved: Option<Id>,
 }
 
 /// Directed, so "Ada → Bo: mentor" and "Bo → Ada: rival" can differ.
@@ -114,6 +180,17 @@ pub struct Scene {
     pub act: Option<Act>,
     #[serde(default, with = "empty_string_as_none")]
     pub location: Option<Id>,
+    /// Rough time of day, used with the story day to catch scenes that run
+    /// backwards.
+    #[serde(
+        default,
+        with = "empty_string_as_none",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub time: Option<TimeOfDay>,
+    /// Told out of story order, so chronology checks leave it alone.
+    #[serde(rename = "flashback", default, skip_serializing_if = "is_false")]
+    pub flashback: bool,
     /// Hand-numbered story day, used while the board has no calendar.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub day: Option<i32>,
@@ -154,6 +231,8 @@ impl Scene {
             pov: None,
             act: None,
             location: None,
+            time: None,
+            flashback: false,
             day: None,
             date: None,
             day_hidden: false,
@@ -313,6 +392,8 @@ pub struct Board {
     pub locations: Vec<Location>,
     #[serde(default)]
     pub relationships: Vec<Relationship>,
+    #[serde(default)]
+    pub items: Vec<Item>,
     /// Target manuscript word count. Older apps drop it on save.
     #[serde(rename = "wordGoal", default, skip_serializing_if = "Option::is_none")]
     pub word_goal: Option<usize>,
@@ -340,6 +421,8 @@ struct StoredBoard {
     locations: Vec<Location>,
     #[serde(default)]
     relationships: Vec<Relationship>,
+    #[serde(default)]
+    items: Vec<Item>,
     #[serde(rename = "wordGoal", default)]
     word_goal: Option<usize>,
     #[serde(default)]
@@ -370,6 +453,7 @@ impl From<StoredBoard> for Board {
             scenes,
             locations: stored.locations,
             relationships: stored.relationships,
+            items: stored.items,
             word_goal: stored.word_goal,
             calendar: stored.calendar || stored.story_start.is_some(),
             absolute_days: stored.absolute_days,
@@ -386,6 +470,7 @@ impl Default for Board {
             scenes: Vec::new(),
             locations: Vec::new(),
             relationships: Vec::new(),
+            items: Vec::new(),
             word_goal: None,
             calendar: false,
             absolute_days: false,
@@ -402,6 +487,7 @@ impl Board {
             && self.characters.is_empty()
             && self.locations.is_empty()
             && self.relationships.is_empty()
+            && self.items.is_empty()
     }
 
     pub fn has_placeholder_title(&self) -> bool {
@@ -428,6 +514,19 @@ impl Board {
         self.scenes.retain(|s| &s.id != id);
         if self.day_zero.as_ref() == Some(id) {
             self.day_zero = None;
+        }
+        for character in &mut self.characters {
+            if character.arrival.as_ref() == Some(id) {
+                character.arrival = None;
+            }
+            if character.death.as_ref() == Some(id) {
+                character.death = None;
+            }
+        }
+        for item in &mut self.items {
+            if item.resolved.as_ref() == Some(id) {
+                item.resolved = None;
+            }
         }
     }
 
@@ -492,6 +591,8 @@ impl Board {
             gender: String::new(),
             goal: String::new(),
             notes: String::new(),
+            arrival: None,
+            death: None,
         });
         true
     }
@@ -516,6 +617,7 @@ impl Board {
             id: Id::generate(),
             name: name.to_owned(),
             notes: String::new(),
+            region: String::new(),
         });
         true
     }
@@ -552,6 +654,43 @@ impl Board {
             .iter()
             .filter(|s| s.location.as_ref() == Some(id))
             .count()
+    }
+
+    /// Returns `false` when the trimmed name is empty.
+    pub fn add_item(&mut self, name: &str) -> bool {
+        let name = name.trim();
+        if name.is_empty() {
+            return false;
+        }
+        self.items.push(Item {
+            id: Id::generate(),
+            name: name.to_owned(),
+            notes: String::new(),
+            resolved: None,
+        });
+        true
+    }
+
+    pub fn delete_item(&mut self, id: &Id) {
+        self.items.retain(|i| &i.id != id);
+    }
+
+    pub fn item(&self, id: &Id) -> Option<&Item> {
+        self.items.iter().find(|i| &i.id == id)
+    }
+
+    pub fn item_mut(&mut self, id: &Id) -> Option<&mut Item> {
+        self.items.iter_mut().find(|i| &i.id == id)
+    }
+
+    pub fn item_index(&self, id: &Id) -> Option<usize> {
+        self.items.iter().position(|i| &i.id == id)
+    }
+
+    /// Moves an item one slot up (`-1`) or down (`1`); returns `false` at
+    /// either end of the list.
+    pub fn shift_item(&mut self, id: &Id, offset: isize) -> bool {
+        shift_by(&mut self.items, |i| &i.id == id, offset)
     }
 
     /// Returns `false` for self-links and unknown characters.
@@ -1511,6 +1650,63 @@ mod tests {
                 ("Bennet", vec![])
             ]
         );
+    }
+
+    #[test]
+    fn continuity_fields_are_saved_only_when_set() {
+        let json =
+            serde_json::to_string(&serde_json::from_str::<Board>(HTML_EXPORT).unwrap()).unwrap();
+        for key in ["time", "flashback", "arrivalScene", "deathScene"] {
+            assert!(
+                !json.contains(&format!("\"{key}\":")),
+                "{key} leaked into {json}"
+            );
+        }
+
+        let mut board = Board::default();
+        board.add_character("Ada");
+        board.add_location("Harbor");
+        board.add_item("the locket");
+        let scene = board.add_scene();
+        let ada = board.characters[0].id.clone();
+        board.character_mut(&ada).unwrap().arrival = Some(scene.clone());
+        board.character_mut(&ada).unwrap().death = Some(scene.clone());
+        board.items[0].resolved = Some(scene.clone());
+        board.locations[0].region = "Coast".to_owned();
+        let edited = board.scene_mut(&scene).unwrap();
+        edited.time = Some(TimeOfDay::Evening);
+        edited.flashback = true;
+
+        let json = serde_json::to_string(&board).unwrap();
+        assert!(json.contains(r#""time":"evening""#));
+        assert_eq!(serde_json::from_str::<Board>(&json).unwrap(), board);
+    }
+
+    #[test]
+    fn boards_from_before_continuity_load_without_it() {
+        let board: Board = serde_json::from_str(HTML_EXPORT).unwrap();
+        assert_eq!(board.items, []);
+        assert_eq!(board.scenes[0].time, None);
+        assert!(!board.scenes[0].flashback);
+        assert_eq!(board.characters[0].arrival, None);
+    }
+
+    #[test]
+    fn deleting_a_scene_clears_arrivals_deaths_and_resolutions() {
+        let mut board = Board::default();
+        board.add_character("Ada");
+        board.add_item("the locket");
+        let scene = board.add_scene();
+        let ada = board.characters[0].id.clone();
+        board.character_mut(&ada).unwrap().arrival = Some(scene.clone());
+        board.character_mut(&ada).unwrap().death = Some(scene.clone());
+        board.items[0].resolved = Some(scene.clone());
+
+        board.delete_scene(&scene);
+
+        assert_eq!(board.characters[0].arrival, None);
+        assert_eq!(board.characters[0].death, None);
+        assert_eq!(board.items[0].resolved, None);
     }
 
     #[test]

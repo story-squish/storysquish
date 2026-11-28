@@ -124,6 +124,14 @@ sudo apt-get install libxcb-render0-dev libxcb-shape0-dev \
 - **Relationships** view: a graph of directed, labelled relationships between
   characters (added in the character inspector)
 - Characters with role, gender, goal and notes; locations with notes
+- **Continuity** check in the statistics panel, listing scenes that disagree
+  with facts you recorded: a character named before their **Arrival scene** or
+  after their **Death scene**, a tracked **item** (sidebar, matched by name)
+  that shows up after the scene that **resolves** it or drops out of the last
+  scenes unresolved, scenes on the same story day whose **time of day** runs
+  backwards, and a same-day jump between locations whose **region** differs.
+  Tick **Flashback** on a scene to leave it out. Click an entry to open the
+  scene
 - Several boards, one per novel: **New** starts a board in its own file next
   to the current one, named after its title; the file is renamed to follow
   later title changes unless you gave it a name of your own. **Open → Local** lists the last eight boards you
@@ -340,7 +348,10 @@ keeps it in the browser's `localStorage`.
 
 Published at <https://story-squish.github.io/storysquish/> from
 [`docs/index.html`](docs/index.html). Boards move to the desktop app through
-Export and Import, or by pointing both at the same file.
+Export and Import, or by pointing both at the same file. The continuity
+check and the fields it reads (arrival and death scenes, items, regions, time
+of day, flashbacks) are desktop-only; the browser keeps them intact when a
+board passes through but does not show or edit them.
 
 It keeps the board in `localStorage` and the last 30 versions in IndexedDB
 (**Settings → Restore backup…**), and asks the browser for persistent storage.
@@ -379,8 +390,9 @@ drive the app headlessly with `egui_kittest`.
 
 | Module                                   | Responsibility                                   |
 | ---------------------------------------- | ------------------------------------------------ |
-| [`model`](src/model.rs)                  | Board, scenes, characters, locations, relationships; JSON schema |
+| [`model`](src/model.rs)                  | Board, scenes, characters, locations, items, relationships; JSON schema |
 | [`app`](src/app.rs)                      | egui UI, shortcuts, dialogs                      |
+| [`continuity`](src/continuity.rs)        | Cross-scene checks: arrivals, deaths, items, same-day time and travel |
 | [`history`](src/history.rs)              | Snapshot-based undo/redo                         |
 | [`storage`](src/storage.rs)              | Board load/save, atomic writes, backups, export names |
 | [`settings`](src/settings.rs)            | Color scheme, board location, recent boards, repo links, dictionary          |

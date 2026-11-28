@@ -2872,3 +2872,56 @@ fn day_zero_is_offered_only_for_scenes_on_the_timeline() {
     harness.run();
     assert!(harness.query_by_label("Day 1 · day 0").is_some());
 }
+
+#[test]
+fn continuity_panel_flags_a_character_seen_after_dying_and_opens_the_scene() {
+    let mut board = board_with_scenes(&["Funeral", "Epilogue"]);
+    board.add_character("Ada");
+    let ada = board.characters[0].id.clone();
+    board.character_mut(&ada).unwrap().death = Some(board.scenes[0].id.clone());
+    board.scenes[0].text = "Ada dies.".to_owned();
+    board.scenes[1].text = "Ada smiles.".to_owned();
+    let Fixture { mut harness, .. } = launch(board);
+
+    harness.get_by_label("Stats").click();
+    harness.run();
+    assert!(harness.query_by_label("Continuity").is_some());
+    harness
+        .get_by_label("SCENE 02  Ada appears after dying")
+        .click();
+    harness.run();
+
+    assert_eq!(
+        labelled_text_input(&harness, "TITLE").value().as_deref(),
+        Some("Epilogue")
+    );
+}
+
+#[test]
+fn continuity_panel_is_quiet_when_nothing_disagrees() {
+    let Fixture { mut harness, .. } = launch(board_with_scenes(&["Opening", "Middle"]));
+
+    harness.get_by_label("Stats").click();
+    harness.run();
+
+    assert!(harness.query_by_label("Nothing to flag.").is_some());
+}
+
+#[test]
+fn tracked_item_opens_in_the_inspector_and_deletes() {
+    let mut board = board_with_scenes(&["Opening"]);
+    board.add_item("the locket");
+    let Fixture { mut harness, dir } = launch(board);
+
+    harness.get_by_label("the locket").click();
+    harness.run();
+    assert!(harness.query_by_label("ITEM").is_some());
+
+    harness.get_by_label("Delete item").click();
+    harness.run();
+
+    assert!(harness.query_by_label("ITEM").is_none());
+    assert_eq!(harness.state().board().items, []);
+    let saved = std::fs::read_to_string(dir.path().join("board.json")).unwrap();
+    assert!(!saved.contains("the locket"));
+}

@@ -464,7 +464,7 @@ function generateId() {
 }
 
 function defaultBoard() {
-  return {title: DEFAULT_TITLE, characters: [], scenes: [], locations: [], relationships: [], wordGoal: null,
+  return {title: DEFAULT_TITLE, characters: [], scenes: [], locations: [], relationships: [], items: [], wordGoal: null,
     calendar: false, absoluteDays: false, dayZero: null};
 }
 
@@ -525,6 +525,20 @@ function choiceField(value, what, choices, fallback) {
   return value;
 }
 
+// The continuity checks live in the desktop app; the browser only carries
+// these fields through so a round trip loses nothing.
+const TIMES_OF_DAY = ["dawn", "morning", "midday", "afternoon", "evening", "night"];
+
+function optionalTextField(value, what) {
+  return value === undefined || value === null ? null : textField(value, what);
+}
+
+function timeField(value, what) {
+  if (value === undefined || value === null || value === "") return null;
+  if (!TIMES_OF_DAY.includes(value)) throw new Error(`${what}: unknown value ${JSON.stringify(value)}`);
+  return value;
+}
+
 function parseCharacter(raw, index) {
   const what = `character ${index + 1}`;
   if (!isPlainObject(raw)) throw new Error(`${what} must be an object`);
@@ -535,6 +549,8 @@ function parseCharacter(raw, index) {
     gender: textField(raw.gender, `${what} gender`),
     goal: textField(raw.goal, `${what} goal`),
     notes: textField(raw.notes, `${what} notes`),
+    arrivalScene: optionalTextField(raw.arrivalScene, `${what} arrival scene`),
+    deathScene: optionalTextField(raw.deathScene, `${what} death scene`),
   };
 }
 
@@ -545,6 +561,18 @@ function parseLocation(raw, index) {
     id: requiredTextField(raw.id, `${what} id`),
     name: requiredTextField(raw.name, `${what} name`),
     notes: textField(raw.notes, `${what} notes`),
+    region: textField(raw.region, `${what} region`),
+  };
+}
+
+function parseItem(raw, index) {
+  const what = `item ${index + 1}`;
+  if (!isPlainObject(raw)) throw new Error(`${what} must be an object`);
+  return {
+    id: requiredTextField(raw.id, `${what} id`),
+    name: requiredTextField(raw.name, `${what} name`),
+    notes: textField(raw.notes, `${what} notes`),
+    resolvedScene: optionalTextField(raw.resolvedScene, `${what} resolved scene`),
   };
 }
 
@@ -570,6 +598,8 @@ function parseScene(raw, index) {
     pov: raw.pov === null ? "" : textField(raw.pov, `${what} pov`),
     act: choiceField(raw.act, `${what} act`, ACTS, ""),
     location: raw.location === null ? "" : textField(raw.location, `${what} location`),
+    time: timeField(raw.time, `${what} time of day`),
+    flashback: boolField(raw.flashback, `${what} flashback`),
     day: dayField(raw.day, `${what} day`),
     date: dateField(raw.date, `${what} date`),
     dayHidden: boolField(raw.dayHidden, `${what} day hidden`),
@@ -597,6 +627,7 @@ function parseBoard(text) {
     scenes,
     locations: listField(data.locations ?? undefined, "locations").map(parseLocation),
     relationships: listField(data.relationships ?? undefined, "relationships").map(parseRelationship),
+    items: listField(data.items ?? undefined, "items").map(parseItem),
     wordGoal: wordGoalField(data.wordGoal, "word goal"),
     calendar: boolField(data.calendar, "calendar") || storyStart !== null,
     absoluteDays: boolField(data.absoluteDays, "absolute days"),
@@ -605,8 +636,8 @@ function parseBoard(text) {
 }
 
 // The desktop app leaves these out when unset, so do the same.
-const OMITTED_WHEN_NULL = new Set(["day", "date", "wordGoal", "dayZero"]);
-const OMITTED_WHEN_FALSE = new Set(["dayHidden", "chapterBreak", "calendar", "absoluteDays"]);
+const OMITTED_WHEN_NULL = new Set(["day", "date", "wordGoal", "dayZero", "time", "arrivalScene", "deathScene", "resolvedScene"]);
+const OMITTED_WHEN_FALSE = new Set(["dayHidden", "chapterBreak", "calendar", "absoluteDays", "flashback"]);
 function serializeBoard(b) {
   return JSON.stringify(b, (key, value) => ((OMITTED_WHEN_NULL.has(key) && value === null) || (OMITTED_WHEN_FALSE.has(key) && value === false)
     ? undefined : value), 2);
@@ -864,7 +895,7 @@ function chapterCount() {
 function addSceneToBoard() {
   const scene = {
     id: generateId(), title: "", summary: "", status: "Outline", pov: "", act: "",
-    location: "", day: null, date: null, dayHidden: false, text: "", chapterBreak: false,
+    location: "", time: null, flashback: false, day: null, date: null, dayHidden: false, text: "", chapterBreak: false,
   };
   board.scenes.push(scene);
   return scene.id;
@@ -903,7 +934,7 @@ function moveScene(from, to) {
 function addCharacterToBoard(name) {
   const trimmed = name.trim();
   if (!trimmed) return false;
-  board.characters.push({id: generateId(), name: trimmed, role: "", gender: "", goal: "", notes: ""});
+  board.characters.push({id: generateId(), name: trimmed, role: "", gender: "", goal: "", notes: "", arrivalScene: null, deathScene: null});
   return true;
 }
 
@@ -916,7 +947,7 @@ function deleteCharacterFromBoard(id) {
 function addLocationToBoard(name) {
   const trimmed = name.trim();
   if (!trimmed) return false;
-  board.locations.push({id: generateId(), name: trimmed, notes: ""});
+  board.locations.push({id: generateId(), name: trimmed, notes: "", region: ""});
   return true;
 }
 
@@ -1613,6 +1644,13 @@ function confirmDeleteScene(id) {
   confirmDialog("Delete this scene?", () => {
     board.scenes = board.scenes.filter(s => s.id !== id);
     if (board.dayZero === id) board.dayZero = null;
+    for (const character of board.characters) {
+      if (character.arrivalScene === id) character.arrivalScene = null;
+      if (character.deathScene === id) character.deathScene = null;
+    }
+    for (const item of board.items) {
+      if (item.resolvedScene === id) item.resolvedScene = null;
+    }
     if (isSelected("scene", id)) selected = null;
     saveNow();
   });
