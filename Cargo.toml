@@ -1,7 +1,8 @@
-license = "MIT"
+[package]
+name = "storysquish"
+version = "0.4.3"
+edition = "2024"
 
-[dependencies]
-anyhow = "1.0.105"
 base64 = "0.23.1"
 directories = "6.0.0"
 eframe = "0.37.0"
